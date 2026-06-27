@@ -4,7 +4,6 @@ import { useMemo, useState } from 'react'
 import { Hexagon, Settings, Menu, X, User, LogIn, Loader2 } from 'lucide-react'
 import { useSettingsStore } from '@/lib/store' 
 import {
-  HEX_ENDPOINT,
   inferRoute,
   type StreamMessage,
   type VerifyResponse,
@@ -43,7 +42,8 @@ export function HexicalConsole() {
     setBusy(true)
 
     try {
-      const res = await fetch(HEX_ENDPOINT, {
+      // 🚀 HARDCODED BACKEND URL TO BYPASS VERCEL ENV VARIABLE TRAP 🚀
+      const res = await fetch('https://axiom-backend-b4ay.onrender.com/verify', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
