@@ -1,7 +1,8 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { Hexagon, Wifi, Lock, ChevronDown } from 'lucide-react'
+import { Hexagon, Wifi, Lock, ChevronDown, Settings } from 'lucide-react'
+import { useSettingsStore } from '@/lib/store' 
 import {
   HEX_ENDPOINT,
   inferRoute,
@@ -22,10 +23,13 @@ function uid() {
 }
 
 export function HexicalConsole() {
-  const [messages, setMessages] = useState<StreamMessage[]>([])
+  // Initialize with a system message so the chat isn't blank
+  const [messages, setMessages] = useState<StreamMessage[]>([
+    { id: 'init', role: 'hexical', text: 'SYSTEM ONLINE. READY FOR INPUT.', ts: tsNow(), steps: [], valid: true }
+  ])
   const [busy, setBusy] = useState(false)
+  const { showTelemetry, toggleTelemetry } = useSettingsStore()
 
-  // latest hexical/error message drives the telemetry + node highlight
   const latest = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role !== 'user') return messages[i]
@@ -83,11 +87,11 @@ export function HexicalConsole() {
 
   return (
     <div className="hud-grid relative flex h-dvh flex-col overflow-hidden bg-background">
-      {/* ambient glow accents */}
+      {/* Ambient glow accents */}
       <div className="pointer-events-none absolute -top-40 left-1/4 size-96 rounded-full bg-primary/10 blur-[120px]" />
       <div className="pointer-events-none absolute -bottom-40 right-1/4 size-96 rounded-full bg-accent/10 blur-[120px]" />
 
-      {/* top command bar */}
+      {/* Top command bar */}
       <header className="relative z-10 flex items-center justify-between border-b border-border px-4 py-3 sm:px-6">
         <div className="flex items-center gap-3">
           <div className="relative flex size-9 items-center justify-center">
@@ -104,28 +108,27 @@ export function HexicalConsole() {
           </div>
         </div>
 
-        <div className="flex items-center gap-4 font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
-          <span className="hidden items-center gap-1.5 sm:flex">
-            <span className="size-1.5 animate-node rounded-full bg-accent text-accent" />
-            Online
-          </span>
-          <span className="hidden items-center gap-1.5 md:flex">
-            <Wifi className="size-3.5 text-primary" /> Mesh OK
-          </span>
-          <span className="flex items-center gap-1.5">
-            <Lock className="size-3.5 text-accent" /> Encrypted
-          </span>
+        <div className="flex items-center gap-4">
+          <button 
+            onClick={toggleTelemetry}
+            className={`flex items-center gap-2 rounded border px-3 py-1 font-mono text-[10px] uppercase tracking-[0.2em] transition-colors ${
+              showTelemetry ? 'border-primary/30 text-primary' : 'border-border text-muted-foreground'
+            }`}
+          >
+            <Settings className="size-3" />
+            Telemetry {showTelemetry ? 'ON' : 'OFF'}
+          </button>
         </div>
       </header>
 
-      {/* three-panel grid */}
-      <div className="relative z-10 grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 lg:grid-cols-[260px_minmax(0,1fr)_300px]">
-        {/* left */}
+      {/* Main layout grid */}
+      <div className={`relative z-10 grid min-h-0 flex-1 gap-3 p-3 transition-all duration-300 ${
+        showTelemetry ? 'lg:grid-cols-[260px_minmax(0,1fr)_300px]' : 'lg:grid-cols-[260px_minmax(0,1fr)]'
+      }`}>
         <div className="hidden min-h-0 lg:block">
           <NodeSidebar activeRoute={activeRoute} />
         </div>
 
-        {/* center */}
         <main className="glass scanlines relative flex min-h-0 flex-col overflow-hidden rounded-lg">
           <div className="flex items-center justify-between border-b border-border px-5 py-3">
             <h2 className="font-mono text-[11px] uppercase tracking-[0.25em] text-foreground">
@@ -140,17 +143,14 @@ export function HexicalConsole() {
 
           <div className="border-t border-border p-3 sm:p-4">
             <CommandInput onSubmit={handleSubmit} busy={busy} />
-            <p className="mt-2 flex items-center gap-1.5 px-1 font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
-              <ChevronDown className="size-3" />
-              POST {HEX_ENDPOINT}
-            </p>
           </div>
         </main>
 
-        {/* right */}
-        <div className="hidden min-h-0 lg:block">
-          <TelemetryPanel latest={latest} />
-        </div>
+        {showTelemetry && (
+          <div className="hidden min-h-0 lg:block">
+            <TelemetryPanel latest={latest} />
+          </div>
+        )}
       </div>
     </div>
   )
