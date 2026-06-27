@@ -1,167 +1,153 @@
 'use client'
 
-import { useMemo, useState } from 'react'
-import { Hexagon, Settings, Menu, X, User, LogIn, Loader2 } from 'lucide-react'
-import { useSettingsStore } from '@/lib/store' 
-import {
-  inferRoute,
-  type StreamMessage,
-  type VerifyResponse,
-} from '@/lib/hexical-types'
-import { NodeSidebar } from './node-sidebar'
-import { TelemetryPanel } from './telemetry-panel'
+import { useEffect, useState } from 'react'
+import { Hexagon, Menu } from 'lucide-react'
+import { supabase } from '@/lib/supabase'
+import { useGuestLimit } from '@/hooks/use-guest-limit'
+import { inferRoute, type StreamMessage, type VerifyResponse } from '@/lib/hexical-types'
+import { ChatSidebar } from './chat-sidebar'
 import { DataStream } from './data-stream'
 import { CommandInput } from './command-input'
+
+interface Chat {
+  id: string
+  title: string
+  messages: StreamMessage[]
+}
 
 function tsNow() { return new Date().toLocaleTimeString('en-GB', { hour12: false }) }
 function uid() { return Math.random().toString(36).slice(2) + Date.now().toString(36) }
 
 export function HexicalConsole() {
-  const [messages, setMessages] = useState<StreamMessage[]>([
-    { id: 'init', role: 'hexical', text: 'SYSTEM ONLINE. READY FOR INPUT.', ts: tsNow(), steps: [], valid: true }
-  ])
-  const [busy, setBusy] = useState(false)
-  const [isSidebarOpen, setSidebarOpen] = useState(false)
-  const [isAuthenticated] = useState(false) 
-  
-  const { showTelemetry, toggleTelemetry } = useSettingsStore()
-
-  const latest = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role !== 'user') return messages[i]
+  // 1. Initialize State with Lazy Loading from localStorage
+  const [chats, setChats] = useState<Chat[]>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('hexical_chats')
+      return saved ? JSON.parse(saved) : [{ id: '1', title: 'New Chat', messages: [{ id: 'init', role: 'hexical', text: 'SYSTEM ONLINE.', ts: tsNow(), steps: [], valid: true }] }]
     }
-    return null
-  }, [messages])
+    return [{ id: '1', title: 'New Chat', messages: [{ id: 'init', role: 'hexical', text: 'SYSTEM ONLINE.', ts: tsNow(), steps: [], valid: true }] }]
+  })
 
-  const activeRoute = latest?.role === 'hexical' ? (latest.route ?? null) : null
+  const [activeId, setActiveId] = useState('1')
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [userName, setUserName] = useState('Guest')
+  
+  const { checkLimit } = useGuestLimit()
+
+  // 2. Sync to localStorage whenever chats change
+  useEffect(() => {
+    localStorage.setItem('hexical_chats', JSON.stringify(chats))
+  }, [chats])
+
+  // Fetch User Name for Greeting
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      if (data.user) {
+        const name = data.user.user_metadata.full_name?.split(' ')[0] || 'User'
+        setUserName(name)
+      }
+    })
+  }, [])
+
+  const activeChat = chats.find(c => c.id === activeId) || chats[0]
 
   async function handleSubmit(logic: string) {
-    if (busy) return
-    
-    setMessages((prev) => [...prev, { id: uid(), role: 'user', text: logic, ts: tsNow() }])
-    setBusy(true)
+    const isAuthenticated = (await supabase.auth.getSession()).data.session !== null
+    if (!isAuthenticated && !checkLimit()) {
+      localStorage.setItem('pending_draft', logic)
+      window.location.href = '/login'
+      return
+    }
 
+    if (busy) return
+    const userMsg: StreamMessage = { id: uid(), role: 'user', text: logic, ts: tsNow() }
+    
+    setBusy(true)
     try {
-      // 🚀 HARDCODED BACKEND URL TO BYPASS VERCEL ENV VARIABLE TRAP 🚀
       const res = await fetch('https://axiom-backend-b4ay.onrender.com/verify', {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ logic, context: 'general' }),
       })
-
-      if (!res.ok) {
-        throw new Error(`HTTP Error ${res.status}: ${res.statusText}`)
+      const data: VerifyResponse = await res.json()
+      
+      const hexMsg: StreamMessage = { 
+        id: uid(), role: 'hexical', text: data.analysis ?? '', steps: data.steps ?? [], 
+        valid: Boolean(data.valid), route: inferRoute(data.steps ?? []), ts: tsNow() 
       }
 
-      const data: VerifyResponse = await res.json()
-      const steps = Array.isArray(data.steps) ? data.steps : []
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: uid(),
-          role: 'hexical',
-          text: data.analysis ?? '[empty payload]',
-          steps,
-          valid: Boolean(data.valid),
-          route: inferRoute(steps),
-          ts: tsNow(),
-        },
-      ])
-    } catch (error) {
-      // Log the actual error to the browser console for easier debugging
-      console.error("Hexical AI Engine Connection Error:", error)
-      
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: uid(),
-          role: 'error',
-          text: 'CRITICAL FAIL: HEXICAL AI BACKEND UNREACHABLE.',
-          ts: tsNow(),
-          steps: [],
-          valid: false
-        },
-      ])
+      setChats(prev => prev.map(chat => {
+        if (chat.id === activeId) {
+          const newTitle = chat.messages.length === 1 ? logic.slice(0, 20) : chat.title
+          return { ...chat, title: newTitle, messages: [...chat.messages, userMsg, hexMsg] }
+        }
+        return chat
+      }))
+    } catch {
+      setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, userMsg, { id: uid(), role: 'error', text: 'BACKEND ERROR', ts: tsNow(), steps: [], valid: false }] } : c))
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <div className="relative flex h-screen w-full flex-col overflow-hidden bg-background">
-      {/* HEADER */}
-      <header className="relative z-50 flex items-center justify-between border-b border-border px-4 py-3">
-        <div className="flex items-center gap-3">
-          <button onClick={() => setSidebarOpen(!isSidebarOpen)} className="lg:hidden">
-            {isSidebarOpen ? <X className="size-6 text-foreground" /> : <Menu className="size-6 text-foreground" />}
-          </button>
-          
-          <div className="relative flex size-8 items-center justify-center">
-            <Hexagon className="size-8 text-primary animate-flicker" />
-          </div>
-          <h1 className="hidden font-mono text-sm font-bold uppercase tracking-[0.2em] text-foreground sm:block">
-            Hexical<span className="text-primary"> AI</span>
-          </h1>
+    <div className="flex h-screen w-full bg-background text-foreground overflow-hidden">
+      
+      {/* SIDEBAR */}
+      {isSidebarOpen && (
+        <div className="z-50 transition-all duration-300">
+           <ChatSidebar 
+            chats={chats} 
+            activeId={activeId} 
+            onSelect={setActiveId}
+            onNewChat={() => {
+                const activeChat = chats.find(c => c.id === activeId)
+                if (activeChat && activeChat.messages.length === 1) return
+                
+                const newId = Date.now().toString()
+                setChats([{ id: newId, title: 'New Chat', messages: [{ id: uid(), role: 'hexical', text: 'SYSTEM ONLINE.', ts: tsNow(), steps: [], valid: true }] }, ...chats])
+                setActiveId(newId)
+            }}
+            onClose={() => setIsSidebarOpen(false)}
+          />
         </div>
+      )}
 
-        <div className="flex items-center gap-3">
-           {/* Telemetry Toggle */}
-           <button 
-             onClick={toggleTelemetry} 
-             className={`hidden rounded border px-3 py-1 font-mono text-[10px] uppercase transition-colors sm:block ${
-               showTelemetry ? 'border-primary/30 text-primary bg-primary/10' : 'border-border text-muted-foreground'
-             }`}
-           >
-            Telemetry {showTelemetry ? 'ON' : 'OFF'}
-          </button>
-          
-          {/* USER LOGIN INTERFACE */}
-          <div className="flex items-center gap-2 rounded-full border border-border bg-muted/20 px-3 py-1.5">
-            {isAuthenticated ? <User className="size-4 text-primary" /> : <LogIn className="size-4 text-muted-foreground" />}
-            <span className="hidden font-mono text-[10px] text-muted-foreground sm:inline">
-              {isAuthenticated ? 'OPERATOR' : 'GUEST'}
-            </span>
-          </div>
-        </div>
-      </header>
-
-      {/* MAIN CONTENT AREA */}
-      <div className="relative flex flex-1 overflow-hidden">
-        
-        {/* MOBILE SIDEBAR OVERLAY */}
-        {isSidebarOpen && (
-          <div className="absolute inset-0 z-40 bg-background/80 backdrop-blur-sm lg:hidden" onClick={() => setSidebarOpen(false)} />
-        )}
-
-        {/* SIDEBAR */}
-        <aside 
-          onClick={() => setSidebarOpen(false)} // Auto-close on mobile selection
-          className={`${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0 absolute z-50 h-full w-[260px] border-r border-border bg-background transition-transform duration-300 lg:relative`}
-        >
-          <NodeSidebar activeRoute={activeRoute} />
-        </aside>
-
-        {/* CENTER CONSOLE */}
-        <main className="flex flex-1 flex-col overflow-hidden p-3">
-          <div className="glass flex h-full flex-col overflow-hidden rounded-lg border border-border">
-            <DataStream messages={messages} busy={busy} />
-            <div className="border-t border-border p-4 bg-background/50">
-              <CommandInput onSubmit={handleSubmit} busy={busy} />
+      {/* MAIN CHAT AREA */}
+      <main className="flex-1 flex flex-col relative transition-all duration-300">
+        <div className="p-4 flex items-center gap-4">
+            {!isSidebarOpen && (
+                <button onClick={() => setIsSidebarOpen(true)} className="p-2 hover:bg-muted/30 rounded-lg transition-colors">
+                    <Menu className="size-5" />
+                </button>
+            )}
+            <div className="flex items-center gap-2">
+                <Hexagon className="size-5 text-primary" />
+                <span className="font-mono text-sm uppercase tracking-widest font-bold">Hexical AI</span>
             </div>
-          </div>
-        </main>
+        </div>
 
-        {/* TELEMETRY PANEL */}
-        {showTelemetry && (
-          <div className="hidden w-[300px] border-l border-border lg:block bg-background/95">
-            <TelemetryPanel latest={latest} />
-          </div>
-        )}
-      </div>
+        <div className="flex-1 flex flex-col items-center justify-center overflow-hidden w-full">
+           {activeChat.messages.length <= 1 ? (
+             <div className="text-center w-full px-4 animate-in fade-in duration-700">
+               <h2 className="text-2xl font-semibold mb-8 text-foreground/90">Good to see you, {userName}.</h2>
+               <div className="w-full max-w-2xl mx-auto">
+                 <CommandInput onSubmit={handleSubmit} busy={busy} />
+               </div>
+             </div>
+           ) : (
+             <div className="w-full max-w-3xl flex flex-col h-full overflow-hidden">
+               <div className="flex-1 overflow-y-auto py-4 px-2">
+                  <DataStream messages={activeChat.messages} busy={busy} />
+               </div>
+               <div className="pb-8 px-2 bg-gradient-to-t from-background via-background to-transparent">
+                  <CommandInput onSubmit={handleSubmit} busy={busy} />
+               </div>
+             </div>
+           )}
+        </div>
+      </main>
     </div>
   )
 }

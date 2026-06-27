@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, type FormEvent } from 'react'
+import { useState, type FormEvent, useEffect } from 'react'
 import { ChevronRight, CornerDownLeft, Loader2 } from 'lucide-react'
 
 interface CommandInputProps {
@@ -11,6 +11,16 @@ interface CommandInputProps {
 export function CommandInput({ onSubmit, busy }: CommandInputProps) {
   const [value, setValue] = useState('')
   const [focused, setFocused] = useState(false)
+
+  // DRAFT RECOVERY: Check for saved text on component mount
+  useEffect(() => {
+    const savedDraft = localStorage.getItem('pending_draft')
+    if (savedDraft) {
+      setValue(savedDraft)
+      // Clear the draft so it doesn't reappear if the page refreshes
+      localStorage.removeItem('pending_draft')
+    }
+  }, [])
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
