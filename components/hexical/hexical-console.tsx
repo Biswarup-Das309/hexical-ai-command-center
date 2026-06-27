@@ -45,11 +45,16 @@ export function HexicalConsole() {
     try {
       const res = await fetch(HEX_ENDPOINT, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
         body: JSON.stringify({ logic, context: 'general' }),
       })
 
-      if (!res.ok) throw new Error(`Status ${res.status}`)
+      if (!res.ok) {
+        throw new Error(`HTTP Error ${res.status}: ${res.statusText}`)
+      }
 
       const data: VerifyResponse = await res.json()
       const steps = Array.isArray(data.steps) ? data.steps : []
@@ -67,6 +72,9 @@ export function HexicalConsole() {
         },
       ])
     } catch (error) {
+      // Log the actual error to the browser console for easier debugging
+      console.error("Hexical AI Engine Connection Error:", error)
+      
       setMessages((prev) => [
         ...prev,
         {
