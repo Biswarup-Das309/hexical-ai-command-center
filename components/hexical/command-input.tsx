@@ -92,8 +92,7 @@ export function CommandInput({ onSubmit, busy, onStop }: CommandInputProps) {
 
   return (
     <form onSubmit={handleSubmit} className="relative w-full">
-      {/* Container: Uses 'items-center' to ensure the Chevron, Prompt Span, 
-        and Textarea are all vertically aligned on the same central axis.
+      {/* Container: Uses 'items-center' to ensure the Chevron and Textarea are vertically aligned.
       */}
       <div 
         className={`
@@ -108,11 +107,6 @@ export function CommandInput({ onSubmit, busy, onStop }: CommandInputProps) {
         <ChevronRight 
           className={`size-5 shrink-0 transition-colors ${focused ? 'text-primary' : 'text-muted-foreground'}`} 
         />
-        
-        {/* Prompt Prefix: Aligned to text height */}
-        <span className="hidden font-mono text-sm leading-[1.5rem] uppercase tracking-[0.2em] text-primary/60 sm:inline shrink-0 select-none">
-          hexical:~$
-        </span>
         
         {/* Textarea: 
           - leading-[1.5rem] matches prompt text for alignment.
