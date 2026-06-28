@@ -15,13 +15,12 @@ const INITIAL_CHAT = {
   messages: [{ id: 'init', role: 'hexical', text: 'SYSTEM ONLINE. READY FOR INPUT.', ts: '00:00', steps: [], valid: true }] 
 }
 
-// --- NEW: Time-based greeting logic ---
 function getGreeting() {
   const hour = new Date().getHours()
   if (hour >= 5 && hour < 12) return 'Good morning'
   if (hour >= 12 && hour < 17) return 'Good afternoon'
   if (hour >= 17 && hour < 22) return 'Good evening'
-  return 'Working late' // Fits the terminal vibe for midnight/early AM
+  return 'Working late'
 }
 
 export function HexicalConsole() {
@@ -80,10 +79,11 @@ export function HexicalConsole() {
     
     setBusy(true)
     try {
-      const res = await fetch('https://axiom-backend-b4ay.onrender.com/verify', {
+      // --- UPDATED: Pointing to internal API machine ---
+      const res = await fetch('/api/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ logic, context: 'general' }),
+        body: JSON.stringify({ logic }),
       })
       const data: VerifyResponse = await res.json()
       
@@ -100,7 +100,7 @@ export function HexicalConsole() {
         return chat
       }))
     } catch {
-      setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, userMsg, { id: uid(), role: 'error', text: 'BACKEND ERROR', ts: tsNow(), steps: [], valid: false }] } : c))
+      setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, userMsg, { id: uid(), role: 'error', text: 'MACHINE ERROR', ts: tsNow(), steps: [], valid: false }] } : c))
     } finally {
       setBusy(false)
     }
@@ -117,7 +117,6 @@ export function HexicalConsole() {
 
   return (
     <div className="flex h-screen w-full bg-background text-foreground overflow-hidden selection:bg-primary/30">
-      
       {isSidebarOpen && (
         <div className="z-50 transition-all duration-300 w-64 border-r border-border bg-card/30 backdrop-blur-sm">
            <ChatSidebar 
@@ -137,7 +136,6 @@ export function HexicalConsole() {
       )}
 
       <main className="flex-1 flex flex-col relative transition-all duration-300 bg-gradient-to-b from-background to-background/80">
-        
         <div className="p-4 flex items-center gap-4 border-b border-border/50 bg-background/50 backdrop-blur-md z-10 sticky top-0">
             {!isSidebarOpen && (
                 <button onClick={() => setIsSidebarOpen(true)} className="p-2 hover:bg-muted/50 rounded-lg transition-colors group">
@@ -153,13 +151,11 @@ export function HexicalConsole() {
         </div>
 
         <div className="flex-1 flex flex-col items-center justify-center overflow-hidden w-full relative">
-           
            <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-primary/5 rounded-full blur-[120px] pointer-events-none" />
 
            {activeChat.messages.length <= 1 ? (
              <div className="text-center w-full px-4 animate-in fade-in slide-in-from-bottom-4 duration-1000 z-10">
                <div className="mb-8">
-                 {/* --- NEW: Dynamic Greeting rendered here --- */}
                  <h2 className="text-3xl md:text-4xl font-semibold mb-3 text-foreground tracking-tight">
                    {getGreeting()}, {userName}.
                  </h2>
