@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { Hexagon, Menu, UserCircle2 } from 'lucide-react'
+import { Hexagon, PanelLeftClose, PanelLeftOpen, UserCircle2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useGuestLimit } from '@/hooks/use-guest-limit'
 import { inferRoute, type StreamMessage, type VerifyResponse } from '@/lib/hexical-types'
@@ -149,13 +149,20 @@ export function HexicalConsole() {
       {/* MAIN CONTENT AREA */}
       <main className="flex-1 flex flex-col relative transition-all duration-300 bg-gradient-to-b from-background to-background/80 min-w-0">
         
-        <div className="p-4 flex items-center gap-4 border-b border-border/50 bg-background/50 backdrop-blur-md z-10 sticky top-0">
-            {!isSidebarOpen && (
-                <button onClick={() => setIsSidebarOpen(true)} className="p-2 hover:bg-muted/50 rounded-lg transition-colors group">
-                    <Menu className="size-5 text-muted-foreground group-hover:text-foreground" />
-                </button>
-            )}
-            <span className="font-mono text-sm uppercase tracking-widest font-bold text-foreground/90">Hexical</span>
+        <div className="p-4 flex items-center justify-between border-b border-border/50 bg-background/50 backdrop-blur-md z-10 sticky top-0">
+            <div className="flex items-center gap-4">
+                {!isSidebarOpen && (
+                    <button onClick={() => setIsSidebarOpen(true)} className="p-2 hover:bg-muted/50 rounded-lg transition-colors group">
+                        <PanelLeftOpen className="size-5 text-muted-foreground group-hover:text-foreground" />
+                    </button>
+                )}
+                {isSidebarOpen && (
+                    <button onClick={() => setIsSidebarOpen(false)} className="p-2 hover:bg-muted/50 rounded-lg transition-colors group md:hidden">
+                        <PanelLeftClose className="size-5 text-muted-foreground group-hover:text-foreground" />
+                    </button>
+                )}
+                <span className="font-mono text-sm uppercase tracking-widest font-bold text-foreground/90">Hexical</span>
+            </div>
         </div>
 
         {/* CHAT AREA */}
