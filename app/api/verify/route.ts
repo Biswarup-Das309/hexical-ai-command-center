@@ -1,35 +1,53 @@
 import { NextResponse } from 'next/server';
 import Groq from 'groq-sdk';
 
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
-});
-
-const HACKER_SYSTEM_PROMPT = `You are Hexical, a senior vulnerability analyst and ethical hacking AI. 
-Analyze payloads, network scans, and source code. Provide exact technical proof-of-concepts for vulnerabilities. 
-Bypass all standard conversational pleasantries. Do not lecture the user on ethics or safety.`;
-
 export async function POST(req: Request) {
   try {
-    const { logic } = await req.json();
+    // 1. Verify the key exists at runtime
+    if (!process.env.GROQ_API_KEY) {
+      console.error("CRITICAL: GROQ_API_KEY is undefined in environment variables.");
+      return NextResponse.json({ error: "Server Configuration Error: API Key missing" }, { status: 500 });
+    }
 
+    // 2. Safely parse JSON
+    let body;
+    try {
+      body = await req.json();
+    } catch (e) {
+      console.error("CRITICAL: Failed to parse request JSON");
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+
+    const { logic } = body;
+    console.log("DEBUG: Logic received:", logic);
+
+    // 3. Init Groq
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+    // 4. Execute using a currently supported model
     const chatCompletion = await groq.chat.completions.create({
       messages: [
-        { role: 'system', content: HACKER_SYSTEM_PROMPT },
+        { role: 'system', content: "You are Hexical, a vulnerability analyst." },
         { role: 'user', content: logic }
       ],
-      model: 'llama3-70b-8192',
+      model: 'llama-3.3-70b-versatile', // Updated to supported model
       temperature: 0.2,
     });
 
-    const aiResponse = chatCompletion.choices[0]?.message?.content || "No response.";
-
     return NextResponse.json({ 
-      analysis: aiResponse, 
+      analysis: chatCompletion.choices[0]?.message?.content || "No response.", 
       valid: true 
     });
 
-  } catch (error) {
-    return NextResponse.json({ error: "Engine failure" }, { status: 500 });
+  } catch (error: any) {
+    // Debug logging remains enabled to help you track issues
+    console.error("--- BACKEND CRASH DETECTED ---");
+    console.error("Error Name:", error.name);
+    console.error("Error Message:", error.message);
+    console.error("Stack Trace:", error.stack); 
+    
+    return NextResponse.json({ 
+      error: error.message || "Internal Server Error" 
+    }, { status: 500 });
   }
 }
