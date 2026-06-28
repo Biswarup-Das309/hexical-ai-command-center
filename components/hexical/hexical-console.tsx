@@ -79,6 +79,18 @@ export function HexicalConsole() {
       if (window.innerWidth < 768) setIsSidebarOpen(false);
   }
 
+  // --- DELETE CHAT LOGIC ---
+  const handleDeleteChat = (id: string) => {
+    if (chats.length <= 1) {
+       setChats([INITIAL_CHAT]);
+       setActiveId('1');
+    } else {
+       const filtered = chats.filter(c => c.id !== id);
+       setChats(filtered);
+       if (activeId === id) setActiveId(filtered[0].id);
+    }
+  };
+
   async function handleGuestLogin() {
     const { error } = await supabase.auth.signInAnonymously()
     if (error) console.error("Guest login failed:", error.message)
@@ -132,7 +144,7 @@ export function HexicalConsole() {
   return (
     <div className="flex h-screen w-full bg-background text-foreground overflow-hidden">
       
-      {/* MOBILE OVERLAY SHADE */}
+      {/* MOBILE OVERLAY */}
       {isSidebarOpen && (
         <div className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm md:hidden" onClick={() => setIsSidebarOpen(false)} />
       )}
@@ -148,6 +160,7 @@ export function HexicalConsole() {
                 activeId={activeId} 
                 onSelect={(id: string) => { setActiveId(id); if (window.innerWidth < 768) setIsSidebarOpen(false); }}
                 onNewChat={handleNewChat}
+                onDeleteChat={handleDeleteChat} // <--- Added this
                 onClose={() => setIsSidebarOpen(false)}
             />
          ) : (
@@ -162,7 +175,6 @@ export function HexicalConsole() {
          )}
       </div>
 
-      {/* MAIN CONTENT AREA */}
       <main className="flex-1 flex flex-col relative transition-all duration-300 bg-gradient-to-b from-background to-background/80 min-w-0">
         
         <div className="p-4 flex items-center justify-between border-b border-border/50 bg-background/50 backdrop-blur-md z-10 sticky top-0">
@@ -172,16 +184,10 @@ export function HexicalConsole() {
                         <PanelLeftOpen className="size-5 text-muted-foreground group-hover:text-foreground" />
                     </button>
                 )}
-                {isSidebarOpen && (
-                    <button onClick={() => setIsSidebarOpen(false)} className="p-2 hover:bg-muted/50 rounded-lg transition-colors group md:hidden">
-                        <PanelLeftClose className="size-5 text-muted-foreground group-hover:text-foreground" />
-                    </button>
-                )}
                 <span className="font-mono text-sm uppercase tracking-widest font-bold text-foreground/90">Hexical</span>
             </div>
         </div>
 
-        {/* CHAT AREA */}
         <div className="flex-1 flex flex-col items-center justify-center overflow-hidden w-full relative p-4">
            {activeChat.messages.length <= 1 ? (
              <div className="w-full text-center max-w-lg mx-auto">
