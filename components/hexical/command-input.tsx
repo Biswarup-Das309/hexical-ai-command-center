@@ -1,10 +1,10 @@
 'use client'
 
-import { useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useState, useRef, useEffect, type FormEvent, type KeyboardEvent } from 'react'
 import { ChevronRight, CornerDownLeft, Square } from 'lucide-react'
 
 // -----------------------------------------------------------------------------
-// Props Interface
+// TYPE DEFINITIONS
 // -----------------------------------------------------------------------------
 
 interface CommandInputProps {
@@ -13,53 +13,114 @@ interface CommandInputProps {
   onStop?: () => void
 }
 
-// -----------------------------------------------------------------------------
-// Component
-// -----------------------------------------------------------------------------
-
+/**
+ * CommandInput Component
+ * A robust, auto-expanding input field designed for an AI command-line aesthetic.
+ */
 export function CommandInput({ onSubmit, busy, onStop }: CommandInputProps) {
+  // State management for input value and focus status
   const [value, setValue] = useState('')
   const [focused, setFocused] = useState(false)
+  
+  // Ref for the DOM node to handle manual height calculation
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  // Trigger submission
+  // ---------------------------------------------------------------------------
+  // HEIGHT CALCULATION LOGIC
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Adjusts the height of the textarea based on content.
+   * This ensures the input grows vertically ("down and down") rather than scrolling.
+   */
+  const adjustHeight = () => {
+    const textarea = textareaRef.current
+    if (textarea) {
+      // Reset height temporarily to correctly calculate the scroll height
+      textarea.style.height = 'auto'
+      // Set to scroll height to expand the box
+      textarea.style.height = `${textarea.scrollHeight}px`
+    }
+  }
+
+  // Monitor value changes to trigger auto-resize
+  useEffect(() => {
+    adjustHeight()
+  }, [value])
+
+  // ---------------------------------------------------------------------------
+  // EVENT HANDLERS
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Processes the form submission logic.
+   * Includes validation checks to prevent empty submissions.
+   */
   function handleSubmit(e?: FormEvent) {
     if (e) e.preventDefault()
     
-    // Safety check: ensure input isn't empty and we aren't already busy
+    // Safety check: prevent submission if busy or input is effectively empty
     if (busy || !value.trim()) return
     
-    // Send the text up to HexicalConsole
+    // Bubble the submission up to the HexicalConsole parent
     onSubmit(value.trim())
     
-    // Clear the local input
+    // Reset internal state
     setValue('')
+    
+    // Reset height back to single line after submission
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto'
+    }
   }
 
-  // Handle Enter key for submission
+  /**
+   * Keyboard shortcut management:
+   * - Enter: Submit
+   * - Shift+Enter: Newline (standard for chat)
+   */
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSubmit()
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // RENDER: Main Input UI
+  // ---------------------------------------------------------------------------
+
   return (
-    <form onSubmit={handleSubmit} className="relative">
+    <form onSubmit={handleSubmit} className="relative w-full">
+      {/* Container: Uses 'items-center' to ensure the Chevron, Prompt Span, 
+        and Textarea are all vertically aligned on the same central axis.
+      */}
       <div 
         className={`
-          glass relative flex items-center gap-3 rounded-lg px-4 py-3 transition-all duration-300
-          ${focused ? 'border-primary/70 shadow-[0_0_15px_rgba(var(--primary-rgb),0.15)]' : 'border-border'}
+          glass relative flex items-center gap-3 rounded-2xl px-4 py-3 transition-all duration-300
+          ${focused 
+            ? 'border-primary/70 shadow-[0_0_15px_rgba(var(--primary-rgb),0.15)] bg-background/60' 
+            : 'border-border bg-background/40'}
           ${busy ? 'animate-pulse border-primary/50' : ''}
         `}
       >
-        <ChevronRight className={`size-5 shrink-0 transition-colors ${focused ? 'text-primary' : 'text-muted-foreground'}`} />
+        {/* Visual Indicator: Chevron icon */}
+        <ChevronRight 
+          className={`size-5 shrink-0 transition-colors ${focused ? 'text-primary' : 'text-muted-foreground'}`} 
+        />
         
-        <span className="hidden font-mono text-[11px] uppercase tracking-[0.2em] text-primary/60 sm:inline">
+        {/* Prompt Prefix: Aligned to text height */}
+        <span className="hidden font-mono text-sm leading-[1.5rem] uppercase tracking-[0.2em] text-primary/60 sm:inline shrink-0 select-none">
           hexical:~$
         </span>
         
+        {/* Textarea: 
+          - leading-[1.5rem] matches prompt text for alignment.
+          - self-center ensures the textarea content itself is vertically balanced.
+          - padding is standardized to match the container's logic.
+        */}
         <textarea
-          rows={1}
+          ref={textareaRef}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -70,14 +131,16 @@ export function CommandInput({ onSubmit, busy, onStop }: CommandInputProps) {
           aria-label="Command input"
           autoComplete="off"
           spellCheck={false}
-          className="min-w-0 flex-1 bg-transparent font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:opacity-50 resize-none overflow-hidden"
+          className="min-w-0 flex-1 bg-transparent font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:opacity-50 resize-none overflow-hidden leading-[1.5rem] py-0 self-center"
+          style={{ minHeight: '1.5rem', maxHeight: '200px' }}
         />
 
+        {/* Action Button: Execute/Stop */}
         <button
           type="button"
           onClick={busy ? onStop : handleSubmit}
           className={`
-            flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.15em] transition-all
+            flex shrink-0 items-center gap-1.5 rounded-lg border px-4 py-2 font-mono text-[11px] uppercase tracking-[0.15em] transition-all self-center
             ${busy 
               ? 'border-red-500/40 bg-red-500/10 text-red-500 hover:bg-red-500/20' 
               : 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/20'
