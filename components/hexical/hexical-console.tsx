@@ -79,7 +79,6 @@ export function HexicalConsole() {
     
     setBusy(true)
     try {
-      // --- UPDATED: Pointing to internal API machine ---
       const res = await fetch('/api/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -106,89 +105,81 @@ export function HexicalConsole() {
     }
   }
 
-  if (!isMounted) return (
-    <div className="flex h-screen w-full bg-background items-center justify-center">
-      <div className="flex flex-col items-center gap-4 animate-pulse">
-        <Hexagon className="size-10 text-primary/50" />
-        <span className="font-mono text-xs text-muted-foreground uppercase tracking-widest">Initializing Environment...</span>
-      </div>
-    </div>
-  )
+  if (!isMounted) return null
 
   return (
-    <div className="flex h-screen w-full bg-background text-foreground overflow-hidden selection:bg-primary/30">
+    <div className="flex h-screen w-full bg-background text-foreground overflow-hidden">
+      
+      {/* MOBILE OVERLAY */}
       {isSidebarOpen && (
-        <div className="z-50 transition-all duration-300 w-64 border-r border-border bg-card/30 backdrop-blur-sm">
-           <ChatSidebar 
-            chats={chats} 
-            activeId={activeId} 
-            onSelect={setActiveId}
-            onNewChat={() => {
-                const newId = Date.now().toString()
-                const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
-                const ts = () => new Date().toLocaleTimeString('en-GB', { hour12: false })
-                setChats([{ id: newId, title: 'New Chat', messages: [{ id: uid(), role: 'hexical', text: 'SYSTEM ONLINE.', ts: ts(), steps: [], valid: true }] }, ...chats])
-                setActiveId(newId)
-            }}
-            onClose={() => setIsSidebarOpen(false)}
-          />
-        </div>
+        <div className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm md:hidden" onClick={() => setIsSidebarOpen(false)} />
       )}
+      
+      {/* SIDEBAR */}
+      <div className={`
+        z-50 border-r border-border bg-card transition-all duration-300 ease-in-out
+        ${isSidebarOpen ? 'w-64 translate-x-0 fixed md:relative h-full' : 'w-20 hidden md:flex md:flex-col'}
+      `}>
+         {isSidebarOpen ? (
+            <ChatSidebar 
+                chats={chats} 
+                activeId={activeId} 
+                onSelect={(id: string) => { setActiveId(id); if (window.innerWidth < 768) setIsSidebarOpen(false); }}
+                onNewChat={() => {
+                    const newId = Date.now().toString()
+                    const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
+                    const ts = () => new Date().toLocaleTimeString('en-GB', { hour12: false })
+                    setChats([{ id: newId, title: 'New Chat', messages: [{ id: uid(), role: 'hexical', text: 'SYSTEM ONLINE.', ts: ts(), steps: [], valid: true }] }, ...chats])
+                    setActiveId(newId)
+                }}
+                onClose={() => setIsSidebarOpen(false)}
+            />
+         ) : (
+            <div className="flex flex-col items-center py-6 gap-6">
+                <button onClick={() => setIsSidebarOpen(true)} className="p-2 hover:bg-muted rounded-lg transition-colors">
+                    <Hexagon className="size-8 text-primary" />
+                </button>
+                <div className="size-10 rounded-full bg-muted/50 flex items-center justify-center border border-border">
+                    <UserCircle2 className="size-6 text-muted-foreground" />
+                </div>
+            </div>
+         )}
+      </div>
 
-      <main className="flex-1 flex flex-col relative transition-all duration-300 bg-gradient-to-b from-background to-background/80">
+      {/* MAIN CONTENT AREA */}
+      <main className="flex-1 flex flex-col relative transition-all duration-300 bg-gradient-to-b from-background to-background/80 min-w-0">
+        
         <div className="p-4 flex items-center gap-4 border-b border-border/50 bg-background/50 backdrop-blur-md z-10 sticky top-0">
             {!isSidebarOpen && (
                 <button onClick={() => setIsSidebarOpen(true)} className="p-2 hover:bg-muted/50 rounded-lg transition-colors group">
                     <Menu className="size-5 text-muted-foreground group-hover:text-foreground" />
                 </button>
             )}
-            <div className="flex items-center gap-3">
-                <div className="bg-primary/10 p-1.5 rounded-md border border-primary/20">
-                  <Hexagon className="size-4 text-primary" />
-                </div>
-                <span className="font-mono text-sm uppercase tracking-widest font-bold text-foreground/90">Hexical</span>
-            </div>
+            <span className="font-mono text-sm uppercase tracking-widest font-bold text-foreground/90">Hexical</span>
         </div>
 
-        <div className="flex-1 flex flex-col items-center justify-center overflow-hidden w-full relative">
-           <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-primary/5 rounded-full blur-[120px] pointer-events-none" />
-
+        {/* CHAT AREA */}
+        <div className="flex-1 flex flex-col items-center justify-center overflow-hidden w-full relative p-4">
            {activeChat.messages.length <= 1 ? (
-             <div className="text-center w-full px-4 animate-in fade-in slide-in-from-bottom-4 duration-1000 z-10">
-               <div className="mb-8">
-                 <h2 className="text-3xl md:text-4xl font-semibold mb-3 text-foreground tracking-tight">
-                   {getGreeting()}, {userName}.
-                 </h2>
-                 <p className="text-muted-foreground font-mono text-sm uppercase tracking-widest">
-                   Awaiting logic verification
-                 </p>
-               </div>
-
-               <div className="w-full max-w-2xl mx-auto">
-                 <div className="shadow-2xl shadow-primary/5 rounded-2xl border border-muted/20 bg-background/50 backdrop-blur-sm">
-                   <CommandInput onSubmit={handleSubmit} busy={busy} />
-                 </div>
-                 
-                 {userName === 'Guest' && (
-                    <button 
-                      onClick={handleGuestLogin}
-                      className="mt-8 flex items-center justify-center gap-2 mx-auto text-[11px] font-mono uppercase tracking-wider text-muted-foreground hover:text-primary transition-all duration-300 border border-muted/20 hover:border-primary/50 bg-muted/5 hover:bg-primary/10 px-6 py-2.5 rounded-full group"
-                    >
-                      <UserCircle2 className="size-4 group-hover:scale-110 transition-transform" />
-                      Initialize Anonymous Session
-                    </button>
-                 )}
+             <div className="w-full text-center max-w-lg mx-auto">
+               <h2 className="text-2xl md:text-4xl font-semibold mb-3 text-foreground tracking-tight">
+                 {getGreeting()}, {userName}.
+               </h2>
+               <p className="text-muted-foreground font-mono text-xs uppercase tracking-widest mb-8">
+                 Awaiting logic verification
+               </p>
+               <div className="w-full shadow-2xl rounded-2xl border border-muted/20 bg-background/50">
+                 <CommandInput onSubmit={handleSubmit} busy={busy} />
                </div>
              </div>
            ) : (
-             <div className="w-full max-w-3xl flex flex-col h-full overflow-hidden z-10">
-               <div className="flex-1 overflow-y-auto py-6 px-4 scroll-smooth">
+             <div className="w-full max-w-3xl flex flex-col h-full overflow-hidden">
+               <div className="flex-1 overflow-y-auto py-6 px-4">
                   <DataStream messages={activeChat.messages} busy={busy} />
                   <div ref={messagesEndRef} className="h-4 w-full" /> 
                </div>
-               
                <div className="pb-6 px-4 pt-2 bg-gradient-to-t from-background via-background/95 to-transparent">
-                  <div className="shadow-xl shadow-primary/5 rounded-2xl border border-muted/20 bg-background/80 backdrop-blur-md">
+                  <div className="shadow-xl rounded-2xl border border-muted/20 bg-background/80 backdrop-blur-md">
                     <CommandInput onSubmit={handleSubmit} busy={busy} />
                   </div>
                </div>
