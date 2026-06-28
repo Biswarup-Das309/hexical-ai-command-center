@@ -1,6 +1,7 @@
 'use client'
 
-import { MessageSquare, Hexagon, Trash2 } from 'lucide-react'
+import { MessageSquare, Trash2 } from 'lucide-react'
+import { HexicalLogo } from './hexical-logo'
 import { UserIdentity } from './user-identity'
 import { supabase } from '@/lib/supabase'
 import { useEffect, useState } from 'react'
@@ -22,8 +23,8 @@ export function ChatSidebar({ chats, activeId, onSelect, onNewChat, onDeleteChat
     <div className="h-full w-full flex flex-col border-r border-border bg-background shadow-xl">
       {/* Logo */}
       <div className="flex items-center justify-center p-6 border-b border-border">
-        <button onClick={onNewChat} className="hover:opacity-80 transition-opacity">
-          <Hexagon className="size-8 text-primary" />
+        <button onClick={onNewChat} className="hover:opacity-80 transition-transform hover:scale-105 duration-300">
+          <HexicalLogo className="size-10" />
         </button>
       </div>
 
