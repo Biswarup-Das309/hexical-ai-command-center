@@ -3,6 +3,15 @@
 import { useState, type FormEvent, useEffect } from 'react'
 import { ChevronRight, CornerDownLeft, Loader2 } from 'lucide-react'
 
+// 1. Define the array of dynamic prompts outside the component
+const PLACEHOLDERS = [
+  "Ask Hexical AI...",
+  "Ask Anything...",
+  "What's up? How's your day?",
+  "Transmit logic to the engine...",
+  "Initiate command sequence..."
+]
+
 interface CommandInputProps {
   onSubmit: (value: string) => void
   busy: boolean
@@ -11,6 +20,15 @@ interface CommandInputProps {
 export function CommandInput({ onSubmit, busy }: CommandInputProps) {
   const [value, setValue] = useState('')
   const [focused, setFocused] = useState(false)
+  
+  // 2. Set a static default for the server render to prevent hydration mismatch
+  const [dynamicPlaceholder, setDynamicPlaceholder] = useState("Ask Hexical AI...")
+
+  // 3. Pick a random placeholder only after mounting in the browser
+  useEffect(() => {
+    const randomIndex = Math.floor(Math.random() * PLACEHOLDERS.length)
+    setDynamicPlaceholder(PLACEHOLDERS[randomIndex])
+  }, [])
 
   // DRAFT RECOVERY: Check for saved text on component mount
   useEffect(() => {
@@ -51,7 +69,7 @@ export function CommandInput({ onSubmit, busy }: CommandInputProps) {
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
           disabled={busy}
-          placeholder="Transmit logic to the engine…"
+          placeholder={dynamicPlaceholder} // 4. Apply the dynamic placeholder state
           aria-label="Command input"
           autoComplete="off"
           spellCheck={false}

@@ -7,9 +7,18 @@ import { useEffect, useState } from 'react'
 
 export function ChatSidebar({ chats, activeId, onSelect, onNewChat }: any) {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [isMounted, setIsMounted] = useState(false)
+
   useEffect(() => {
+    setIsMounted(true)
     supabase.auth.getSession().then(({ data: { session } }) => setIsAuthenticated(!!session))
   }, [])
+
+  // If the component hasn't mounted in the browser yet, return null 
+  // or a skeleton to prevent the Hydration Mismatch error.
+  if (!isMounted) {
+    return <div className="h-full w-full flex flex-col border-r border-border bg-background shadow-xl" />
+  }
 
   return (
     <div className="h-full w-full flex flex-col border-r border-border bg-background shadow-xl">
@@ -42,7 +51,12 @@ export function ChatSidebar({ chats, activeId, onSelect, onNewChat }: any) {
       {/* Footer */}
       <div className="p-4 border-t border-border bg-muted/10">
         {isAuthenticated ? <UserIdentity /> : (
-          <button onClick={() => window.location.href = '/login'} className="w-full text-left text-[11px] font-mono uppercase text-muted-foreground hover:text-foreground">Sign In</button>
+          <button 
+            onClick={() => window.location.href = '/login'} 
+            className="w-full text-left text-[11px] font-mono uppercase text-muted-foreground hover:text-foreground"
+          >
+            Sign In
+          </button>
         )}
       </div>
     </div>
