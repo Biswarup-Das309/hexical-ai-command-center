@@ -38,10 +38,47 @@ export function HexicalConsole() {
   const [busy, setBusy] = useState(false)
   const [userName, setUserName] = useState('Guest')
   const [isMounted, setIsMounted] = useState(false)
+  const [theme, setTheme] = useState('dark')
   
   const menuRef = useRef<HTMLDivElement>(null)
   const { checkLimit } = useGuestLimit()
   const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  // --- INITIALIZATION & AUTH ---
+  useEffect(() => {
+    setIsMounted(true)
+    
+    // Load persisted chats
+    const savedChats = localStorage.getItem('hexical_chats')
+    if (savedChats) setChats(JSON.parse(savedChats))
+    
+    // Load persisted theme
+    const savedTheme = localStorage.getItem('hexical_theme')
+    if (savedTheme === 'light') {
+      setTheme('light')
+      document.documentElement.classList.remove('dark')
+    } else {
+      document.documentElement.classList.add('dark')
+    }
+
+    // Load User
+    supabase.auth.getUser().then(({ data }) => {
+      if (data.user) {
+        const name = data.user.user_metadata.full_name?.split(' ')[0] || 'User'
+        setUserName(name)
+      }
+    })
+  }, [])
+
+  // Persist chats to local storage
+  useEffect(() => {
+    if (isMounted) localStorage.setItem('hexical_chats', JSON.stringify(chats))
+  }, [chats, isMounted])
+
+  // Auto-scroll chat
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [chats, activeId])
 
   // Close menu on outside click
   useEffect(() => {
@@ -54,57 +91,51 @@ export function HexicalConsole() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  // Auto-scroll chat
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [chats, activeId])
+  // --- GLOBAL MENU ACTIONS ---
+  const toggleTheme = () => {
+    const newTheme = theme === 'dark' ? 'light' : 'dark'
+    setTheme(newTheme)
+    if (newTheme === 'dark') {
+      document.documentElement.classList.add('dark')
+    } else {
+      document.documentElement.classList.remove('dark')
+    }
+    localStorage.setItem('hexical_theme', newTheme)
+    setIsMenuOpen(false)
+  }
 
-  // Initial load & Auth
-  useEffect(() => {
-    setIsMounted(true)
-    const saved = localStorage.getItem('hexical_chats')
-    if (saved) setChats(JSON.parse(saved))
-    
-    supabase.auth.getUser().then(({ data }) => {
-      if (data.user) {
-        const name = data.user.user_metadata.full_name?.split(' ')[0] || 'User'
-        setUserName(name)
-      }
-    })
-  }, [])
+  const exportChat = () => {
+    const chatToExport = chats.find(c => c.id === activeId) || chats[0]
+    const chatData = JSON.stringify(chatToExport, null, 2)
+    const blob = new Blob([chatData], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `hexical-chat-${activeId}.json`
+    a.click()
+    URL.revokeObjectURL(url) // Cleanup memory
+    setIsMenuOpen(false)
+  }
 
-  // Save to local storage
-  useEffect(() => {
-    if (isMounted) localStorage.setItem('hexical_chats', JSON.stringify(chats))
-  }, [chats, isMounted])
-
+  // --- CHAT MANAGEMENT LOGIC ---
   const activeChat = chats.find(c => c.id === activeId) || chats[0]
 
-  // --- STABLE CHAT CREATION: Prevents duplicates ---
   const handleNewChat = () => {
       const existingEmptyChat = chats.find(c => c.messages.length === 1 && c.title === 'New Chat');
-      
       if (existingEmptyChat) {
           setActiveId(existingEmptyChat.id);
           if (window.innerWidth < 768) setIsSidebarOpen(false);
           return;
       }
-
       const newId = Date.now().toString();
       const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
       const ts = () => new Date().toLocaleTimeString('en-GB', { hour12: false });
       
-      setChats([{ 
-          id: newId, 
-          title: 'New Chat', 
-          messages: [{ id: uid(), role: 'hexical', text: 'SYSTEM ONLINE.', ts: ts(), steps: [], valid: true }] 
-      }, ...chats]);
-      
+      setChats([{ id: newId, title: 'New Chat', messages: [{ id: uid(), role: 'hexical', text: 'SYSTEM ONLINE.', ts: ts(), steps: [], valid: true }] }, ...chats]);
       setActiveId(newId);
       if (window.innerWidth < 768) setIsSidebarOpen(false);
   }
 
-  // --- DELETE CHAT LOGIC ---
   const handleDeleteChat = (id: string) => {
     if (chats.length <= 1) {
        setChats([INITIAL_CHAT]);
@@ -124,14 +155,15 @@ export function HexicalConsole() {
       window.location.href = '/login'
       return
     }
-
-    if (busy) return
+    
+    // Prevent empty submissions
+    if (busy || !logic.trim()) return
+    
     const tsNow = () => new Date().toLocaleTimeString('en-GB', { hour12: false })
     const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
-    
     const userMsg: StreamMessage = { id: uid(), role: 'user', text: logic, ts: tsNow() }
-    setBusy(true)
     
+    setBusy(true)
     try {
       const res = await fetch('/api/verify', {
         method: 'POST',
@@ -141,25 +173,30 @@ export function HexicalConsole() {
       const data: VerifyResponse = await res.json()
       
       const hexMsg: StreamMessage = { 
-          id: uid(), 
-          role: 'hexical', 
-          text: data.analysis ?? '', 
-          steps: data.steps ?? [], 
-          valid: Boolean(data.valid), 
-          route: inferRoute(data.steps ?? []), 
-          ts: tsNow() 
+        id: uid(), 
+        role: 'hexical', 
+        text: data.analysis ?? '', 
+        steps: data.steps ?? [], 
+        valid: Boolean(data.valid), 
+        route: inferRoute(data.steps ?? []), 
+        ts: tsNow() 
       }
       
-      setChats(prev => prev.map(chat => 
-          chat.id === activeId 
-            ? { ...chat, title: chat.messages.length === 1 ? logic.slice(0, 20) : chat.title, messages: [...chat.messages, userMsg, hexMsg] } 
-            : chat
-      ))
+      setChats(prev => prev.map(chat => {
+        if (chat.id === activeId) {
+          // Smart Title Generation: truncate cleanly with ellipsis
+          const newTitle = chat.messages.length === 1 
+            ? (logic.length > 22 ? logic.slice(0, 22) + '...' : logic) 
+            : chat.title;
+          return { ...chat, title: newTitle, messages: [...chat.messages, userMsg, hexMsg] }
+        }
+        return chat
+      }))
     } catch {
       setChats(prev => prev.map(c => 
-          c.id === activeId 
-            ? { ...c, messages: [...c.messages, userMsg, { id: uid(), role: 'error', text: 'MACHINE ERROR', ts: tsNow(), steps: [], valid: false }] } 
-            : c
+        c.id === activeId 
+          ? { ...c, messages: [...c.messages, userMsg, { id: uid(), role: 'error', text: 'MACHINE ERROR: Connection lost.', ts: tsNow(), steps: [], valid: false }] } 
+          : c
       ))
     } finally {
       setBusy(false)
@@ -172,9 +209,7 @@ export function HexicalConsole() {
     <div className="flex h-screen w-full bg-background text-foreground overflow-hidden">
       
       {/* MOBILE OVERLAY SHADE */}
-      {isSidebarOpen && (
-        <div className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm md:hidden" onClick={() => setIsSidebarOpen(false)} />
-      )}
+      {isSidebarOpen && <div className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm md:hidden" onClick={() => setIsSidebarOpen(false)} />}
       
       {/* SIDEBAR CONTAINER */}
       <div className={`
@@ -192,12 +227,8 @@ export function HexicalConsole() {
             />
          ) : (
             <div className="flex flex-col items-center py-6 gap-6">
-                <button onClick={() => setIsSidebarOpen(true)} className="p-2 hover:bg-muted rounded-lg transition-colors">
-                    <Hexagon className="size-8 text-primary" />
-                </button>
-                <div className="size-10 rounded-full bg-muted/50 flex items-center justify-center border border-border">
-                    <UserCircle2 className="size-6 text-muted-foreground" />
-                </div>
+                <button onClick={() => setIsSidebarOpen(true)} className="p-2 hover:bg-muted rounded-lg transition-colors"><Hexagon className="size-8 text-primary" /></button>
+                <div className="size-10 rounded-full bg-muted/50 flex items-center justify-center border border-border"><UserCircle2 className="size-6 text-muted-foreground" /></div>
             </div>
          )}
       </div>
@@ -221,18 +252,18 @@ export function HexicalConsole() {
                 </button>
                 {isMenuOpen && (
                     <div className="absolute right-0 top-12 w-48 bg-card border border-border rounded-xl shadow-2xl p-2 z-[100] animate-in fade-in zoom-in-95 duration-100">
-                        <button className="flex w-full items-center gap-2 px-3 py-2 text-[11px] font-mono hover:bg-muted rounded">
+                        <button onClick={exportChat} className="flex w-full items-center gap-2 px-3 py-2 text-[11px] font-mono hover:bg-muted rounded">
                             <Download className="size-3" /> Export Chat
                         </button>
-                        <button className="flex w-full items-center gap-2 px-3 py-2 text-[11px] font-mono hover:bg-muted rounded">
-                            <Moon className="size-3" /> Toggle Theme
+                        <button onClick={toggleTheme} className="flex w-full items-center gap-2 px-3 py-2 text-[11px] font-mono hover:bg-muted rounded">
+                            {theme === 'dark' ? <Sun className="size-3" /> : <Moon className="size-3" />} Toggle Theme
                         </button>
-                        <button className="flex w-full items-center gap-2 px-3 py-2 text-[11px] font-mono hover:bg-muted rounded">
+                        <button onClick={() => alert('Settings menu coming soon')} className="flex w-full items-center gap-2 px-3 py-2 text-[11px] font-mono hover:bg-muted rounded">
                             <Settings className="size-3" /> Settings
                         </button>
                         <div className="h-px bg-border my-1" />
                         <button 
-                            onClick={() => { setChats([INITIAL_CHAT]); setActiveId('1'); setIsMenuOpen(false); }} 
+                            onClick={() => { setChats([INITIAL_CHAT]); setActiveId('1'); setIsMenuOpen(false); localStorage.removeItem('hexical_chats'); }} 
                             className="flex w-full items-center gap-2 px-3 py-2 text-[11px] font-mono text-red-500 hover:bg-red-500/10 rounded"
                         >
                             <Trash2 className="size-3" /> Clear All Sessions
