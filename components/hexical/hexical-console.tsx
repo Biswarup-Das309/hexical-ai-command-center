@@ -40,6 +40,7 @@ function getGreeting() {
 // -----------------------------------------------------------------------------
 
 export function HexicalConsole() {
+  
   const [chats, setChats] = useState<any[]>([INITIAL_CHAT])
   const [activeId, setActiveId] = useState('1')
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
@@ -151,6 +152,10 @@ export function HexicalConsole() {
     }
   };
 
+  // ---------------------------------------------------------------------------
+  // Optimized Submit Function (Optimistic Update)
+  // ---------------------------------------------------------------------------
+
   async function handleSubmit(logic: string) {
     const isAuthenticated = (await supabase.auth.getSession()).data.session !== null
     if (!isAuthenticated && !checkLimit()) {
@@ -159,11 +164,23 @@ export function HexicalConsole() {
       return
     }
     if (busy || !logic.trim()) return
+    
     const tsNow = () => new Date().toLocaleTimeString('en-GB', { hour12: false })
     const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
+    
+    // 1. Optimistic Update: Add user message immediately
     const userMsg: StreamMessage = { id: uid(), role: 'user', text: logic, ts: tsNow() }
+    
+    setChats(prev => prev.map(chat => {
+        if (chat.id === activeId) {
+            return { ...chat, messages: [...chat.messages, userMsg] }
+        }
+        return chat
+    }))
+
     abortControllerRef.current = new AbortController();
     setBusy(true)
+
     try {
       const res = await fetch('/api/verify', {
         method: 'POST',
@@ -172,21 +189,23 @@ export function HexicalConsole() {
         signal: abortControllerRef.current.signal 
       })
       const data: VerifyResponse = await res.json()
+      
       const hexMsg: StreamMessage = { 
         id: uid(), 
         role: 'hexical', 
-        text: data.analysis ?? '', 
+        text: data.analysis ?? 'SYSTEM: Response empty.', 
         steps: data.steps ?? [], 
         valid: Boolean(data.valid), 
         route: inferRoute(data.steps ?? []), 
         ts: tsNow() 
       }
+      
       setChats(prev => prev.map(chat => {
         if (chat.id === activeId) {
-          const newTitle = chat.messages.length === 1 
+          const newTitle = chat.messages.length <= 2 
             ? (logic.length > 22 ? logic.slice(0, 22) + '...' : logic) 
             : chat.title;
-          return { ...chat, title: newTitle, messages: [...chat.messages, userMsg, hexMsg] }
+          return { ...chat, title: newTitle, messages: [...chat.messages, hexMsg] }
         }
         return chat
       }))
@@ -195,7 +214,7 @@ export function HexicalConsole() {
       else {
           setChats(prev => prev.map(c => 
             c.id === activeId 
-              ? { ...c, messages: [...c.messages, userMsg, { id: uid(), role: 'error', text: 'MACHINE ERROR: Connection lost.', ts: tsNow(), steps: [], valid: false }] } 
+              ? { ...c, messages: [...c.messages, { id: uid(), role: 'error', text: 'MACHINE ERROR: Connection lost.', ts: tsNow(), steps: [], valid: false }] } 
               : c
           ))
       }
@@ -252,7 +271,6 @@ export function HexicalConsole() {
                <h2 className="text-3xl md:text-4xl font-sans mb-8 text-foreground">
                   {getGreeting()}, <span className="text-cyan text-glow-cyan">{userName}</span>.
                </h2>
-               {/* Applied glass and border-glow-cyan utilities here */}
                <div className="w-full shadow-2xl rounded-full border-glow-cyan glass p-2">
                    <CommandInput onSubmit={handleSubmit} busy={busy} onStop={handleStopGeneration} />
                </div>
