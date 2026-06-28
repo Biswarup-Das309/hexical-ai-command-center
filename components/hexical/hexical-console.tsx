@@ -42,7 +42,6 @@ export function HexicalConsole() {
     setIsMounted(true)
     const saved = localStorage.getItem('hexical_chats')
     if (saved) setChats(JSON.parse(saved))
-
     supabase.auth.getUser().then(({ data }) => {
       if (data.user) {
         const name = data.user.user_metadata.full_name?.split(' ')[0] || 'User'
@@ -56,6 +55,29 @@ export function HexicalConsole() {
   }, [chats, isMounted])
 
   const activeChat = chats.find(c => c.id === activeId) || chats[0]
+
+  // --- STABLE CHAT CREATION: Prevents duplicates ---
+  const handleNewChat = () => {
+      const existingEmptyChat = chats.find(c => c.messages.length === 1 && c.title === 'New Chat');
+      
+      if (existingEmptyChat) {
+          setActiveId(existingEmptyChat.id);
+          if (window.innerWidth < 768) setIsSidebarOpen(false);
+          return;
+      }
+
+      const newId = Date.now().toString();
+      const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+      const ts = () => new Date().toLocaleTimeString('en-GB', { hour12: false });
+      
+      setChats([{ 
+          id: newId, 
+          title: 'New Chat', 
+          messages: [{ id: uid(), role: 'hexical', text: 'SYSTEM ONLINE.', ts: ts(), steps: [], valid: true }] 
+      }, ...chats]);
+      setActiveId(newId);
+      if (window.innerWidth < 768) setIsSidebarOpen(false);
+  }
 
   async function handleGuestLogin() {
     const { error } = await supabase.auth.signInAnonymously()
@@ -110,28 +132,22 @@ export function HexicalConsole() {
   return (
     <div className="flex h-screen w-full bg-background text-foreground overflow-hidden">
       
-      {/* MOBILE OVERLAY */}
+      {/* MOBILE OVERLAY SHADE */}
       {isSidebarOpen && (
         <div className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm md:hidden" onClick={() => setIsSidebarOpen(false)} />
       )}
       
       {/* SIDEBAR */}
       <div className={`
-        z-50 border-r border-border bg-card transition-all duration-300 ease-in-out
-        ${isSidebarOpen ? 'w-64 translate-x-0 fixed md:relative h-full' : 'w-20 hidden md:flex md:flex-col'}
+        z-50 border-r border-border bg-card transition-all duration-300 ease-in-out flex flex-col h-full
+        ${isSidebarOpen ? 'w-64 translate-x-0 fixed md:relative' : 'w-20 hidden md:flex'}
       `}>
          {isSidebarOpen ? (
             <ChatSidebar 
                 chats={chats} 
                 activeId={activeId} 
                 onSelect={(id: string) => { setActiveId(id); if (window.innerWidth < 768) setIsSidebarOpen(false); }}
-                onNewChat={() => {
-                    const newId = Date.now().toString()
-                    const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
-                    const ts = () => new Date().toLocaleTimeString('en-GB', { hour12: false })
-                    setChats([{ id: newId, title: 'New Chat', messages: [{ id: uid(), role: 'hexical', text: 'SYSTEM ONLINE.', ts: ts(), steps: [], valid: true }] }, ...chats])
-                    setActiveId(newId)
-                }}
+                onNewChat={handleNewChat}
                 onClose={() => setIsSidebarOpen(false)}
             />
          ) : (
@@ -172,9 +188,6 @@ export function HexicalConsole() {
                <h2 className="text-2xl md:text-4xl font-semibold mb-3 text-foreground tracking-tight">
                  {getGreeting()}, {userName}.
                </h2>
-               <p className="text-muted-foreground font-mono text-xs uppercase tracking-widest mb-8">
-                 Awaiting logic verification
-               </p>
                <div className="w-full shadow-2xl rounded-2xl border border-muted/20 bg-background/50">
                  <CommandInput onSubmit={handleSubmit} busy={busy} />
                </div>
