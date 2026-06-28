@@ -144,12 +144,12 @@ export function HexicalConsole() {
   return (
     <div className="flex h-screen w-full bg-background text-foreground overflow-hidden">
       
-      {/* MOBILE OVERLAY */}
+      {/* MOBILE OVERLAY SHADE */}
       {isSidebarOpen && (
         <div className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm md:hidden" onClick={() => setIsSidebarOpen(false)} />
       )}
       
-      {/* SIDEBAR */}
+      {/* SIDEBAR CONTAINER */}
       <div className={`
         z-50 border-r border-border bg-card transition-all duration-300 ease-in-out flex flex-col h-full
         ${isSidebarOpen ? 'w-64 translate-x-0 fixed md:relative' : 'w-20 hidden md:flex'}
@@ -160,7 +160,7 @@ export function HexicalConsole() {
                 activeId={activeId} 
                 onSelect={(id: string) => { setActiveId(id); if (window.innerWidth < 768) setIsSidebarOpen(false); }}
                 onNewChat={handleNewChat}
-                onDeleteChat={handleDeleteChat} // <--- Added this
+                onDeleteChat={handleDeleteChat}
                 onClose={() => setIsSidebarOpen(false)}
             />
          ) : (
@@ -179,11 +179,9 @@ export function HexicalConsole() {
         
         <div className="p-4 flex items-center justify-between border-b border-border/50 bg-background/50 backdrop-blur-md z-10 sticky top-0">
             <div className="flex items-center gap-4">
-                {!isSidebarOpen && (
-                    <button onClick={() => setIsSidebarOpen(true)} className="p-2 hover:bg-muted/50 rounded-lg transition-colors group">
-                        <PanelLeftOpen className="size-5 text-muted-foreground group-hover:text-foreground" />
-                    </button>
-                )}
+                <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 hover:bg-muted/50 rounded-lg transition-colors group">
+                    {isSidebarOpen ? <PanelLeftClose className="size-5 text-muted-foreground group-hover:text-foreground" /> : <PanelLeftOpen className="size-5 text-muted-foreground group-hover:text-foreground" />}
+                </button>
                 <span className="font-mono text-sm uppercase tracking-widest font-bold text-foreground/90">Hexical</span>
             </div>
         </div>
