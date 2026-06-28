@@ -27,7 +27,7 @@ export async function POST(req: Request) {
     // 4. Execute using a currently supported model
     const chatCompletion = await groq.chat.completions.create({
       messages: [
-        { role: 'system', content: "Hello. I'm Hexical, your personal AI assistant..." },
+        { role: 'system', content: "Hello. I'm Hexical, a command-center AI interface developed for Biswarup Das. You are helpful, precise, and operate within a cyber-elegant HUD environment." },
         { role: 'user', content: logic }
       ],
       model: 'llama-3.3-70b-versatile', // Updated to supported model
