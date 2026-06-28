@@ -1,75 +1,86 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { HexicalConsole } from '@/components/hexical/hexical-console';
+import { useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { useRouter } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
 
-export default function Home() {
-  const [isChatStarted, setIsChatStarted] = useState(false);
-  const [userName, setUserName] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const router = useRouter();
+export default function LoginPage() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    // Check for active session on load
-    const checkUser = async () => {
-      const { data } = await supabase.auth.getSession();
-      if (data.session?.user) {
-        const fullName = data.session.user.user_metadata.full_name || 'User';
-        setUserName(fullName.split(' ')[0]);
-      } else {
-        setUserName('Guest');
-      }
-      setIsLoading(false);
-    };
+  const handleEmailLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
 
-    checkUser();
-  }, []);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    
+    if (error) {
+      setError(error.message);
+    } else {
+      window.location.assign('/'); // Hard redirect back to home on success
+    }
+    setLoading(false);
+  };
 
-  return (
-    <main className="min-h-screen bg-background text-foreground hud-grid scanlines">
-      {!isChatStarted ? (
-        /* Landing Page View */
-        <div className="h-screen w-full flex flex-col items-center justify-center animate-rise p-4">
-          <div className="text-center max-w-2xl mx-auto">
-            <h2 className="text-3xl md:text-5xl font-sans mb-8 text-foreground">
-              {isLoading ? (
-                <Loader2 className="animate-spin inline size-8" />
-              ) : (
-                <>
-                  Let's jump in, <span className="text-cyan text-glow-cyan">{userName || 'Guest'}</span>.
-                </>
-              )}
-            </h2>
-            
-            {/* Action Buttons */}
-            <div className="flex flex-col gap-4">
-              {/* Initialize Button */}
-              <div 
-                className="w-full shadow-2xl rounded-full border border-glow-cyan glass p-4 cursor-pointer hover:border-cyan-500 transition-all"
-                onClick={() => setIsChatStarted(true)}
-              >
-                <p className="text-muted-foreground text-center">Click here to initialize Hexical...</p>
-              </div>
+  const handleGoogleLogin = async () => {
+    setLoading(true);
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: `${window.location.origin}/auth/callback` }
+    });
+    if (error) setError(error.message);
+  };
 
-              {/* Conditional Auth Button */}
-              {!isLoading && userName === 'Guest' && (
-                <button 
-                  onClick={() => router.push('/login')}
-                  className="mt-4 text-sm text-cyan/70 hover:text-cyan transition-colors underline"
-                >
-                  Already have an account? Sign in.
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      ) : (
-        /* Chat Console View */
-        <HexicalConsole />
-      )}
-    </main>
-  );
+  return (
+    <main className="min-h-screen bg-background text-foreground flex items-center justify-center p-4 hud-grid scanlines">
+      <div className="w-full max-w-md p-8 rounded-2xl border border-glow-cyan bg-card/80 backdrop-blur-md shadow-2xl relative z-10">
+        <h1 className="text-3xl font-sans mb-6 text-center text-foreground">
+          Hexical <span className="text-cyan text-glow-cyan">Access</span>
+        </h1>
+        
+        {error && <p className="text-red-500 text-sm mb-4 text-center bg-red-500/10 p-2 rounded">{error}</p>}
+
+        <form onSubmit={handleEmailLogin} className="space-y-4">
+          <input
+            type="email"
+            placeholder="Email Address"
+            className="w-full p-3 rounded-lg bg-background border border-border focus:border-cyan outline-none transition-all font-mono text-sm"
+            onChange={(e) => setEmail(e.target.value)}
+            required
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            className="w-full p-3 rounded-lg bg-background border border-border focus:border-cyan outline-none transition-all font-mono text-sm"
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full p-3 rounded-lg bg-cyan text-background font-bold hover:bg-cyan/90 transition-all flex justify-center mt-2"
+          >
+            {loading ? <Loader2 className="animate-spin" /> : 'Initialize Session'}
+          </button>
+        </form>
+
+        <div className="my-6 flex items-center gap-4">
+          <div className="flex-1 h-px bg-border"></div>
+          <span className="text-muted-foreground text-xs font-mono">OR</span>
+          <div className="flex-1 h-px bg-border"></div>
+        </div>
+
+        <button
+          onClick={handleGoogleLogin}
+          disabled={loading}
+          className="w-full p-3 rounded-lg border border-border hover:border-cyan hover:text-cyan transition-all font-mono text-sm flex items-center justify-center gap-2"
+        >
+          {loading ? <Loader2 className="animate-spin size-4" /> : 'Continue with Google'}
+        </button>
+      </div>
+    </main>
+  );
 }
