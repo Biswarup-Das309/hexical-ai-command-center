@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { PanelLeftClose, PanelLeftOpen, UserCircle2, MoreVertical, Settings, Trash2, Download, Moon, Sun } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, UserCircle2, MoreVertical, Settings, Trash2, Download, Moon, Sun, Square } from 'lucide-react'
 import { HexicalLogo } from './hexical-logo'
 import { supabase } from '@/lib/supabase'
 import { useGuestLimit } from '@/hooks/use-guest-limit'
@@ -11,7 +11,7 @@ import { DataStream } from './data-stream'
 import { CommandInput } from './command-input'
 
 // -----------------------------------------------------------------------------
-// Constants & Helpers
+// Constants & Configuration
 // -----------------------------------------------------------------------------
 
 const INITIAL_CHAT = { 
@@ -36,11 +36,12 @@ function getGreeting() {
 }
 
 // -----------------------------------------------------------------------------
-// Main Component
+// Main Console Component
 // -----------------------------------------------------------------------------
 
 export function HexicalConsole() {
-  // State Management
+  
+  // --- STATE MANAGEMENT ---
   const [chats, setChats] = useState<any[]>([INITIAL_CHAT])
   const [activeId, setActiveId] = useState('1')
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
@@ -50,29 +51,30 @@ export function HexicalConsole() {
   const [isMounted, setIsMounted] = useState(false)
   const [theme, setTheme] = useState('dark')
   
-  // Refs for logic
+  // --- REFS ---
   const menuRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const abortControllerRef = useRef<AbortController | null>(null) // Used for stopping generations
   const { checkLimit } = useGuestLimit()
 
   // ---------------------------------------------------------------------------
-  // Effects: Initialization & Lifecycle
+  // EFFECT: Initialization & User Auth
   // ---------------------------------------------------------------------------
 
   useEffect(() => {
     setIsMounted(true)
     
-    // 1. Load Chats
+    // Load persisted chat state
     const savedChats = localStorage.getItem('hexical_chats')
     if (savedChats) {
       try {
         setChats(JSON.parse(savedChats))
-      } catch (e) {
-        console.error("Failed to parse chats", e)
+      } catch (err) {
+        console.error("Failed to restore chats:", err)
       }
     }
     
-    // 2. Load Theme
+    // Load theme preference
     const savedTheme = localStorage.getItem('hexical_theme')
     if (savedTheme === 'light') {
       setTheme('light')
@@ -82,7 +84,7 @@ export function HexicalConsole() {
       document.documentElement.classList.add('dark')
     }
     
-    // 3. Authenticate User
+    // Resolve user identity
     supabase.auth.getUser().then(({ data }) => {
       if (data.user) {
         const name = data.user.user_metadata.full_name?.split(' ')[0] || 'User'
@@ -91,6 +93,10 @@ export function HexicalConsole() {
     })
   }, [])
 
+  // ---------------------------------------------------------------------------
+  // EFFECT: State Persistence & Auto-Scroll
+  // ---------------------------------------------------------------------------
+
   // Sync Chats to LocalStorage
   useEffect(() => {
     if (isMounted) {
@@ -98,12 +104,12 @@ export function HexicalConsole() {
     }
   }, [chats, isMounted])
 
-  // Scroll to bottom when chats change
+  // Scroll to bottom on updates
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chats, activeId])
 
-  // Click outside listener for the menu
+  // Click-outside handler for global menu
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
@@ -115,7 +121,7 @@ export function HexicalConsole() {
   }, [])
 
   // ---------------------------------------------------------------------------
-  // Logic: Menu & Data Actions
+  // LOGIC: Global Actions
   // ---------------------------------------------------------------------------
 
   const toggleTheme = () => {
@@ -139,6 +145,14 @@ export function HexicalConsole() {
     
     URL.revokeObjectURL(url)
     setIsMenuOpen(false)
+  }
+
+  // --- STOP GENERATION ---
+  const handleStopGeneration = () => {
+    if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        setBusy(false);
+    }
   }
 
   const handleNewChat = () => {
@@ -177,11 +191,11 @@ export function HexicalConsole() {
   };
 
   // ---------------------------------------------------------------------------
-  // Logic: Submit & Processing
+  // LOGIC: Engine Transmission
   // ---------------------------------------------------------------------------
 
   async function handleSubmit(logic: string) {
-    // 1. Auth check
+    // Auth Check
     const isAuthenticated = (await supabase.auth.getSession()).data.session !== null
     if (!isAuthenticated && !checkLimit()) {
       localStorage.setItem('pending_draft', logic)
@@ -189,13 +203,15 @@ export function HexicalConsole() {
       return
     }
     
-    // 2. Validate input
+    // Validate Input
     if (busy || !logic.trim()) return
     
     const tsNow = () => new Date().toLocaleTimeString('en-GB', { hour12: false })
     const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
     const userMsg: StreamMessage = { id: uid(), role: 'user', text: logic, ts: tsNow() }
     
+    // Create new abort controller for this specific request
+    abortControllerRef.current = new AbortController();
     setBusy(true)
     
     try {
@@ -203,7 +219,9 @@ export function HexicalConsole() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ logic }),
+        signal: abortControllerRef.current.signal // Attach signal to fetch
       })
+      
       const data: VerifyResponse = await res.json()
       
       const hexMsg: StreamMessage = { 
@@ -218,7 +236,6 @@ export function HexicalConsole() {
       
       setChats(prev => prev.map(chat => {
         if (chat.id === activeId) {
-          // Truncate title logic
           const newTitle = chat.messages.length === 1 
             ? (logic.length > 22 ? logic.slice(0, 22) + '...' : logic) 
             : chat.title;
@@ -227,19 +244,24 @@ export function HexicalConsole() {
         }
         return chat
       }))
-    } catch {
-      setChats(prev => prev.map(c => 
-        c.id === activeId 
-          ? { ...c, messages: [...c.messages, userMsg, { id: uid(), role: 'error', text: 'MACHINE ERROR: Connection lost.', ts: tsNow(), steps: [], valid: false }] } 
-          : c
-      ))
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+          console.log("Generation interrupted by user.");
+      } else {
+          setChats(prev => prev.map(c => 
+            c.id === activeId 
+              ? { ...c, messages: [...c.messages, userMsg, { id: uid(), role: 'error', text: 'MACHINE ERROR: Connection lost.', ts: tsNow(), steps: [], valid: false }] } 
+              : c
+          ))
+      }
     } finally {
       setBusy(false)
+      abortControllerRef.current = null;
     }
   }
 
   // ---------------------------------------------------------------------------
-  // Render
+  // RENDER
   // ---------------------------------------------------------------------------
 
   if (!isMounted) return null
@@ -248,7 +270,7 @@ export function HexicalConsole() {
   return (
     <div className="flex h-screen w-full bg-background text-foreground overflow-hidden">
       
-      {/* Mobile Overlay */}
+      {/* Mobile Backdrop */}
       {isSidebarOpen && (
         <div 
           className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm md:hidden" 
@@ -256,45 +278,38 @@ export function HexicalConsole() {
         />
       )}
       
-      {/* Sidebar */}
+      {/* Sidebar Container */}
       <div className={`
-        z-50 border-r border-border bg-card transition-all duration-300 ease-in-out flex flex-col h-full
-        ${isSidebarOpen ? 'w-64 translate-x-0 fixed md:relative' : 'w-20 hidden md:flex'}
+        z-50 bg-card transition-all duration-300 ease-in-out flex flex-col h-full
+        ${isSidebarOpen ? 'w-64 border-r border-border' : 'w-0 border-none'}
       `}>
-         {isSidebarOpen ? (
-            <ChatSidebar 
-                chats={chats} 
-                activeId={activeId} 
-                onSelect={(id: string) => { setActiveId(id); if (window.innerWidth < 768) setIsSidebarOpen(false); }} 
-                onNewChat={handleNewChat} 
-                onDeleteChat={handleDeleteChat} 
-                onClose={() => setIsSidebarOpen(false)} 
-            />
-         ) : (
-            <div className="flex flex-col items-center py-6 gap-6">
-                <button onClick={() => setIsSidebarOpen(true)} className="p-2 hover:bg-muted rounded-lg transition-transform hover:scale-110 duration-300">
-                    <HexicalLogo className="size-8" />
-                </button>
-                <div className="size-10 rounded-full bg-muted/50 flex items-center justify-center border border-border">
-                    <UserCircle2 className="size-6 text-muted-foreground" />
-                </div>
-            </div>
-         )}
+         <div className="w-64 h-full">
+            {isSidebarOpen && (
+                <ChatSidebar 
+                    chats={chats} 
+                    activeId={activeId} 
+                    onSelect={(id: string) => { setActiveId(id); if (window.innerWidth < 768) setIsSidebarOpen(false); }} 
+                    onNewChat={handleNewChat} 
+                    onDeleteChat={handleDeleteChat} 
+                    onClose={() => setIsSidebarOpen(false)} 
+                />
+            )}
+         </div>
       </div>
 
-      {/* Main Content */}
+      {/* Main Content Area */}
       <main className="flex-1 flex flex-col relative transition-all duration-300 bg-gradient-to-b from-background to-background/80 min-w-0">
         
         {/* Header */}
-        <div className="p-4 flex items-center justify-between border-b border-border/50 bg-background/50 backdrop-blur-md z-10 sticky top-0">
+        <div className="p-4 flex items-center justify-between z-10 sticky top-0">
             <div className="flex items-center gap-4">
                 <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 hover:bg-muted/50 rounded-lg transition-colors group">
-                    {isSidebarOpen ? <PanelLeftClose className="size-5 text-muted-foreground group-hover:text-foreground" /> : <PanelLeftOpen className="size-5 text-muted-foreground group-hover:text-foreground" />}
+                    {isSidebarOpen ? <PanelLeftClose className="size-5 text-muted-foreground" /> : <PanelLeftOpen className="size-5 text-muted-foreground" />}
                 </button>
-                <span className="font-mono text-sm uppercase tracking-widest font-bold text-foreground/90">Hexical</span>
+                {!isSidebarOpen && <span className="font-mono text-sm uppercase tracking-widest font-bold text-foreground/90">Hexical</span>}
             </div>
             
-            {/* Action Menu */}
+            {/* Global Menu */}
             <div className="relative" ref={menuRef}>
                 <button onClick={() => setIsMenuOpen(!isMenuOpen)} className="p-2 hover:bg-muted/50 rounded-lg transition-colors">
                     <MoreVertical className="size-5 text-muted-foreground" />
@@ -323,7 +338,7 @@ export function HexicalConsole() {
             </div>
         </div>
 
-        {/* Chat Area */}
+        {/* Chat Interface */}
         <div className="flex-1 flex flex-col items-center justify-center overflow-hidden w-full relative p-4">
            {activeChat.messages.length <= 1 ? (
              <div className="w-full text-center max-w-lg mx-auto">
@@ -331,7 +346,8 @@ export function HexicalConsole() {
                    {getGreeting()}, {userName}.
                </h2>
                <div className="w-full shadow-2xl rounded-2xl border border-muted/20 bg-background/50">
-                   <CommandInput onSubmit={handleSubmit} busy={busy} />
+                   {/* Pass onStop prop */}
+                   <CommandInput onSubmit={handleSubmit} busy={busy} onStop={handleStopGeneration} />
                </div>
              </div>
            ) : (
@@ -342,7 +358,7 @@ export function HexicalConsole() {
                </div>
                <div className="pb-6 px-4 pt-2 bg-gradient-to-t from-background via-background/95 to-transparent">
                    <div className="shadow-xl rounded-2xl border border-muted/20 bg-background/80 backdrop-blur-md">
-                       <CommandInput onSubmit={handleSubmit} busy={busy} />
+                       <CommandInput onSubmit={handleSubmit} busy={busy} onStop={handleStopGeneration} />
                    </div>
                </div>
              </div>
