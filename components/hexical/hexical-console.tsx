@@ -553,36 +553,70 @@ export function HexicalConsole() {
     const token = await session?.getToken();
     return createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { global: { headers: { Authorization: token ? `Bearer ${token}` : "" } } })
   }, [session])
+  const syncToCloud = useCallback(async (updatedChats: any[]) => {
+    if (!user || stealthMode) return;
+    const client = await getAuthenticatedClient();
+    if (!client) return;
+    
+    const activeChat = updatedChats.find(c => c.id === activeId);
+    if (activeChat) {
+      const { error } = await client.from('chats').upsert({
+        id: activeChat.id,
+        user_id: user.id,
+        title: activeChat.title,
+        messages: activeChat.messages,
+        pinned: activeChat.pinned,
+        updated_at: new Date().toISOString()
+      });
+      if (error) logToTerminal(`[DB_ERR] Sync: ${error.message}`);
+    }
+  }, [user, stealthMode, activeId, getAuthenticatedClient, logToTerminal]);
 
   const handleNewChat = useCallback(async () => {
-    const existingEmptyChat = chats.find(c => c.messages.length <= 1);
-    if (existingEmptyChat) { setActiveId(existingEmptyChat.id); setActiveTraceMessage(null); return; }
-    const newId = generateUniqueID()
-    const newChat = { id: newId, title: 'New Context', pinned: false, messages: [{ id: generateUniqueID(), role: 'hexical', text: 'HEXICAL KERNEL ONLINE. SECURE PROTOCOLS ENGAGED. AWAITING TARGET VECTORS.', ts: generateTimestamp(), steps: [], valid: true }] }
-    setChats(prev => [newChat, ...prev]); setActiveId(newId); setActiveTraceMessage(null); setExtractedTargets([]); setActiveGraph({nodes:[], edges:[]});
-    logToTerminal(`[SYSTEM] Initialized isolated namespace: ${newId}`);
+    // 1. Check for existing empty chat to prevent duplication
+    const existing = chats.find(c => c.messages.length <= 1);
+    if (existing) { setActiveId(existing.id); setActiveTraceMessage(null); return; }
 
+    // 2. Prepare new chat state
+    const newChat = { 
+        id: generateUniqueID(), 
+        title: 'New Context', 
+        pinned: false, 
+        messages: [{ id: generateUniqueID(), role: 'hexical', text: 'KERNEL READY.', ts: generateTimestamp(), steps: [], valid: true }] 
+    };
+
+    // 3. Update state locally FIRST
+    const next = [newChat, ...chats];
+    setChats(next);
+    setActiveId(newChat.id);
+    setActiveTraceMessage(null); 
+    setExtractedTargets([]); 
+    setActiveGraph({nodes:[], edges:[]});
+    
+    // 4. Await the cloud sync (This fixes the "sync loss" problem)
+    await syncToCloud(next); 
+    logToTerminal(`[SYSTEM] Initialized secure context: ${newChat.id}`);
+}, [chats, syncToCloud, logToTerminal]);
+
+ const handleDelete = useCallback(async (id: string) => {
+    // 1. Calculate the next state first
+    const next = chats.filter(c => c.id !== id);
+    
+    // 2. Perform the deletion in the database AWAITING completion
     if (user && !stealthMode) {
-      const supabaseAuth = await getAuthenticatedClient();
-      await supabaseAuth.from('chats').upsert({ id: newChat.id, user_id: user.id, title: newChat.title, messages: newChat.messages, pinned: newChat.pinned, updated_at: new Date().toISOString() });
+        const client = await getAuthenticatedClient();
+        await client?.from('chats').delete().eq('id', id);
+        logToTerminal(`[DB] Cryptographic purge of workspace data: ${id}`);
     }
-  }, [chats, user, stealthMode, getAuthenticatedClient, logToTerminal])
 
-  const handleDelete = useCallback(async (id: string) => {
-    setChats(prev => {
-      const filtered = prev.filter(c => c.id !== id)
-      if (filtered.length === 0) {
-        const newId = generateUniqueID(); setActiveId(newId);
-        const emptyChat = { id: newId, title: 'New Context', pinned: false, messages: [] };
-        if (user && !stealthMode) { getAuthenticatedClient().then(auth => auth.from('chats').upsert({ id: emptyChat.id, user_id: user.id, title: emptyChat.title, messages: emptyChat.messages, pinned: emptyChat.pinned, updated_at: new Date().toISOString() })); }
-        return [emptyChat]
-      }
-      if (activeId === id) setActiveId(filtered[0].id)
-      return filtered
-    })
-    logToTerminal(`[DB] Cryptographic purge of workspace data: ${id}`);
-    if (user && !stealthMode) { const supabaseAuth = await getAuthenticatedClient(); await supabaseAuth.from('chats').delete().eq('id', id); }
-  }, [activeId, user, stealthMode, getAuthenticatedClient, logToTerminal])
+    // 3. Update UI state after DB deletion is confirmed
+    if (next.length === 0) {
+        handleNewChat(); // Forces a clean reset if last chat is deleted
+    } else {
+        setChats(next);
+        if (activeId === id) setActiveId(next[0].id);
+    }
+}, [chats, activeId, user, stealthMode, getAuthenticatedClient, handleNewChat, logToTerminal]);
 
   // ---------------------------------------------------------------------------
   // LIFECYCLE HOOKS
