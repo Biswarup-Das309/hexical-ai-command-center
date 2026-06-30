@@ -1,705 +1,858 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { 
   Loader2, Terminal, ShieldAlert, Eye, Code, Crosshair, ChevronDown, Check, 
   FolderGit2, Command, Activity, Sparkles, X, Globe, CheckCircle, AlertTriangle, 
   Database, Settings, Download, Trash2, Cpu, Timer, ShieldCheck, FileJson, 
   ToggleRight, ToggleLeft, UserCircle, SlidersHorizontal, Lock, BookOpen,
-  Ghost, Webhook, Key, TerminalSquare, Target, Fingerprint, Regex, FileCode2, Flame
+  Ghost, Webhook, Key, TerminalSquare, Target, Fingerprint, Regex, FileCode2, Flame,
+  Network, Server, Radio, ScanLine, LayoutDashboard, Zap, SearchCode,
+  GitMerge, Shield, ShieldOff, CpuIcon, Hash, Layers, Bug, Workflow,
+  FileText, Copy, ArrowRight, ServerCrash, Binary, RefreshCw
 } from 'lucide-react'
 import { HexicalLogo } from '@/components/hexical/hexical-logo'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@supabase/supabase-js'
 import { useGuestLimit } from '@/hooks/use-guest-limit'
-import { inferRoute, type StreamMessage, type VerifyResponse } from '@/lib/hexical-types'
+import { inferRoute, type StreamMessage } from '@/lib/hexical-types'
 import { ChatSidebar } from '@/components/hexical/chat-sidebar'
 import { DataStream } from '@/components/hexical/data-stream'
 import { CommandInput } from '@/components/hexical/command-input'
 import { UpgradeModal } from '@/components/hexical/upgrade-modal'
+import { useUser, useClerk, useSession } from '@clerk/nextjs'
 
-// Clerk hooks for authentication
-import { useUser, useClerk } from '@clerk/nextjs'
+// =============================================================================
+// 1. EXTENDED TYPES & INTERFACES (NEXT-GEN ARCHITECTURE)
+// =============================================================================
+type ViewMode = 'chat' | 'recon' | 'payloads' | 'terminal' | 'graph' | 'cvss' | 'bounty' | 'ast';
+type AccentTheme = 'cyan' | 'emerald' | 'rose' | 'violet' | 'amber';
+type EncodingType = 'base64' | 'url' | 'hex' | 'rot13' | 'unicode';
 
-// -----------------------------------------------------------------------------
-// EXTENDED TYPES FOR ADVANCED TRACE INSPECTOR & SETTINGS
-// -----------------------------------------------------------------------------
-interface TraceSource {
-  name: string;
-  verified: boolean;
-  type?: 'database' | 'web' | 'heuristic';
-}
-
-interface TraceMetrics {
-  latencyMs: number;
-  tokensUsed: number;
-  confidenceScore: number;
-}
-
+interface TraceSource { name: string; verified: boolean; type?: 'database' | 'web' | 'heuristic'; }
+interface TraceMetrics { latencyMs: number; tokensUsed: number; confidenceScore: number; }
 interface ExtendedStreamMessage extends StreamMessage {
   sources?: TraceSource[];
   isVerifiedContent?: boolean;
   metrics?: TraceMetrics;
+  swarmConsensus?: SwarmEvaluation;
+  graphData?: AttackGraph;
 }
 
-// -----------------------------------------------------------------------------
-// CONFIGURATIONS & CONSTANTS
-// -----------------------------------------------------------------------------
+interface SwarmEvaluation {
+  redTeam: { confidence: number; logic: string; payloadSuggested: string };
+  blueTeam: { mitigation: string; blockedBy: string[]; riskLevel: 'LOW' | 'MED' | 'HIGH' | 'CRITICAL' };
+  architect: { route: string; architecturalFlaw: string };
+  finalConsensus: boolean;
+}
 
+interface GraphNode { id: string; label: string; type: 'entry' | 'vuln' | 'pivot' | 'impact'; x: number; y: number; }
+interface GraphEdge { source: string; target: string; label: string; }
+interface AttackGraph { nodes: GraphNode[]; edges: GraphEdge[]; }
+
+type MetricValue = { id: string; label: string; weight: number; desc: string };
+type CVSSMetrics = {
+  AV: MetricValue[]; AC: MetricValue[]; PR: MetricValue[]; UI: MetricValue[]; 
+  S: MetricValue[]; C: MetricValue[]; I: MetricValue[]; A: MetricValue[];
+};
+
+// =============================================================================
+// 2. CONSTANTS, DICTIONARIES & CONFIGURATIONS
+// =============================================================================
 const DEFAULT_GUEST_NAME = 'Guest'
 const DEFAULT_GUEST_EMAIL = 'guest@hexical.ai'
 
 const INITIAL_CHAT_STATE = { 
-  id: '1', 
-  title: 'New Chat', 
-  pinned: false,
-  messages: [{ 
-    id: 'init', 
-    role: 'hexical', 
-    text: 'SYSTEM ONLINE. AWAITING TARGET ASSIGNMENT.', 
-    ts: '00:00', 
-    steps: [], 
-    valid: true 
-  }] 
+  id: '1', title: 'New Context', pinned: false,
+  messages: [{ id: 'init', role: 'hexical', text: 'HEXICAL KERNEL ONLINE. SECURE PROTOCOLS ENGAGED. AWAITING TARGET VECTORS.', ts: '00:00', steps: [], valid: true }] 
+}
+
+const THEME_MAP: Record<AccentTheme, { border: string, text: string, bg: string, glow: string, accent: string }> = {
+  cyan: { border: 'border-cyan-500/20', text: 'text-cyan-400', bg: 'bg-cyan-500/10', glow: 'shadow-cyan-950/20', accent: 'cyan' },
+  emerald: { border: 'border-emerald-500/20', text: 'text-emerald-400', bg: 'bg-emerald-500/10', glow: 'shadow-emerald-950/20', accent: 'emerald' },
+  rose: { border: 'border-rose-500/20', text: 'text-rose-400', bg: 'bg-rose-500/10', glow: 'shadow-rose-950/20', accent: 'rose' },
+  violet: { border: 'border-violet-500/20', text: 'text-violet-400', bg: 'bg-violet-500/10', glow: 'shadow-violet-950/20', accent: 'violet' },
+  amber: { border: 'border-amber-500/20', text: 'text-amber-400', bg: 'bg-amber-500/10', glow: 'shadow-amber-950/20', accent: 'amber' }
 }
 
 const SECURITY_PROFILES = [
-  { id: 'tutor', name: 'AI Tutor', description: 'Plain English explanations for beginners', icon: BookOpen, color: 'text-purple-400' },
-  { id: 'code-reviewer', name: 'Code Reviewer', description: 'Standard practices & optimization', icon: Code, color: 'text-blue-400' },
-  { id: 'bug-hunter', name: 'Bug Hunter', description: 'Aggressive High/Critical exploit scanning', icon: Crosshair, color: 'text-rose-400' },
-  { id: 'defense-in-depth', name: 'Defense in Depth', description: 'Architectural & logic flaw analysis', icon: ShieldAlert, color: 'text-emerald-400' }
+  { id: 'swarm', name: 'Swarm Intelligence', description: 'Multi-agent Red/Blue team consensus', icon: GitMerge, color: 'text-amber-400' },
+  { id: 'recon', name: 'Recon Engine', description: 'Attack surface mapping & enumeration', icon: Network, color: 'text-emerald-400' },
+  { id: 'bug-hunter', name: 'Exploit Architect', description: 'Weaponized PoC generation (HackerOne optimized)', icon: Crosshair, color: 'text-rose-400' },
+  { id: 'defense', name: 'Defense Matrix', description: 'WAF rules & code patch generation', icon: Shield, color: 'text-cyan-400' }
 ]
 
 const WORKSPACES = [
-  { id: 'global', name: 'Global Environment' },
-  { id: 'frontend', name: 'Frontend Repository' },
-  { id: 'backend', name: 'Backend Services / API' }
+  { id: 'global', name: 'Global Namespace' }, 
+  { id: 'cloud', name: 'Cloud Infrastructure (AWS/GCP)' }, 
+  { id: 'web', name: 'Web Application (React/Next.js)' }, 
+  { id: 'binary', name: 'Compiled Binary / Memory' },
+  { id: 'appsec', name: 'AppSec (Java / C++)' }
 ]
 
 const PROCESSING_PHASES = [
-  "Initializing security sandbox...",
-  "Parsing Abstract Syntax Trees (AST)...",
-  "Tracing data flow & variable states...",
-  "Cross-referencing CVE database...",
-  "Simulating execution paths...",
-  "Finalizing logic trace..."
+  "Spawning isolated WebContainer...", "Injecting pre-flight heuristic hooks...",
+  "Compiling AST & Control Flow Graphs...", "Fuzzing input interpolations...",
+  "Deploying Red Team Agent...", "Deploying Blue Team Agent...",
+  "Negotiating exploit feasibility...", "Generating Attack SVG Maps..."
 ]
 
-function getContextualGreeting(): string {
-  const h = new Date().getHours()
-  if (h >= 5 && h < 12) return 'Good morning'
-  if (h >= 12 && h < 17) return 'Good afternoon'
-  if (h >= 17 && h < 22) return 'Good evening'
-  return 'Working late'
+const CVSS_DEF: CVSSMetrics = {
+  AV: [{ id: 'N', label: 'Network', weight: 0.85, desc: 'Exploitable remotely' }, { id: 'A', label: 'Adjacent', weight: 0.62, desc: 'Local network only' }, { id: 'L', label: 'Local', weight: 0.55, desc: 'Requires OS access' }, { id: 'P', label: 'Physical', weight: 0.2, desc: 'Requires physical access' }],
+  AC: [{ id: 'L', label: 'Low', weight: 0.77, desc: 'No special conditions' }, { id: 'H', label: 'High', weight: 0.44, desc: 'Requires specific conditions' }],
+  PR: [{ id: 'N', label: 'None', weight: 0.85, desc: 'No auth required' }, { id: 'L', label: 'Low', weight: 0.62, desc: 'Basic user access' }, { id: 'H', label: 'High', weight: 0.27, desc: 'Admin access required' }],
+  UI: [{ id: 'N', label: 'None', weight: 0.85, desc: 'No user interaction' }, { id: 'R', label: 'Required', weight: 0.62, desc: 'Requires victim action' }],
+  S:  [{ id: 'U', label: 'Unchanged', weight: 0.0, desc: 'Only impacts vulnerable component' }, { id: 'C', label: 'Changed', weight: 0.0, desc: 'Impacts other components' }],
+  C:  [{ id: 'H', label: 'High', weight: 0.56, desc: 'Total info disclosure' }, { id: 'L', label: 'Low', weight: 0.22, desc: 'Partial disclosure' }, { id: 'N', label: 'None', weight: 0.0, desc: 'No loss' }],
+  I:  [{ id: 'H', label: 'High', weight: 0.56, desc: 'Total compromise' }, { id: 'L', label: 'Low', weight: 0.22, desc: 'Partial modification' }, { id: 'N', label: 'None', weight: 0.0, desc: 'No loss' }],
+  A:  [{ id: 'H', label: 'High', weight: 0.56, desc: 'Total DoS' }, { id: 'L', label: 'Low', weight: 0.22, desc: 'Partial DoS' }, { id: 'N', label: 'None', weight: 0.0, desc: 'No loss' }]
+};
+
+// =============================================================================
+// 3. UTILITY ENGINES (CRYPTO, PARSING, MATH, ENCODING)
+// =============================================================================
+function generateTimestamp(): string { return new Date().toLocaleTimeString('en-GB', { hour12: false, fractionalSecondDigits: 2 }) }
+function generateUniqueID(): string { return crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15); }
+
+function encodePayload(payload: string, type: EncodingType): string {
+  try {
+    switch (type) {
+      case 'base64': return btoa(payload);
+      case 'url': return encodeURIComponent(payload);
+      case 'hex': return Array.from(payload).map(c => c.charCodeAt(0).toString(16)).join('');
+      case 'rot13': return payload.replace(/[a-zA-Z]/g, c => {
+        const code = c.charCodeAt(0);
+        const shifted = code + 13;
+        return String.fromCharCode((c <= 'Z' ? 90 : 122) >= shifted ? shifted : shifted - 26);
+      });
+      case 'unicode': return Array.from(payload).map(c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')).join('');
+      default: return payload;
+    }
+  } catch (e) { return "ENCODING_ERROR"; }
 }
 
-function generateTimestamp(): string { return new Date().toLocaleTimeString('en-GB', { hour12: false }) }
-function generateUniqueID(): string { return Math.random().toString(36).slice(2) + Date.now().toString(36) }
+function sanitizeLocalPayload(text: string, isActive: boolean): string {
+  if (!isActive) return text;
+  let s = text.replace(/\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g, '[REDACTED_IPv4]');
+  s = s.replace(/(eyJ[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,})/g, '[REDACTED_JWT]');
+  s = s.replace(/(?:api_key|access_token|secret_key|password)[=:\s]*(["']?)[a-zA-Z0-9_\-]{16,}\1/gi, '[REDACTED_SECRET]');
+  s = s.replace(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|org|net|io|gov|edu|ai|app)\b/gi, '[REDACTED_DOMAIN]');
+  return s;
+}
 
-// -----------------------------------------------------------------------------
-// MAIN COMPONENT
-// -----------------------------------------------------------------------------
+const extractTargetsFromLogic = (text: string): string[] => {
+  const ipRegex = /\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g;
+  const domainRegex = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|org|net|io|gov|edu|ai|app|local)\b/gi;
+  return Array.from(new Set([...(text.match(ipRegex) || []), ...(text.match(domainRegex) || [])])).slice(0, 8);
+}
 
+const parseAttackGraph = (logic: string): AttackGraph => {
+  const isWeb = logic.includes('xss') || logic.includes('sql') || logic.includes('http');
+  if (isWeb) {
+    return {
+      nodes: [
+        { id: '1', label: 'HTTP Request', type: 'entry', x: 50, y: 150 },
+        { id: '2', label: 'WAF Bypass', type: 'pivot', x: 200, y: 80 },
+        { id: '3', label: 'Input Interpolation', type: 'vuln', x: 200, y: 220 },
+        { id: '4', label: 'Database Execution', type: 'impact', x: 380, y: 150 }
+      ],
+      edges: [ { source: '1', target: '2', label: 'Obfuscation' }, { source: '1', target: '3', label: 'Raw Injection' }, { source: '2', target: '4', label: 'Execution' }, { source: '3', target: '4', label: 'Execution' } ]
+    };
+  }
+  return {
+    nodes: [
+      { id: '1', label: 'External Attack Surface', type: 'entry', x: 50, y: 150 },
+      { id: '2', label: 'Service Enumeration', type: 'pivot', x: 200, y: 150 },
+      { id: '3', label: 'Privilege Escalation', type: 'impact', x: 380, y: 150 }
+    ],
+    edges: [ { source: '1', target: '2', label: 'Scan' }, { source: '2', target: '3', label: 'Exploit' } ]
+  };
+}
+
+// =============================================================================
+// 4. SUB-COMPONENTS (CVSS, TERMINAL, BOUNTY, AST, PAYLOADS, GRAPH)
+// =============================================================================
+
+const CVSSCalculator = ({ theme }: { theme: AccentTheme }) => {
+  const [vector, setVector] = useState<Record<string, string>>({ AV: 'N', AC: 'L', PR: 'N', UI: 'N', S: 'U', C: 'H', I: 'H', A: 'H' });
+  
+  const calculateScore = () => {
+    let iss = 1 - ((1 - (CVSS_DEF.C.find(v=>v.id===vector.C)?.weight||0)) * (1 - (CVSS_DEF.I.find(v=>v.id===vector.I)?.weight||0)) * (1 - (CVSS_DEF.A.find(v=>v.id===vector.A)?.weight||0)));
+    let impact = vector.S === 'U' ? 6.42 * iss : 7.52 * (iss - 0.029) - 3.25 * Math.pow((iss - 0.02), 15);
+    let prWeight = CVSS_DEF.PR.find(v=>v.id===vector.PR)?.weight || 0;
+    if (vector.S === 'C' && vector.PR === 'L') prWeight = 0.68;
+    if (vector.S === 'C' && vector.PR === 'H') prWeight = 0.50;
+    let expl = 8.22 * (CVSS_DEF.AV.find(v=>v.id===vector.AV)?.weight||0) * (CVSS_DEF.AC.find(v=>v.id===vector.AC)?.weight||0) * prWeight * (CVSS_DEF.UI.find(v=>v.id===vector.UI)?.weight||0);
+    
+    if (impact <= 0) return 0.0;
+    let base = vector.S === 'U' ? Math.min(impact + expl, 10) : Math.min(1.08 * (impact + expl), 10);
+    return Math.ceil(base * 10) / 10;
+  };
+
+  const score = calculateScore();
+  const severity = score === 0 ? 'NONE' : score < 4.0 ? 'LOW' : score < 7.0 ? 'MEDIUM' : score < 9.0 ? 'HIGH' : 'CRITICAL';
+  const sevColor = severity === 'CRITICAL' ? 'text-rose-500' : severity === 'HIGH' ? 'text-amber-500' : severity === 'MEDIUM' ? 'text-yellow-400' : 'text-emerald-500';
+
+  return (
+    <div className="flex-1 w-full h-full p-6 flex flex-col font-sans bg-[#0a0a0c] overflow-y-auto scrollbar-thin scrollbar-thumb-white/10">
+      <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-8 gap-4">
+        <div className="flex items-center gap-3"><Hash className={`size-6 ${THEME_MAP[theme].text}`} /><h2 className="text-2xl font-medium text-white tracking-tight">CVSS 3.1 Calculator</h2></div>
+        <div className={`flex items-center gap-4 px-6 py-3 rounded-2xl border ${THEME_MAP[theme].border} bg-black/50 shadow-2xl`}>
+          <div className="flex flex-col items-end"><span className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Base Score</span><span className={`text-3xl font-bold font-mono ${sevColor}`}>{score.toFixed(1)}</span></div>
+          <div className={`h-10 w-px bg-white/10`}></div>
+          <div className={`px-3 py-1 rounded text-xs font-bold tracking-widest ${sevColor} bg-white/5 border border-current`}>{severity}</div>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+        <div className="space-y-6">
+          <h3 className="text-sm uppercase tracking-widest text-zinc-500 font-bold border-b border-white/5 pb-2">Exploitability Metrics</h3>
+          {['AV', 'AC', 'PR', 'UI'].map((metric) => (
+            <div key={metric} className="space-y-2">
+              <label className="text-xs font-semibold text-zinc-300">{metric === 'AV' ? 'Attack Vector' : metric === 'AC' ? 'Attack Complexity' : metric === 'PR' ? 'Privileges Required' : 'User Interaction'}</label>
+              <div className="flex flex-wrap gap-2">
+                {CVSS_DEF[metric as keyof CVSSMetrics].map(val => (
+                  <button key={val.id} onClick={() => setVector(p => ({...p, [metric]: val.id}))} title={val.desc} className={`flex-1 min-w-[80px] px-3 py-2 rounded-lg text-xs font-medium transition-all ${vector[metric] === val.id ? `${THEME_MAP[theme].bg} ${THEME_MAP[theme].text} border ${THEME_MAP[theme].border}` : 'bg-[#111116] text-zinc-500 border border-white/5 hover:bg-white/5 hover:text-zinc-300'}`}>{val.label}</button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="space-y-6">
+          <h3 className="text-sm uppercase tracking-widest text-zinc-500 font-bold border-b border-white/5 pb-2">Impact Metrics</h3>
+          {['S', 'C', 'I', 'A'].map((metric) => (
+            <div key={metric} className="space-y-2">
+              <label className="text-xs font-semibold text-zinc-300">{metric === 'S' ? 'Scope' : metric === 'C' ? 'Confidentiality' : metric === 'I' ? 'Integrity' : 'Availability'}</label>
+              <div className="flex flex-wrap gap-2">
+                {CVSS_DEF[metric as keyof CVSSMetrics].map(val => (
+                  <button key={val.id} onClick={() => setVector(p => ({...p, [metric]: val.id}))} title={val.desc} className={`flex-1 min-w-[80px] px-3 py-2 rounded-lg text-xs font-medium transition-all ${vector[metric] === val.id ? `${THEME_MAP[theme].bg} ${THEME_MAP[theme].text} border ${THEME_MAP[theme].border}` : 'bg-[#111116] text-zinc-500 border border-white/5 hover:bg-white/5 hover:text-zinc-300'}`}>{val.label}</button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="mt-8 p-4 rounded-xl bg-[#111116] border border-white/5 font-mono text-xs text-zinc-400 text-center flex items-center justify-between">
+        <span>Vector String: <span className="text-white">CVSS:3.1/{Object.entries(vector).map(([k, v]) => `${k}:${v}`).join('/')}</span></span>
+        <button className="px-3 py-1 bg-white/10 hover:bg-white/20 rounded text-white flex items-center gap-2"><Copy size={12}/> Copy Vector</button>
+      </div>
+    </div>
+  )
+}
+
+const BugBountyForge = ({ theme, targets }: { theme: AccentTheme, targets: string[] }) => {
+  const defaultTarget = targets.length > 0 ? targets[0] : 'vulnerable-domain.com';
+  const [report, setReport] = useState(`## Summary\nAn unauthenticated Information Disclosure vulnerability was discovered in ${defaultTarget}...\n\n## Description\nDue to improper access controls on the REST API endpoint, sensitive metadata is exposed.\n\n## Steps To Reproduce\n1. Run \`curl -X GET https://${defaultTarget}/api/v1/metadata\`\n2. Observe the leaked tokens in the JSON response.\n\n## Impact\nAttackers can leverage these tokens to pivot into the internal network.`);
+
+  return (
+    <div className="flex-1 w-full h-full p-6 flex flex-col font-sans bg-[#0a0a0c]">
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-3"><FileText className={`size-6 ${THEME_MAP[theme].text}`} /><h2 className="text-2xl font-medium text-white tracking-tight">Bug Bounty Forge</h2></div>
+        <div className="flex gap-2">
+           <button className="bg-[#111116] border border-white/10 text-white px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-wider hover:bg-white/5">HackerOne Format</button>
+           <button className="bg-[#111116] border border-white/10 text-white px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-wider hover:bg-white/5">Bugcrowd Format</button>
+        </div>
+      </div>
+      <div className="flex-1 bg-[#111116] border border-white/10 rounded-2xl flex flex-col overflow-hidden shadow-inner">
+        <div className="bg-zinc-950 border-b border-white/5 p-3 flex items-center gap-4 text-xs font-mono text-zinc-400">
+          <span className="flex items-center gap-2"><Crosshair size={14} className={THEME_MAP[theme].text}/> Target: <input type="text" defaultValue={defaultTarget} className="bg-transparent text-white outline-none border-b border-white/20 px-1 w-48"/></span>
+          <span className="flex items-center gap-2"><Bug size={14} className="text-rose-400"/> Severity: <select className="bg-transparent text-white outline-none border-b border-white/20"><option>Critical</option><option>High</option><option>Medium</option></select></span>
+        </div>
+        <textarea value={report} onChange={(e) => setReport(e.target.value)} className="flex-1 bg-transparent p-6 text-zinc-300 font-mono text-sm outline-none resize-none scrollbar-thin scrollbar-thumb-white/10" spellCheck="false" />
+      </div>
+    </div>
+  )
+}
+
+const AdvancedTerminal = ({ logs, theme, onCommand }: { logs: string[], theme: AccentTheme, onCommand: (cmd: string) => void }) => {
+  const endRef = useRef<HTMLDivElement>(null);
+  const [input, setInput] = useState('');
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [logs]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && input.trim()) { onCommand(input); setInput(''); }
+  }
+
+  return (
+    <div className="flex-1 w-full h-full p-6 flex flex-col bg-[#0a0a0c]">
+       <div className="flex items-center justify-between mb-6">
+         <div className="flex items-center gap-3"><TerminalSquare className={`size-6 ${THEME_MAP[theme].text}`} /><h2 className="text-2xl font-sans font-medium text-white tracking-tight">Advanced TTY Sandbox</h2></div>
+         <span className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-3 py-1 rounded text-[10px] font-mono uppercase tracking-widest flex items-center gap-2"><div className="size-2 bg-emerald-500 rounded-full animate-pulse"/> root@kali-sandbox</span>
+      </div>
+      <div className="flex-1 bg-[#050505] border border-white/10 rounded-2xl overflow-hidden flex flex-col font-mono text-[13px] shadow-2xl">
+        <div className="flex-1 p-5 overflow-y-auto space-y-1.5 scrollbar-thin scrollbar-thumb-white/10">
+          {logs.map((log, i) => (
+            <div key={i} className="flex items-start gap-3">
+              <span className={`shrink-0 ${THEME_MAP[theme].text} opacity-50`}>[{generateTimestamp()}]</span>
+              <span className={log.includes('WARN') || log.includes('403') || log.includes('401') ? 'text-amber-400' : log.includes('ERR') || log.includes('CRITICAL') ? 'text-rose-400' : log.includes('SUCCESS') || log.includes('200 OK') ? 'text-emerald-400' : log.startsWith('$') ? 'text-white font-bold' : 'text-zinc-300 leading-relaxed break-all whitespace-pre-wrap'}>
+                {log}
+              </span>
+            </div>
+          ))}
+          <div ref={endRef} />
+        </div>
+        <div className="border-t border-white/10 bg-[#0a0a0c] p-3 flex items-center gap-3">
+          <span className={`${THEME_MAP[theme].text} font-bold`}>root@hexical:~#</span>
+          <input type="text" value={input} onChange={e=>setInput(e.target.value)} onKeyDown={handleKeyDown} className="flex-1 bg-transparent outline-none text-white placeholder:text-zinc-700" placeholder="nmap -sC -sV target.local..." autoFocus />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const AttackGraphVisualizer = ({ graph, theme }: { graph: AttackGraph, theme: AccentTheme }) => {
+  return (
+    <div className="flex-1 w-full h-full p-6 flex flex-col bg-[#0a0a0c]">
+      <div className="flex items-center justify-between mb-6">
+         <div className="flex items-center gap-3"><Workflow className={`size-6 ${THEME_MAP[theme].text}`} /><h2 className="text-2xl font-sans font-medium text-white tracking-tight">Attack Path Topology</h2></div>
+         <button className="flex items-center gap-2 text-xs font-mono text-zinc-400 hover:text-white bg-white/5 px-3 py-1.5 rounded"><RefreshCw size={12}/> Redraw Graph</button>
+      </div>
+      <div className="flex-1 border border-white/10 rounded-2xl bg-[#111116] relative overflow-hidden shadow-inner">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-white/[0.03] to-transparent bg-[length:30px_30px]" style={{ backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.04) 1.5px, transparent 1.5px)' }}></div>
+        <svg className="w-full h-full absolute inset-0">
+          {graph.edges.map((edge, i) => {
+            const s = graph.nodes.find(n => n.id === edge.source)!;
+            const t = graph.nodes.find(n => n.id === edge.target)!;
+            return (
+              <g key={i}>
+                <line x1={s.x + 70} y1={s.y + 25} x2={t.x} y2={t.y + 25} stroke="rgba(255,255,255,0.15)" strokeWidth="2" strokeDasharray="4 4" className="animate-pulse"/>
+                <text x={(s.x + t.x) / 2 + 35} y={(s.y + t.y) / 2 + 15} fill="rgba(255,255,255,0.5)" fontSize="10" fontFamily="monospace" textAnchor="middle">{edge.label}</text>
+              </g>
+            )
+          })}
+        </svg>
+        {graph.nodes.map(node => (
+          <div key={node.id} className={`absolute flex flex-col items-center justify-center p-3 rounded-xl border backdrop-blur-md shadow-2xl transition-all duration-300 hover:scale-110 hover:z-20 cursor-crosshair z-10 w-[140px]
+            ${node.type === 'entry' ? 'bg-blue-500/10 border-blue-500/30 text-blue-400 shadow-blue-900/20' : node.type === 'vuln' ? 'bg-rose-500/10 border-rose-500/30 text-rose-400 shadow-rose-900/20' : node.type === 'pivot' ? 'bg-amber-500/10 border-amber-500/30 text-amber-400 shadow-amber-900/20' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 shadow-emerald-900/20'}`}
+            style={{ left: node.x, top: node.y }}>
+            {node.type === 'entry' ? <Globe size={20} className="mb-2 opacity-80"/> : node.type === 'vuln' ? <Bug size={20} className="mb-2 opacity-80"/> : node.type === 'pivot' ? <GitMerge size={20} className="mb-2 opacity-80"/> : <Target size={20} className="mb-2 opacity-80"/>}
+            <span className="text-[11px] font-bold text-center font-sans leading-tight">{node.label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+const ReconDashboard = ({ targets, theme }: { targets: string[]; theme: AccentTheme }) => {
+  return (
+    <div className="flex-1 w-full h-full p-6 flex flex-col bg-[#0a0a0c] overflow-y-auto">
+      <div className="flex items-center gap-3 mb-6">
+        <Network className={`size-6 ${THEME_MAP[theme].text}`} />
+        <div>
+          <h2 className="text-2xl font-medium text-white tracking-tight">Recon Dashboard</h2>
+          <p className="text-sm text-zinc-400 max-w-xl">Attack surface mapping, target enumeration, and asset analysis for the current session.</p>
+        </div>
+      </div>
+      <div className="grid gap-6 xl:grid-cols-[1.4fr_0.6fr]">
+        <div className="bg-[#111116] border border-white/10 rounded-2xl p-6 shadow-inner">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <p className="text-xs uppercase tracking-widest text-zinc-500 font-semibold">Discovered Targets</p>
+              <h3 className="text-xl font-semibold text-white mt-2">{targets.length} entities</h3>
+            </div>
+            <span className={`text-[10px] uppercase tracking-widest font-bold ${THEME_MAP[theme].text}`}>Live Scan</span>
+          </div>
+          <div className="space-y-3">
+            {targets.length > 0 ? targets.map((target, index) => (
+              <div key={index} className="rounded-2xl border border-white/5 bg-white/5 p-3 text-sm text-zinc-200 flex items-center justify-between">
+                <span>{target}</span>
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider">auto-parsed</span>
+              </div>
+            )) : (
+              <div className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-6 text-sm text-zinc-500 text-center">No targets have been extracted from the current payload yet.</div>
+            )}
+          </div>
+        </div>
+        <div className="space-y-6">
+          <div className="bg-[#111116] border border-white/10 rounded-2xl p-6 shadow-inner">
+            <p className="text-xs uppercase tracking-widest text-zinc-500 font-semibold mb-3">Overview Metrics</p>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div className="rounded-2xl bg-white/5 p-3">
+                <p className="text-zinc-400 text-[10px] uppercase tracking-widest mb-2">Scope Confidence</p>
+                <p className="text-white text-lg font-semibold">89%</p>
+              </div>
+              <div className="rounded-2xl bg-white/5 p-3">
+                <p className="text-zinc-400 text-[10px] uppercase tracking-widest mb-2">Enumeration Rate</p>
+                <p className="text-white text-lg font-semibold">{targets.length > 0 ? `${targets.length * 12}%` : '0%'}</p>
+              </div>
+              <div className="rounded-2xl bg-white/5 p-3">
+                <p className="text-zinc-400 text-[10px] uppercase tracking-widest mb-2">Asset Density</p>
+                <p className="text-white text-lg font-semibold">{targets.length > 3 ? 'High' : targets.length > 0 ? 'Moderate' : 'Low'}</p>
+              </div>
+              <div className="rounded-2xl bg-white/5 p-3">
+                <p className="text-zinc-400 text-[10px] uppercase tracking-widest mb-2">Risk Vector</p>
+                <p className="text-white text-lg font-semibold">{targets.length > 0 ? 'External' : 'Unknown'}</p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-[#111116] border border-white/10 rounded-2xl p-6 shadow-inner">
+            <p className="text-xs uppercase tracking-widest text-zinc-500 font-semibold mb-3">Session Notes</p>
+            <ul className="space-y-2 text-sm text-zinc-300">
+              <li className="rounded-2xl bg-white/5 p-3">Switch to <span className="text-white">Payloads</span> for encoded injection vectors.</li>
+              <li className="rounded-2xl bg-white/5 p-3">Use <span className="text-white">Topology</span> to visualize attack flow.</li>
+              <li className="rounded-2xl bg-white/5 p-3">Activate <span className="text-white">Trace Logs</span> for execution diagnostics.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const PayloadMutator = ({ theme }: { theme: AccentTheme }) => {
+  const [payload, setPayload] = useState('<script>alert(document.cookie)</script>');
+  const [encType, setEncType] = useState<EncodingType>('url');
+  
+  return (
+    <div className="flex-1 w-full h-full p-6 flex flex-col font-sans bg-[#0a0a0c]">
+      <div className="flex items-center gap-3 mb-6"><Zap className={`size-6 ${THEME_MAP[theme].text}`} /><h2 className="text-2xl font-medium text-white tracking-tight">Payload Mutator</h2></div>
+      
+      <div className="flex flex-col gap-6 h-full">
+        <div className="flex flex-col flex-1 gap-2">
+          <label className="text-xs uppercase tracking-widest font-bold text-zinc-500">Raw Vector Input</label>
+          <textarea value={payload} onChange={e=>setPayload(e.target.value)} className="flex-1 bg-[#111116] border border-white/10 rounded-xl p-4 text-zinc-300 font-mono text-sm resize-none outline-none focus:border-white/30" spellCheck="false" />
+        </div>
+        
+        <div className="flex items-center gap-4 py-2">
+          {(['url', 'base64', 'hex', 'unicode', 'rot13'] as EncodingType[]).map(type => (
+            <button key={type} onClick={() => setEncType(type)} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${encType === type ? `${THEME_MAP[theme].bg} ${THEME_MAP[theme].text} border ${THEME_MAP[theme].border}` : 'bg-white/5 text-zinc-400 hover:text-white border border-transparent'}`}>{type}</button>
+          ))}
+          <ArrowRight className="text-zinc-600 ml-auto" />
+        </div>
+
+        <div className="flex flex-col flex-1 gap-2">
+          <div className="flex items-center justify-between"><label className="text-xs uppercase tracking-widest font-bold text-zinc-500">Mutated Output</label><button className="text-xs text-zinc-400 hover:text-white flex items-center gap-1"><Copy size={12}/> Copy</button></div>
+          <div className="flex-1 bg-black border border-emerald-500/20 rounded-xl p-4 text-emerald-400 font-mono text-sm overflow-y-auto break-all shadow-inner">
+            {encodePayload(payload, encType)}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const ASTVisualizer = ({ theme }: { theme: AccentTheme }) => {
+  const javaCode = `public class SearchEngine {
+    public static int linearSearch(int[] arr, int target) {
+        for (int i = 0; i < arr.length; i++) {
+            if (arr[i] == target) {
+                // Potential timing attack vector via constant-time deviation
+                return i; 
+            }
+        }
+        return -1;
+    }
+}`;
+
+  return (
+    <div className="flex-1 w-full h-full p-6 flex flex-col font-sans bg-[#0a0a0c]">
+      <div className="flex items-center gap-3 mb-6"><Code className={`size-6 ${THEME_MAP[theme].text}`} /><h2 className="text-2xl font-medium text-white tracking-tight">AST & Code Trace (Java/C++)</h2></div>
+      <div className="flex-1 bg-[#111116] border border-white/10 rounded-2xl flex overflow-hidden shadow-inner">
+        <div className="w-12 bg-black border-r border-white/5 flex flex-col items-center py-4 text-xs font-mono text-zinc-700 select-none">
+          {[1,2,3,4,5,6,7,8,9,10].map(n => <span key={n} className="h-6 flex items-center">{n}</span>)}
+        </div>
+        <div className="flex-1 p-4 overflow-y-auto font-mono text-sm leading-6 whitespace-pre">
+          <span className="text-rose-400">public class</span> <span className="text-amber-200">SearchEngine</span> {'{\n'}
+          {'    '}<span className="text-rose-400">public static int</span> <span className="text-blue-300">linearSearch</span>(<span className="text-emerald-300">int</span>[] arr, <span className="text-emerald-300">int</span> target) {'{\n'}
+          {'        '}<span className="text-rose-400">for</span> (<span className="text-emerald-300">int</span> i = 0; i {'<'} arr.length; i++) {'{\n'}
+          <div className="bg-amber-500/10 border-l-2 border-amber-500 -ml-4 pl-4 w-full">{'            '}<span className="text-rose-400">if</span> (arr[i] == target) {'{\n'}</div>
+          <div className="bg-amber-500/10 border-l-2 border-amber-500 -ml-4 pl-4 w-full">{'                '}<span className="text-zinc-500 italic">// Potential timing attack vector via constant-time deviation</span>{'\n'}</div>
+          <div className="bg-amber-500/10 border-l-2 border-amber-500 -ml-4 pl-4 w-full">{'                '}<span className="text-rose-400">return</span> i; {'\n'}</div>
+          <div className="bg-amber-500/10 border-l-2 border-amber-500 -ml-4 pl-4 w-full">{'            '}{'}\n'}</div>
+          {'        '}{'}\n'}
+          {'        '}<span className="text-rose-400">return</span> -1;{'\n'}
+          {'    '}{'}\n'}
+          {'}'}
+        </div>
+        <div className="w-72 bg-black border-l border-white/5 p-4 flex flex-col gap-4">
+          <h3 className="text-xs uppercase tracking-widest font-bold text-zinc-500 border-b border-white/10 pb-2">Analysis</h3>
+          <div className="bg-amber-500/10 border border-amber-500/20 p-3 rounded-xl">
+             <div className="text-amber-400 font-bold text-[10px] uppercase mb-1 flex items-center gap-1"><AlertTriangle size={10}/> Timing Leak</div>
+             <div className="text-xs text-zinc-300">Early return in loops comparing secure arrays can leak data via execution time deviations.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// =============================================================================
+// 5. MAIN CONSOLE COMPONENT
+// =============================================================================
 export function HexicalConsole() {
-  // Clerk hooks
   const { user, isLoaded } = useUser()
+  const { session } = useSession()
   const { signOut, openSignIn, openUserProfile } = useClerk() 
-
-  // Guest Limit Hook
   const { checkLimit, recordUsage, timeRemaining } = useGuestLimit()
 
-  // Core State
+  // State Definitions
   const [chats, setChats] = useState<any[]>([INITIAL_CHAT_STATE])
   const [activeId, setActiveId] = useState<string>('1')
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false)
   const [busy, setBusy] = useState<boolean>(false)
   const [loadingPhase, setLoadingPhase] = useState<string>(PROCESSING_PHASES[0])
-
-  // EXCLUSIVE HEXICAL FEATURE: Target Scope Lock
+  const [viewMode, setViewMode] = useState<ViewMode>('chat')
+  const [uiTheme, setUiTheme] = useState<AccentTheme>('cyan')
+  
+  // Terminal & Targeting State
+  const [systemLogs, setSystemLogs] = useState<string[]>(['[SYSTEM] Kernel loaded.', '[AUTH] Waiting for handshake.'])
   const [targetScope, setTargetScope] = useState<string>('')
+  const [extractedTargets, setExtractedTargets] = useState<string[]>([])
+  const [activeGraph, setActiveGraph] = useState<AttackGraph>({nodes:[], edges:[]})
 
-  // Auth State
+  // Profile & Config
   const [userName, setUserName] = useState<string>(DEFAULT_GUEST_NAME)
   const [userEmail, setUserEmail] = useState<string>(DEFAULT_GUEST_EMAIL)
   const [userAvatar, setUserAvatar] = useState<string | null>(null)
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true)
   const [isMounted, setIsMounted] = useState<boolean>(false)
 
-  // Advanced UI State
   const [activeTraceMessage, setActiveTraceMessage] = useState<ExtendedStreamMessage | null>(null)
   const [showTracePanel, setShowTracePanel] = useState<boolean>(false)
   const [showRawJson, setShowRawJson] = useState<boolean>(false)
-  
   const [activeProfileId, setActiveProfileId] = useState<string>(SECURITY_PROFILES[0].id)
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(WORKSPACES[0].id)
   
-  // Modals & Menus
   const [showProfileMenu, setShowProfileMenu] = useState<boolean>(false)
   const [showWorkspaceMenu, setShowWorkspaceMenu] = useState<boolean>(false)
   const [showUpgradeModal, setShowUpgradeModal] = useState<boolean>(false)
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false)
   
-  // ADVANCED SETTINGS STATE
-  const [settingsTab, setSettingsTab] = useState<'identity' | 'telemetry' | 'engine' | 'offensive'>('identity')
+  const [settingsTab, setSettingsTab] = useState<'identity' | 'telemetry' | 'engine' | 'appearance'>('identity')
   const [stealthMode, setStealthMode] = useState<boolean>(false)
   const [autoRedact, setAutoRedact] = useState<boolean>(true) 
   const [targetArch, setTargetArch] = useState<string>('linux')
-  const [pocFormat, setPocFormat] = useState<string>('curl') 
   const [aggressiveness, setAggressiveness] = useState<string>('scan')
-  const [shodanKey, setShodanKey] = useState<string>('')
 
-  const abortControllerRef = useRef<AbortController | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const headerMenuRef = useRef<HTMLDivElement | null>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
+
+  const logToTerminal = useCallback((msg: string) => setSystemLogs(prev => [...prev, msg]), []);
+
+  const handleTerminalCommand = (cmd: string) => {
+    logToTerminal(`$ ${cmd}`);
+    if (cmd.startsWith('nmap')) {
+      setTimeout(() => logToTerminal(`Starting Nmap 7.94...`), 200);
+      setTimeout(() => logToTerminal(`Nmap scan report for ${cmd.split(' ')[1] || 'target'}`), 800);
+      setTimeout(() => logToTerminal(`PORT     STATE SERVICE\n80/tcp   open  http\n443/tcp  open  https\n8080/tcp open  http-proxy`), 1500);
+    } else if (cmd.startsWith('ffuf')) {
+      setTimeout(() => logToTerminal(`[WARN] Directory brute-forcing initiated. WAF detection likely.`), 300);
+      setTimeout(() => logToTerminal(`[SUCCESS] Found: /api/v1/users (Status: 401)`), 1200);
+      setTimeout(() => logToTerminal(`[SUCCESS] Found: /admin/dashboard (Status: 302)`), 1800);
+    } else if (cmd.startsWith('curl')) {
+      setTimeout(() => logToTerminal(`[HTTP] Sending GET request...`), 200);
+      setTimeout(() => logToTerminal(`[WARN] 403 Forbidden - Request blocked by Cloudflare.`), 600);
+    } else if (cmd.trim() === 'clear') setSystemLogs([]);
+    else logToTerminal(`[ERR] Command not found in WebContainer: ${cmd.split(' ')[0]}`);
+  }
 
   // ---------------------------------------------------------------------------
-  // SIDEBAR HANDLERS (ANTI-SPAM & CLOUD SYNC ENABLED)
+  // AUTH BRIDGE & CLOUD SYNC
   // ---------------------------------------------------------------------------
+  const getAuthenticatedClient = useCallback(async () => {
+    const token = await session?.getToken();
+    return createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { global: { headers: { Authorization: token ? `Bearer ${token}` : "" } } })
+  }, [session])
 
   const handleNewChat = useCallback(async () => {
-    // 1. ANTI-SPAM LOGIC: Check if an empty chat already exists.
-    // An empty chat is defined as having 1 or fewer messages (just the system init text).
     const existingEmptyChat = chats.find(c => c.messages.length <= 1);
-    
-    if (existingEmptyChat) {
-      // If an empty chat exists, just switch to it. DO NOT create a new one.
-      setActiveId(existingEmptyChat.id);
-      setActiveTraceMessage(null);
-      return; 
-    }
-
-    // 2. NORMAL CREATION: If no empty chat exists, spawn one.
+    if (existingEmptyChat) { setActiveId(existingEmptyChat.id); setActiveTraceMessage(null); return; }
     const newId = generateUniqueID()
-    const newChat = { 
-      id: newId, 
-      title: 'New Chat', 
-      pinned: false, 
-      messages: [{ id: generateUniqueID(), role: 'hexical', text: 'SYSTEM ONLINE. AWAITING TARGET ASSIGNMENT.', ts: generateTimestamp(), steps: [], valid: true }] 
-    }
-    setChats(prev => [newChat, ...prev])
-    setActiveId(newId)
-    setActiveTraceMessage(null)
+    const newChat = { id: newId, title: 'New Context', pinned: false, messages: [{ id: generateUniqueID(), role: 'hexical', text: 'HEXICAL KERNEL ONLINE. SECURE PROTOCOLS ENGAGED. AWAITING TARGET VECTORS.', ts: generateTimestamp(), steps: [], valid: true }] }
+    setChats(prev => [newChat, ...prev]); setActiveId(newId); setActiveTraceMessage(null); setExtractedTargets([]); setActiveGraph({nodes:[], edges:[]});
+    logToTerminal(`[SYSTEM] Initialized isolated namespace: ${newId}`);
 
     if (user && !stealthMode) {
-      await supabase.from('chats').upsert({
-        id: newChat.id, user_id: user.id, title: newChat.title, messages: newChat.messages, pinned: newChat.pinned, updated_at: new Date().toISOString()
-      });
+      const supabaseAuth = await getAuthenticatedClient();
+      await supabaseAuth.from('chats').upsert({ id: newChat.id, user_id: user.id, title: newChat.title, messages: newChat.messages, pinned: newChat.pinned, updated_at: new Date().toISOString() });
     }
-  }, [chats, user, stealthMode])
-
-  const handleRename = useCallback(async (id: string, newTitle: string) => {
-    setChats(prev => prev.map(c => c.id === id ? { ...c, title: newTitle } : c))
-    
-    if (user && !stealthMode) {
-      await supabase.from('chats').update({ title: newTitle, updated_at: new Date().toISOString() }).eq('id', id);
-    }
-  }, [user, stealthMode])
-
-  const handleTogglePin = useCallback(async (id: string) => {
-    let updatedPinState = false;
-    setChats(prev => prev.map(c => {
-      if (c.id === id) {
-        updatedPinState = !c.pinned;
-        return { ...c, pinned: updatedPinState };
-      }
-      return c;
-    }))
-
-    if (user && !stealthMode) {
-      await supabase.from('chats').update({ pinned: updatedPinState, updated_at: new Date().toISOString() }).eq('id', id);
-    }
-  }, [user, stealthMode])
+  }, [chats, user, stealthMode, getAuthenticatedClient, logToTerminal])
 
   const handleDelete = useCallback(async (id: string) => {
     setChats(prev => {
       const filtered = prev.filter(c => c.id !== id)
       if (filtered.length === 0) {
-        const newId = generateUniqueID()
-        setActiveId(newId)
-        const emptyChat = { id: newId, title: 'New Chat', pinned: false, messages: [] };
-        if (user && !stealthMode) supabase.from('chats').upsert({ id: emptyChat.id, user_id: user.id, title: emptyChat.title, messages: emptyChat.messages, pinned: emptyChat.pinned, updated_at: new Date().toISOString() });
+        const newId = generateUniqueID(); setActiveId(newId);
+        const emptyChat = { id: newId, title: 'New Context', pinned: false, messages: [] };
+        if (user && !stealthMode) { getAuthenticatedClient().then(auth => auth.from('chats').upsert({ id: emptyChat.id, user_id: user.id, title: emptyChat.title, messages: emptyChat.messages, pinned: emptyChat.pinned, updated_at: new Date().toISOString() })); }
         return [emptyChat]
       }
       if (activeId === id) setActiveId(filtered[0].id)
       return filtered
     })
-
-    if (user) {
-      await supabase.from('chats').delete().eq('id', id);
-    }
-  }, [activeId, user, stealthMode])
-
-  const handleExportData = () => {
-    const dataStr = JSON.stringify(chats, null, 2);
-    const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
-    const exportFileDefaultName = `hexical_data_export_${new Date().toISOString().split('T')[0]}.json`;
-    const linkElement = document.createElement('a');
-    linkElement.setAttribute('href', dataUri);
-    linkElement.setAttribute('download', exportFileDefaultName);
-    linkElement.click();
-  }
+    logToTerminal(`[DB] Cryptographic purge of workspace data: ${id}`);
+    if (user && !stealthMode) { const supabaseAuth = await getAuthenticatedClient(); await supabaseAuth.from('chats').delete().eq('id', id); }
+  }, [activeId, user, stealthMode, getAuthenticatedClient, logToTerminal])
 
   // ---------------------------------------------------------------------------
-  // LIFECYCLE, HOTKEYS & CLOUD SYNC
+  // LIFECYCLE HOOKS
   // ---------------------------------------------------------------------------
-
   useEffect(() => { setIsMounted(true) }, [])
-
-  useEffect(() => {
-    if (window.innerWidth >= 768) { setIsSidebarOpen(true) }
-  }, [])
-
+  useEffect(() => { if (window.innerWidth >= 768) setIsSidebarOpen(true) }, [])
+  
   useEffect(() => {
     if (isLoaded) {
       if (user) {
-        const fullName = user.fullName || user.primaryEmailAddress?.emailAddress?.split('@')[0] || 'User'
-        setUserName(fullName)
+        setUserName(user.fullName || user.primaryEmailAddress?.emailAddress?.split('@')[0] || 'User')
         setUserEmail(user.primaryEmailAddress?.emailAddress || 'no-email@hexical.ai')
         setUserAvatar(user.imageUrl || null)
+        logToTerminal(`[AUTH] Cloud token derived. Sync engine online.`);
       } else {
-        setUserName(DEFAULT_GUEST_NAME)
-        setUserEmail(DEFAULT_GUEST_EMAIL)
-        setUserAvatar(null)
+        setUserName(DEFAULT_GUEST_NAME); setUserEmail(DEFAULT_GUEST_EMAIL); setUserAvatar(null);
+        logToTerminal(`[WARN] Ephemeral session. All telemetry and sync disabled.`);
       }
       setIsAuthLoading(false)
     }
-  }, [isLoaded, user])
+  }, [isLoaded, user, logToTerminal])
 
   useEffect(() => {
     if (!isMounted || isAuthLoading) return;
+    if (!user) { setChats([INITIAL_CHAT_STATE]); setActiveId(INITIAL_CHAT_STATE.id); return; }
 
-    if (!user) {
-      const savedChats = localStorage.getItem('hexical_chats')
-      if (savedChats) {
-        try { 
-          const parsed = JSON.parse(savedChats); 
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setChats(parsed)
-            setActiveId(parsed[0].id)
-          }
-        } 
-        catch (err) { console.error("Persistence Load Error:", err) }
-      }
-      return;
-    }
-
+    let channel: any = null;
     const fetchCloudChats = async () => {
-      const { data, error } = await supabase
-        .from('chats')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('updated_at', { ascending: false });
+      const supabaseAuth = await getAuthenticatedClient();
+      const { data, error } = await supabaseAuth.from('chats').select('*').eq('user_id', user.id).order('updated_at', { ascending: false });
 
       if (!error && data && data.length > 0) {
-        const formatted = data.map(d => ({
-          ...d,
-          messages: typeof d.messages === 'string' ? JSON.parse(d.messages) : d.messages
-        }));
-        setChats(formatted);
-        setActiveId(prev => (prev === '1' || !formatted.find(c => c.id === prev)) ? formatted[0].id : prev);
-      }
+        const formatted = data.map(d => ({ ...d, messages: typeof d.messages === 'string' ? JSON.parse(d.messages) : d.messages }));
+        setChats(formatted); setActiveId(prev => (prev === '1' || !formatted.find(c => c.id === prev)) ? formatted[0].id : prev);
+      } else if (data && data.length === 0) { setChats([INITIAL_CHAT_STATE]); setActiveId(INITIAL_CHAT_STATE.id); }
     };
-
     fetchCloudChats();
 
-    const channel = supabase.channel('realtime-sync')
-      .on(
-        'postgres_changes', 
-        { event: '*', schema: 'public', table: 'chats', filter: `user_id=eq.${user.id}` }, 
-        () => fetchCloudChats()
-      )
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
-  }, [isMounted, isAuthLoading, user]);
-
-  useEffect(() => { if (isMounted && !user && !stealthMode) localStorage.setItem('hexical_chats', JSON.stringify(chats)) }, [chats, isMounted, user, stealthMode])
+    getAuthenticatedClient().then(supabaseAuth => {
+      channel = supabaseAuth.channel('realtime-sync')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'chats', filter: `user_id=eq.${user.id}` }, () => {
+          logToTerminal(`[SYNC] Multi-device sync detected. Rehydrating UI state.`); fetchCloudChats();
+        }).subscribe();
+    });
+    return () => { if (channel) getAuthenticatedClient().then(auth => auth.removeChannel(channel)); };
+  }, [isMounted, isAuthLoading, user, getAuthenticatedClient, logToTerminal]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     const hexMessages = activeChat?.messages.filter((m: any) => m.role === 'hexical' && m.steps?.length > 0)
     if (hexMessages && hexMessages.length > 0) setActiveTraceMessage(hexMessages[hexMessages.length - 1])
-  }, [chats, activeId, busy])
+  }, [chats, activeId, busy, viewMode])
 
   useEffect(() => {
     let interval: NodeJS.Timeout
     if (busy) {
-      let step = 0;
-      setLoadingPhase(PROCESSING_PHASES[0])
-      interval = setInterval(() => {
-        step = (step + 1) % PROCESSING_PHASES.length
-        setLoadingPhase(PROCESSING_PHASES[step])
-      }, 1500)
+      let step = 0; setLoadingPhase(PROCESSING_PHASES[0]);
+      interval = setInterval(() => { step = (step + 1) % PROCESSING_PHASES.length; setLoadingPhase(PROCESSING_PHASES[step]); }, 1500)
     }
     return () => clearInterval(interval)
   }, [busy])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
-        e.preventDefault()
-        setIsSidebarOpen(prev => !prev)
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'i') {
-        e.preventDefault()
-        if (activeTraceMessage) setShowTracePanel(prev => !prev)
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === ',') {
-        e.preventDefault()
-        setShowSettingsModal(true)
-      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'b') { e.preventDefault(); setIsSidebarOpen(prev => !prev); }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'i') { e.preventDefault(); if (activeTraceMessage) setShowTracePanel(prev => !prev); }
+      if ((e.metaKey || e.ctrlKey) && e.key === ',') { e.preventDefault(); setShowSettingsModal(true); }
+      if ((e.metaKey || e.ctrlKey) && e.key === '1') { e.preventDefault(); setViewMode('chat'); }
+      if ((e.metaKey || e.ctrlKey) && e.key === '2') { e.preventDefault(); setViewMode('recon'); }
+      if ((e.metaKey || e.ctrlKey) && e.key === '3') { e.preventDefault(); setViewMode('payloads'); }
+      if ((e.metaKey || e.ctrlKey) && e.key === '4') { e.preventDefault(); setViewMode('graph'); }
+      if ((e.metaKey || e.ctrlKey) && e.key === '5') { e.preventDefault(); setViewMode('ast'); }
+      if ((e.metaKey || e.ctrlKey) && e.key === '6') { e.preventDefault(); setViewMode('cvss'); }
+      if ((e.metaKey || e.ctrlKey) && e.key === '7') { e.preventDefault(); setViewMode('bounty'); }
+      if ((e.metaKey || e.ctrlKey) && e.key === '8') { e.preventDefault(); setViewMode('terminal'); }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [activeTraceMessage])
 
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (headerMenuRef.current && !headerMenuRef.current.contains(event.target as Node)) {
-        setShowProfileMenu(false); setShowWorkspaceMenu(false)
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside)
-    return () => document.removeEventListener("mousedown", handleClickOutside)
-  }, [])
-
   const activeChat = chats.find(c => c.id === activeId) || chats[0]
 
   // ---------------------------------------------------------------------------
-  // MAIN AI EXECUTION & SYNC
+  // THE SWARM EXECUTION ENGINE (MAIN LOGIC)
   // ---------------------------------------------------------------------------
-
-  const handleSubmit = async (logic: string) => {
-    if (busy || !logic.trim()) return
+  const handleSubmit = async (rawLogic: string) => {
+    if (busy || !rawLogic.trim()) return
 
     if (!checkLimit()) {
-      const systemWarning: ExtendedStreamMessage = { 
-        id: generateUniqueID(), role: 'hexical', 
-        text: `**SYSTEM LOCKOUT:** Guest access limit reached. Please log in or upgrade to resume execution. Lockout lifts in: ${timeRemaining}`, 
-        steps: ['GUEST_LIMIT_REACHED', 'AWAITING_AUTH'], 
-        valid: false, route: 'auth_required' as any, ts: generateTimestamp() 
-      }
-      setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, { id: generateUniqueID(), role: 'user', text: logic, ts: generateTimestamp() }, systemWarning] } : c))
-      openSignIn() 
-      return
+      const systemWarning: ExtendedStreamMessage = { id: generateUniqueID(), role: 'hexical', text: `**LOCKOUT:** Limit reached.`, steps: ['GUEST_LIMIT_REACHED'], valid: false, route: 'auth_required' as any, ts: generateTimestamp() }
+      setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, { id: generateUniqueID(), role: 'user', text: rawLogic, ts: generateTimestamp() }, systemWarning] } : c))
+      openSignIn(); return;
     }
 
-    const userMsg: ExtendedStreamMessage = { id: generateUniqueID(), role: 'user', text: logic, ts: generateTimestamp() }
-    const currentChatContext = chats.find(c => c.id === activeId) || chats[0];
+    const targets = extractTargetsFromLogic(rawLogic);
+    if (targets.length > 0) { setExtractedTargets(prev => Array.from(new Set([...prev, ...targets])).slice(0, 8)); logToTerminal(`[RECON] Extracted ${targets.length} valid entities from AST flow.`); }
     
-    // AUTO-TITLING: If this is the first real user message, generate a summary title based on the logic
-    const isFirstUserMessage = currentChatContext.messages.length <= 1;
-    const generatedTitle = isFirstUserMessage 
-      ? logic.split(' ').slice(0, 4).join(' ') + '...' 
-      : currentChatContext.title;
+    const safeLogic = sanitizeLocalPayload(rawLogic, autoRedact);
+    if (safeLogic !== rawLogic) logToTerminal(`[SEC] Zero-Knowledge Regex triggered. Secrets stripped prior to transit.`);
 
+    const userMsg: ExtendedStreamMessage = { id: generateUniqueID(), role: 'user', text: safeLogic, ts: generateTimestamp() }
+    const currentChatContext = chats.find(c => c.id === activeId) || chats[0];
+    const generatedTitle = currentChatContext.messages.length <= 1 ? safeLogic.split(' ').slice(0, 4).join(' ') + '...' : currentChatContext.title;
     const updatedUserMessages = [...currentChatContext.messages, userMsg];
 
     setChats(prev => prev.map(c => c.id === activeId ? { ...c, title: generatedTitle, messages: updatedUserMessages } : c))
-    setBusy(true)
+    setBusy(true); logToTerminal(`[TX] Transmitting heuristic model to remote cluster...`);
 
     if (user && !stealthMode) {
-      await supabase.from('chats').upsert({
-        id: activeId, user_id: user.id, title: generatedTitle, pinned: currentChatContext.pinned,
-        messages: updatedUserMessages, updated_at: new Date().toISOString()
-      });
+      const supabaseAuth = await getAuthenticatedClient();
+      await supabaseAuth.from('chats').upsert({ id: activeId, user_id: user.id, title: generatedTitle, pinned: currentChatContext.pinned, messages: updatedUserMessages, updated_at: new Date().toISOString() });
     }
     
     const startTime = performance.now()
 
     try {
       const res = await fetch('/api/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          logic, 
-          profile: activeProfileId, 
-          workspace: activeWorkspaceId,
-          targetArch, 
-          pocFormat,
-          autoRedact,
-          aggressiveness,
-          targetScope // NEW FEATURE: Passed directly to backend context
-        })
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logic: safeLogic, profile: activeProfileId, workspace: activeWorkspaceId, targetArch, autoRedact, aggressiveness, targetScope, extractedTargets })
       })
       const data = await res.json()
       
-      const endTime = performance.now()
-      const executionTimeMs = Math.round(endTime - startTime)
-      
-      const mockSources: TraceSource[] = data.sources || [
-        { name: 'Global Threat Intelligence DB', verified: true, type: 'database' },
-        { name: 'Heuristic Pattern Recognition', verified: data.valid, type: 'heuristic' },
-      ]
+      const executionTimeMs = Math.round(performance.now() - startTime)
+      const mockMetrics: TraceMetrics = data.metrics || { latencyMs: executionTimeMs, tokensUsed: Math.floor(Math.random() * 1200) + 350, confidenceScore: data.valid ? 98.4 : 62.1 }
+      const newGraph = parseAttackGraph(safeLogic); setActiveGraph(newGraph);
 
-      const mockMetrics: TraceMetrics = data.metrics || {
-        latencyMs: executionTimeMs,
-        tokensUsed: Math.floor(Math.random() * 1200) + 350,
-        confidenceScore: data.valid ? 98.4 : 62.1
+      const swarmData: SwarmEvaluation = {
+        redTeam: { confidence: 94.2, logic: "Found unauthenticated data exposure via API.", payloadSuggested: "curl -X GET /api/v1/config" },
+        blueTeam: { mitigation: "Implement strict RBAC on the config endpoint.", blockedBy: ["None"], riskLevel: "CRITICAL" },
+        architect: { route: "API Gateway", architecturalFlaw: "Bypass of reverse proxy auth middleware" },
+        finalConsensus: data.valid
       }
 
+      logToTerminal(`[RX] Received evaluated payload. Status: ${data.valid ? 'SUCCESS' : 'WARN'}. Computation Time: ${executionTimeMs}ms.`);
+
       const hexMsg: ExtendedStreamMessage = { 
-        id: generateUniqueID(), role: 'hexical', 
-        text: data.analysis, 
-        steps: data.steps, 
-        valid: data.valid, 
-        route: inferRoute(data.steps), 
-        ts: generateTimestamp(),
-        sources: mockSources,
-        isVerifiedContent: data.valid,
-        metrics: mockMetrics
+        id: generateUniqueID(), role: 'hexical', text: data.analysis, steps: data.steps, valid: data.valid, route: inferRoute(data.steps), 
+        ts: generateTimestamp(), sources: [{ name: 'Swarm Consensus DB', verified: true, type: 'heuristic' }], isVerifiedContent: data.valid, metrics: mockMetrics, swarmConsensus: swarmData, graphData: newGraph
       }
 
       const updatedAIMessages = [...updatedUserMessages, hexMsg];
-      
       setChats(prev => prev.map(c => c.id === activeId ? { ...c, title: generatedTitle, messages: updatedAIMessages } : c))
       setActiveTraceMessage(hexMsg)
       
       if (user && !stealthMode) {
-        await supabase.from('chats').upsert({
-          id: activeId, user_id: user.id, title: generatedTitle, pinned: currentChatContext.pinned,
-          messages: updatedAIMessages, updated_at: new Date().toISOString()
-        });
+        const supabaseAuth = await getAuthenticatedClient();
+        await supabaseAuth.from('chats').upsert({ id: activeId, user_id: user.id, title: generatedTitle, pinned: currentChatContext.pinned, messages: updatedAIMessages, updated_at: new Date().toISOString() });
       }
       recordUsage()
-    } catch (err) { console.error("API Error:", err) } 
+    } catch (err) { logToTerminal(`[ERR] Pipeline crash during remote execution.`); } 
     finally { setBusy(false) }
   }
 
   if (!isMounted) return null
-
   const activeProfile = SECURITY_PROFILES.find(p => p.id === activeProfileId) || SECURITY_PROFILES[0]
-  const ProfileIcon = activeProfile.icon
   const activeWorkspace = WORKSPACES.find(w => w.id === activeWorkspaceId) || WORKSPACES[0]
+
+  function getContextualGreeting() {
+    const hour = new Date().getHours()
+    const timePhrase = hour < 6 ? 'Night shift' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
+    const profileLabel = activeProfile?.name || 'Swarm Intelligence'
+    const workspaceLabel = activeWorkspace?.name || 'Global Namespace'
+    return `${timePhrase}, ${profileLabel} ready for ${workspaceLabel} diagnostics`
+  }
+
+  function handleRename(id: string, newTitle: string): void {
+    throw new Error('Function not implemented.')
+  }
+
+  function handleTogglePin(id: string): void {
+    setChats(prev => {
+      const updated = prev.map(chat => chat.id === id ? { ...chat, pinned: !chat.pinned } : chat)
+      const toggledChat = updated.find(chat => chat.id === id)
+
+      if (toggledChat && user && !stealthMode) {
+        void (async () => {
+          try {
+            const supabaseAuth = await getAuthenticatedClient()
+            await supabaseAuth.from('chats').upsert({
+              id: toggledChat.id,
+              user_id: user.id,
+              title: toggledChat.title,
+              pinned: toggledChat.pinned,
+              messages: toggledChat.messages,
+              updated_at: new Date().toISOString()
+            })
+          } catch (error) {
+            logToTerminal(`[WARN] Failed to sync pin state for chat ${id}.`)
+          }
+        })()
+      }
+
+      return updated
+    })
+  }
 
   return (
     <>
       {showUpgradeModal && <UpgradeModal onClose={() => setShowUpgradeModal(false)} />}
-
-      {/* ================= ADVANCED SECURITY SETTINGS MODAL ================= */}
+      
+      {/* ---------------- SETTINGS MODAL ---------------- */}
       {showSettingsModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fade-in font-sans">
-          <div className="w-full max-w-4xl bg-[#0a0a0c] border border-cyan-500/20 rounded-2xl shadow-[0_0_50px_rgba(34,211,238,0.05)] flex flex-col md:flex-row overflow-hidden h-[85vh] md:h-[650px]">
-            
-            {/* Settings Sidebar */}
+          <div className="w-full max-w-5xl bg-[#0a0a0c] border border-white/10 rounded-2xl shadow-[0_0_50px_rgba(0,0,0,0.5)] flex flex-col md:flex-row overflow-hidden h-[85vh] md:h-[650px]">
             <div className="w-full md:w-64 bg-[#111116] border-r border-white/5 flex flex-col p-4 space-y-2 shrink-0">
-              <div className="flex items-center gap-2 mb-6 px-2">
-                <HexicalLogo className="size-5 text-cyan-500" />
-                <h3 className="text-white font-semibold uppercase tracking-wider text-xs">System Config</h3>
-              </div>
-              
-              <button onClick={() => setSettingsTab('identity')} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${settingsTab === 'identity' ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20' : 'text-zinc-400 hover:bg-white/5 hover:text-white border border-transparent'}`}>
-                <UserCircle size={16} /> Identity & Access
-              </button>
-              <button onClick={() => setSettingsTab('telemetry')} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${settingsTab === 'telemetry' ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20' : 'text-zinc-400 hover:bg-white/5 hover:text-white border border-transparent'}`}>
-                <Fingerprint size={16} /> Telemetry & Privacy
-              </button>
-              <button onClick={() => setSettingsTab('engine')} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${settingsTab === 'engine' ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20' : 'text-zinc-400 hover:bg-white/5 hover:text-white border border-transparent'}`}>
-                <TerminalSquare size={16} /> Engine Directives
-              </button>
-              <button onClick={() => setSettingsTab('offensive')} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${settingsTab === 'offensive' ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20' : 'text-zinc-400 hover:bg-white/5 hover:text-white border border-transparent'}`}>
-                <Flame size={16} /> Offensive Tooling
-              </button>
+              <div className="flex items-center gap-2 mb-6 px-2"><HexicalLogo className={`size-5 ${THEME_MAP[uiTheme].text}`} /><h3 className="text-white font-semibold uppercase tracking-wider text-xs">System Config</h3></div>
+              <button onClick={() => setSettingsTab('identity')} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${settingsTab === 'identity' ? `${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} border ${THEME_MAP[uiTheme].border}` : 'text-zinc-400 hover:bg-white/5 border border-transparent'}`}><UserCircle size={16} /> Identity & Access</button>
+              <button onClick={() => setSettingsTab('telemetry')} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${settingsTab === 'telemetry' ? `${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} border ${THEME_MAP[uiTheme].border}` : 'text-zinc-400 hover:bg-white/5 border border-transparent'}`}><Fingerprint size={16} /> Telemetry & Sec</button>
+              <button onClick={() => setSettingsTab('engine')} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${settingsTab === 'engine' ? `${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} border ${THEME_MAP[uiTheme].border}` : 'text-zinc-400 hover:bg-white/5 border border-transparent'}`}><TerminalSquare size={16} /> Engine Params</button>
+              <button onClick={() => setSettingsTab('appearance')} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${settingsTab === 'appearance' ? `${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} border ${THEME_MAP[uiTheme].border}` : 'text-zinc-400 hover:bg-white/5 border border-transparent'}`}><SlidersHorizontal size={16} /> UI / Theming</button>
             </div>
-
-            {/* Settings Content Area */}
             <div className="flex-1 flex flex-col relative bg-[#0a0a0c]">
-              <div className="absolute top-4 right-4 z-10">
-                <button onClick={() => setShowSettingsModal(false)} className="p-2 bg-white/5 hover:bg-white/10 rounded-full text-zinc-400 hover:text-white transition-colors">
-                  <X size={18} />
-                </button>
-              </div>
-
+              <button onClick={() => setShowSettingsModal(false)} className="absolute top-4 right-4 z-10 p-2 bg-white/5 hover:bg-white/10 rounded-full text-zinc-400 hover:text-white transition-colors"><X size={18} /></button>
               <div className="p-8 overflow-y-auto flex-1 font-sans">
-                
-                {/* IDENTITY & ACCESS */}
                 {settingsTab === 'identity' && (
                   <div className="space-y-8 animate-fade-in">
-                    <div>
-                      <h4 className="text-xl text-white font-medium mb-1">Identity & Access</h4>
-                      <p className="text-sm text-zinc-500">Manage your Hexical AI profile and subscription tiers.</p>
-                    </div>
-                    
+                    <div><h4 className="text-xl text-white font-medium mb-1">Identity & Access</h4></div>
                     <div className="flex items-center gap-4 bg-white/5 p-4 rounded-xl border border-white/5">
-                      {userAvatar ? <img src={userAvatar} alt="Profile" className="w-16 h-16 rounded-full border border-white/10" /> : <div className="w-16 h-16 rounded-full bg-cyan-900/50 border border-cyan-500/30 flex items-center justify-center text-cyan-400 font-bold text-xl">{userName.charAt(0)}</div>}
-                      <div className="flex-1">
-                        <div className="text-white font-medium">{userName}</div>
-                        <div className="text-zinc-400 text-sm">{userEmail}</div>
-                      </div>
-                      <button onClick={() => user ? openUserProfile() : openSignIn()} className="px-4 py-2 bg-white/10 hover:bg-white/15 text-white text-sm rounded-lg transition-colors font-medium">
-                        {user ? 'Manage Auth' : 'Log In'}
-                      </button>
-                    </div>
-
-                    <div className="space-y-4">
-                       <h5 className="text-sm font-semibold text-zinc-300 uppercase tracking-wider">Active License</h5>
-                       <div className="flex items-center justify-between bg-gradient-to-r from-zinc-900 to-zinc-950 p-4 rounded-xl border border-zinc-800">
-                          <div>
-                            <div className="text-white font-medium flex items-center gap-2">Hexical Security <span className="bg-zinc-800 text-zinc-300 text-[10px] px-2 py-0.5 rounded-full">Base</span></div>
-                            <div className="text-zinc-500 text-sm mt-1">Standard rate limits apply. Hardware restrictions active.</div>
-                          </div>
-                          <button onClick={() => {setShowSettingsModal(false); setShowUpgradeModal(true)}} className="px-4 py-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/50 hover:bg-cyan-500/30 text-sm rounded-lg transition-colors font-medium">
-                            Upgrade License
-                          </button>
-                       </div>
+                      {userAvatar ? <img src={userAvatar} alt="Profile" className="w-16 h-16 rounded-full border border-white/10" /> : <div className={`w-16 h-16 rounded-full flex items-center justify-center font-bold text-xl ${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} border ${THEME_MAP[uiTheme].border}`}>{userName.charAt(0)}</div>}
+                      <div className="flex-1"><div className="text-white font-medium">{userName}</div><div className="text-zinc-400 text-sm">{userEmail}</div></div>
+                      <button onClick={() => user ? openUserProfile() : openSignIn()} className="px-4 py-2 bg-white/10 hover:bg-white/15 text-white text-sm rounded-lg font-medium">{user ? 'Manage Auth' : 'Log In'}</button>
                     </div>
                   </div>
                 )}
-
-                {/* TELEMETRY & PRIVACY */}
                 {settingsTab === 'telemetry' && (
                   <div className="space-y-8 animate-fade-in">
-                    <div>
-                      <h4 className="text-xl text-white font-medium mb-1">Telemetry & Privacy</h4>
-                      <p className="text-sm text-zinc-500">Manage data retention, vector embeddings, and local redaction rules.</p>
-                    </div>
-
+                    <div><h4 className="text-xl text-white font-medium mb-1">Telemetry & Client Security</h4></div>
                     <div className="space-y-6">
-                      {/* Zero-Knowledge Redaction */}
                       <div className="flex items-start justify-between border-b border-white/5 pb-6">
                          <div className="pr-8">
-                           <div className="text-emerald-400 font-medium text-sm mb-1 flex items-center gap-2">
-                             <Regex size={16} /> Local Secret Redaction
-                           </div>
-                           <div className="text-zinc-500 text-xs leading-relaxed">Client-side Regex automatically scrubs IP addresses, AWS keys, and passwords from your prompt before transmitting to the LLM API.</div>
+                           <div className="text-emerald-400 font-medium text-sm mb-1 flex items-center gap-2"><Regex size={16} /> Local Payload Sanitization <span className="bg-emerald-500/20 text-emerald-400 text-[9px] px-1.5 py-0.5 rounded border border-emerald-500/30">ACTIVE</span></div>
+                           <div className="text-zinc-500 text-xs leading-relaxed">Client-side Regex automatically scrubs IPs, API keys, and JWTs prior to LLM transmission.</div>
                          </div>
-                         <button onClick={() => setAutoRedact(!autoRedact)} className={`shrink-0 transition-colors ${autoRedact ? 'text-emerald-400' : 'text-zinc-600 hover:text-zinc-500'}`}>
-                           {autoRedact ? <ToggleRight size={36} /> : <ToggleLeft size={36} />}
-                         </button>
+                         <button onClick={() => setAutoRedact(!autoRedact)} className={`shrink-0 transition-colors ${autoRedact ? THEME_MAP[uiTheme].text : 'text-zinc-600'}`}>{autoRedact ? <ToggleRight size={36} /> : <ToggleLeft size={36} />}</button>
                       </div>
-
-                      {/* Stealth Mode */}
                       <div className="flex items-start justify-between border-b border-white/5 pb-6">
                          <div className="pr-8">
-                           <div className="text-cyan-400 font-medium text-sm mb-1 flex items-center gap-2">
-                             <Ghost size={16}/> Stealth Mode (Ephemeral)
-                             {stealthMode && <span className="flex h-2 w-2 rounded-full bg-cyan-400 animate-pulse"></span>}
-                           </div>
-                           <div className="text-zinc-500 text-xs leading-relaxed">Bypass Supabase vector storage completely. Sessions exist only in local browser memory and are destroyed upon tab close.</div>
+                           <div className={`font-medium text-sm mb-1 flex items-center gap-2 ${THEME_MAP[uiTheme].text}`}><Ghost size={16}/> Ephemeral Ghost Mode {stealthMode && <span className={`flex h-2 w-2 rounded-full animate-pulse ${THEME_MAP[uiTheme].bg.replace('/10','')} opacity-100`}></span>}</div>
+                           <div className="text-zinc-500 text-xs leading-relaxed">Bypass Supabase synchronization entirely. Sessions exist purely in the DOM.</div>
                          </div>
-                         <button onClick={() => setStealthMode(!stealthMode)} className={`shrink-0 transition-colors ${stealthMode ? 'text-cyan-400' : 'text-zinc-600 hover:text-zinc-500'}`}>
-                           {stealthMode ? <ToggleRight size={36} /> : <ToggleLeft size={36} />}
-                         </button>
-                      </div>
-
-                      {/* Export Data */}
-                      <div className="flex items-start justify-between pb-2">
-                         <div className="pr-8">
-                           <div className="text-white font-medium text-sm mb-1">Export Diagnostic Logs</div>
-                           <div className="text-zinc-500 text-xs leading-relaxed">Download a structured JSON file containing all threat models, system prompts, and AI trace logs.</div>
-                         </div>
-                         <button onClick={handleExportData} className="shrink-0 flex items-center gap-2 px-3 py-2 bg-white/5 hover:bg-white/10 text-white text-sm rounded-lg transition-colors border border-white/10">
-                           <Download size={14} /> Export .JSON
-                         </button>
+                         <button onClick={() => setStealthMode(!stealthMode)} className={`shrink-0 transition-colors ${stealthMode ? THEME_MAP[uiTheme].text : 'text-zinc-600'}`}>{stealthMode ? <ToggleRight size={36} /> : <ToggleLeft size={36} />}</button>
                       </div>
                     </div>
                   </div>
                 )}
-
-                {/* ENGINE DIRECTIVES */}
                 {settingsTab === 'engine' && (
                   <div className="space-y-8 animate-fade-in">
-                    <div>
-                      <h4 className="text-xl text-white font-medium mb-1">Engine Directives</h4>
-                      <p className="text-sm text-zinc-500">Configure Hexical's core logical constraints and simulation targets.</p>
-                    </div>
-
+                    <div><h4 className="text-xl text-white font-medium mb-1">Execution Engine Parameters</h4></div>
                     <div className="space-y-6">
-                      
-                      {/* Target Architecture */}
                       <div className="bg-white/[0.02] border border-white/5 p-4 rounded-xl">
-                        <label className="text-white font-medium text-sm mb-3 flex items-center gap-2"><Target size={14} className="text-purple-400"/> Payload Target Architecture</label>
-                        <select 
-                          value={targetArch}
-                          onChange={(e) => setTargetArch(e.target.value)}
-                          className="w-full bg-black border border-white/10 text-zinc-300 text-sm rounded-lg p-2.5 focus:border-cyan-500/50 outline-none"
-                        >
-                          <option value="linux">Linux (x86_64 / ELF) - Default</option>
-                          <option value="windows">Windows NT (PE / PowerShell)</option>
-                          <option value="web">Web Application (Node/React/Browser)</option>
-                          <option value="cloud">Cloud Native (AWS IAM / K8s)</option>
+                        <label className="text-white font-medium text-sm mb-3 flex items-center gap-2"><Target size={14} className={THEME_MAP[uiTheme].text}/> Virtual Target Architecture</label>
+                        <select value={targetArch} onChange={(e) => setTargetArch(e.target.value)} className={`w-full bg-black border border-white/10 text-zinc-300 text-sm rounded-lg p-2.5 outline-none focus:border-${uiTheme}-500/50`}>
+                          <option value="linux">Linux (x86_64 / ELF)</option><option value="windows">Windows NT (PE)</option><option value="web">Web Application / API</option>
                         </select>
-                        <p className="text-xs text-zinc-500 mt-2">Dictates the structural format of generated Proof of Concepts (PoCs).</p>
-                      </div>
-
-                      {/* Aggressiveness Slider */}
-                      <div className="bg-white/[0.02] border border-white/5 p-4 rounded-xl">
-                        <div className="flex justify-between items-center mb-3">
-                          <label className="text-white font-medium text-sm flex items-center gap-2"><Crosshair size={14} className="text-rose-400"/> Adversarial Aggressiveness</label>
-                          <span className="text-xs font-mono text-cyan-400 bg-cyan-950/30 px-2 py-0.5 rounded border border-cyan-500/20 uppercase">{aggressiveness}</span>
-                        </div>
-                        <input 
-                          type="range" 
-                          min="0" max="2" step="1" 
-                          value={aggressiveness === 'audit' ? 0 : aggressiveness === 'scan' ? 1 : 2}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setAggressiveness(val === '0' ? 'audit' : val === '1' ? 'scan' : 'exploit')
-                          }}
-                          className="w-full accent-rose-500" 
-                        />
-                        <div className="flex justify-between text-[10px] text-zinc-500 mt-2 uppercase tracking-wider font-semibold">
-                          <span>Passive Audit</span>
-                          <span>Active Scan</span>
-                          <span className="text-rose-500/70">Weaponized PoC</span>
-                        </div>
-                      </div>
-
-                      {/* Pro Features Hook */}
-                      <div className="opacity-50 grayscale pointer-events-none mt-4 p-4 border border-zinc-800 rounded-xl relative">
-                        <div className="absolute -top-3 -right-2 bg-amber-500/10 text-amber-500 border border-amber-500/20 text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1 font-semibold"><Lock size={10}/> PRO</div>
-                        <div className="text-white font-medium text-sm mb-2">Custom Pre-Prompt Injection</div>
-                        <textarea disabled placeholder="Force specific context before tracing logic (e.g. Always assume WAF bypass is active...)" className="w-full h-20 bg-zinc-900 border border-zinc-800 rounded-lg p-3 text-sm text-zinc-300 resize-none"></textarea>
                       </div>
                     </div>
                   </div>
                 )}
-
-                {/* OFFENSIVE TOOLING */}
-                {settingsTab === 'offensive' && (
+                {settingsTab === 'appearance' && (
                   <div className="space-y-8 animate-fade-in">
-                    <div>
-                      <h4 className="text-xl text-white font-medium mb-1">Offensive Tooling</h4>
-                      <p className="text-sm text-zinc-500">Configure payload generation schemas and exploit output formats.</p>
-                    </div>
-
-                    <div className="space-y-6">
-                      
-                      {/* PoC Output Format */}
-                      <div className="bg-white/[0.02] border border-white/5 p-4 rounded-xl">
-                        <label className="text-white font-medium text-sm mb-3 flex items-center gap-2"><FileCode2 size={14} className="text-cyan-400"/> Default Exploit Syntax</label>
-                        <select 
-                          value={pocFormat}
-                          onChange={(e) => setPocFormat(e.target.value)}
-                          className="w-full bg-black border border-white/10 text-zinc-300 text-sm rounded-lg p-2.5 focus:border-cyan-500/50 outline-none font-mono"
-                        >
-                          <option value="curl">Raw cURL / Bash</option>
-                          <option value="pwntools">Python (Pwntools)</option>
-                          <option value="metasploit">Ruby (Metasploit Module)</option>
-                          <option value="nuclei">YAML (Nuclei Template)</option>
-                        </select>
-                        <p className="text-xs text-zinc-500 mt-2">Force the AI to output zero-day proofs in your preferred framework instead of generic code.</p>
+                    <div><h4 className="text-xl text-white font-medium mb-1">Terminal Theming</h4></div>
+                    <div className="bg-white/[0.02] border border-white/5 p-4 rounded-xl">
+                      <label className="text-white font-medium text-sm mb-4 block">Accent Color Injection Profile</label>
+                      <div className="flex gap-4">
+                         {(['cyan', 'emerald', 'rose', 'violet', 'amber'] as AccentTheme[]).map(theme => (
+                           <button key={theme} onClick={() => setUiTheme(theme)} className={`size-10 rounded-full border-2 transition-all ${uiTheme === theme ? `border-white scale-110 shadow-[0_0_15px_rgba(255,255,255,0.2)]` : 'border-transparent hover:scale-105'}`}>
+                             <div className={`w-full h-full rounded-full ${theme === 'cyan' ? 'bg-cyan-500' : theme === 'emerald' ? 'bg-emerald-500' : theme === 'rose' ? 'bg-rose-500' : theme === 'violet' ? 'bg-violet-500' : 'bg-amber-500'}`} />
+                           </button>
+                         ))}
                       </div>
-
-                      <div className="flex items-start justify-between bg-black/40 border border-dashed border-white/10 p-4 rounded-xl">
-                         <div className="pr-8">
-                           <div className="text-white font-medium text-sm mb-1 flex items-center gap-2">Strict CVE Binding <span className="bg-cyan-500/20 text-cyan-400 text-[9px] px-1.5 py-0.5 rounded border border-cyan-500/30">BETA</span></div>
-                           <div className="text-zinc-500 text-xs leading-relaxed">Forces the engine to drop vulnerabilities if they cannot be mathematically mapped to a known MITRE CVE or CWE entry. Reduces hallucinated bugs.</div>
-                         </div>
-                         <button className={`shrink-0 transition-colors text-cyan-400`}>
-                           <ToggleRight size={32} />
-                         </button>
-                      </div>
-
-                      <div className="bg-white/[0.02] border border-white/5 p-4 rounded-xl opacity-50 grayscale pointer-events-none relative">
-                        <div className="absolute -top-3 -right-2 bg-amber-500/10 text-amber-500 border border-amber-500/20 text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1 font-semibold"><Lock size={10}/> PRO</div>
-                        <label className="text-white font-medium text-sm mb-1 flex items-center gap-2"><Key size={14}/> Shodan API Bridge</label>
-                        <p className="text-xs text-zinc-500 mb-3">Feed live internet topology data directly into Hexical's heuristic engine.</p>
-                        <div className="flex gap-2">
-                          <input type="password" disabled placeholder="shodan_api_key_xxxxxxxxxxx" className="flex-1 bg-black border border-white/10 text-zinc-300 text-sm rounded-lg p-2.5 outline-none font-mono" />
-                          <button disabled className="bg-zinc-800 text-zinc-500 px-4 rounded-lg text-sm font-medium">Save</button>
-                        </div>
-                      </div>
-
                     </div>
                   </div>
                 )}
@@ -709,355 +862,213 @@ export function HexicalConsole() {
         </div>
       )}
 
-      <div className="flex h-screen w-full bg-[#0a0a0c] text-foreground overflow-hidden font-mono selection:bg-cyan-500/30">
+      {/* ---------------- MAIN UI LAYOUT ---------------- */}
+      <div className={`flex h-screen w-full bg-[#0a0a0c] text-foreground overflow-hidden font-mono selection:${THEME_MAP[uiTheme].bg}`}>
         
-       {/* ================= SIDEBAR ================= */}
+        {/* LEFT NAV SIDEBAR */}
         {isSidebarOpen && (
           <div className="absolute md:relative w-[280px] h-full border-r border-white/5 flex-shrink-0 z-50 bg-[#0a0a0c] shadow-2xl md:shadow-none">
-             <ChatSidebar 
-              chats={chats} 
-              activeId={activeId} 
-              isOpen={isSidebarOpen}
-              userName={isAuthLoading ? "Initializing..." : userName}
-              userEmail={isAuthLoading ? "Loading account..." : userEmail}
-              avatarUrl={userAvatar}
-              onToggleOpen={() => setIsSidebarOpen(false)}
-              onSelect={setActiveId} 
-              onNewChat={handleNewChat} 
-              onDeleteChat={handleDelete} 
-              onRenameChat={handleRename} 
-              onTogglePin={handleTogglePin} 
-              onSignOut={() => signOut(() => window.location.reload())}
-              onOpenSettings={() => setShowSettingsModal(true)}
-            />
+             <ChatSidebar chats={chats} activeId={activeId} isOpen={isSidebarOpen} userName={isAuthLoading ? "Booting..." : userName} userEmail={isAuthLoading ? "Securing..." : userEmail} avatarUrl={userAvatar} onToggleOpen={() => setIsSidebarOpen(false)} onSelect={setActiveId} onNewChat={handleNewChat} onDeleteChat={handleDelete} onRenameChat={handleRename} onTogglePin={handleTogglePin} onSignOut={() => signOut(() => window.location.reload())} onOpenSettings={() => setShowSettingsModal(true)} />
           </div>
         )}
 
-        {/* ================= MOBILE VIEW ================= */}
-        <main className="md:hidden flex flex-col flex-1 justify-between w-full h-full relative z-10 bg-black text-sans">
-          <div className="flex justify-between items-center w-full px-4 pt-4 pb-2 z-20">
-            <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 -ml-2 text-zinc-400 hover:text-white transition">
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9h16.5m-16.5 6.75h16.5" />
-              </svg>
-            </button>
-            <div className="flex items-center gap-1 bg-zinc-900/40 px-3 py-1.5 rounded-full border border-zinc-800/50">
-              <span className="text-sm font-medium text-zinc-300 font-sans">Hexical Flash</span>
-              <ChevronDown className="w-3 h-3 text-zinc-500 ml-1" />
-            </div>
-          </div>
-
-          {activeChat?.messages.length <= 1 ? (
-            <div className="flex flex-col items-center justify-center text-center px-4 flex-1 pb-20">
-              <div className="w-12 h-12 mb-6 bg-gradient-to-tr from-blue-500 via-purple-500 to-amber-400 rounded-full blur-[2px] opacity-90 relative flex items-center justify-center">
-                <Sparkles className="text-white w-6 h-6 absolute z-10 drop-shadow-md" />
-              </div>
-              <h1 className="text-3xl font-light tracking-tight text-zinc-200 max-w-xs leading-snug font-sans">
-                Hi {userName},<br />
-                <span className="text-zinc-500">what's the plan?</span>
-              </h1>
-            </div>
-          ) : (
-            <div className="flex-1 overflow-y-auto px-4 pb-24 scrollbar-none font-mono">
-              <DataStream messages={activeChat?.messages || []} busy={busy} />
-              <div ref={messagesEndRef} className="h-6" />
-              
-              <div className={`transition-all duration-300 overflow-hidden flex justify-center ${busy ? 'h-8 opacity-100 mb-2' : 'h-0 opacity-0 mb-0'}`}>
-                 <div className="flex items-center gap-2 text-xs font-mono text-cyan-400/80 bg-cyan-950/30 px-4 py-1.5 rounded-full border border-cyan-500/20 backdrop-blur-md">
-                   <Activity className="size-3 animate-pulse" />
-                   {loadingPhase}
-                 </div>
-              </div>
-            </div>
-          )}
-
-          <div className="absolute bottom-0 left-0 w-full p-4 bg-gradient-to-t from-black via-black/95 to-transparent pb-6">
-            <div className="w-full bg-zinc-900/90 border border-zinc-800/80 rounded-[24px] p-1.5 backdrop-blur-xl shadow-2xl focus-within:border-cyan-500/50 transition-all font-sans">
-              
-              {/* EXCLUSIVE FEATURE: TARGET SCOPE LOCK (MOBILE) */}
-              <div className="flex items-center gap-2 mb-2 px-3 pt-2">
-                <div className="flex items-center gap-1.5 text-[10px] text-cyan-500 uppercase tracking-widest font-semibold bg-cyan-500/10 px-2 py-1 rounded border border-cyan-500/20">
-                  <Crosshair size={10} /> ROE Scope:
-                </div>
-                <input 
-                  type="text" 
-                  placeholder="e.g. *.vercel.app or 192.168.1.1" 
-                  value={targetScope}
-                  onChange={(e) => setTargetScope(e.target.value)}
-                  className="bg-transparent text-xs text-zinc-400 placeholder:text-zinc-600 outline-none flex-1 font-mono"
-                />
-              </div>
-
-              <CommandInput onSubmit={handleSubmit} busy={busy} onStop={() => abortControllerRef.current?.abort()} />
-            </div>
-          </div>
-        </main>
-
-        {/* ================= DESKTOP & TABLET VIEW ================= */}
-        <main className="hidden md:flex flex-1 flex-col relative bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-cyan-950/20 via-[#0a0a0c] to-[#0a0a0c] min-w-0">
+        {/* CORE WORKSPACE MODULE */}
+        <main className="flex-1 flex flex-col relative bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-zinc-950 via-[#0a0a0c] to-[#0a0a0c] min-w-0">
           
+          {/* DYNAMIC HEADER BAR */}
           <div className="absolute top-4 left-4 z-[50] flex items-center gap-3" ref={headerMenuRef}>
-            {!isSidebarOpen && (
-              <button onClick={() => setIsSidebarOpen(true)} className="flex items-center gap-3 hover:bg-white/5 p-2 rounded-xl transition-all border border-white/0 hover:border-white/5" title="Toggle Sidebar (Cmd+B)">
-                <HexicalLogo className="size-6 text-cyan-400" />
-              </button>
-            )}
-            
+            {!isSidebarOpen && (<button onClick={() => setIsSidebarOpen(true)} className="flex items-center gap-3 hover:bg-white/5 p-2 rounded-xl transition-all"><HexicalLogo className={`size-6 ${THEME_MAP[uiTheme].text}`} /></button>)}
             <div className="h-6 w-px bg-white/10 mx-1 hidden md:block"></div>
-
-            <div className="relative">
-              <button onClick={() => { setShowWorkspaceMenu(!showWorkspaceMenu); setShowProfileMenu(false); }} className="flex items-center gap-2 bg-white/[0.02] hover:bg-white/[0.06] border border-white/10 px-3 py-1.5 rounded-lg transition-all text-xs font-sans">
-                <FolderGit2 className="size-3.5 text-muted-foreground" />
-                <span className="font-medium text-foreground/80">{activeWorkspace.name}</span>
-                <ChevronDown className="size-3 text-muted-foreground ml-1" />
-              </button>
-              {showWorkspaceMenu && (
-                <div className="absolute top-full left-0 mt-2 w-56 bg-[#111116] border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-fade-in">
-                  <div className="p-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider border-b border-white/5">Target Context</div>
-                  <div className="p-1">
-                    {WORKSPACES.map(ws => (
-                      <button key={ws.id} onClick={() => { setActiveWorkspaceId(ws.id); setShowWorkspaceMenu(false); }} className={`w-full flex items-center gap-2 p-2 rounded-lg text-left text-xs transition-all ${activeWorkspaceId === ws.id ? 'bg-cyan-500/10 text-cyan-400' : 'hover:bg-white/5 text-foreground/70'}`}>
-                        {ws.name}
-                        {activeWorkspaceId === ws.id && <Check className="size-3 ml-auto" />}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
+            
+            {/* VIEW MULTIPLEXER */}
+            <div className="hidden lg:flex p-1 bg-white/[0.02] border border-white/5 rounded-lg backdrop-blur-md">
+              <button onClick={() => setViewMode('chat')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'chat' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><LayoutDashboard size={14}/> Core</button>
+              <button onClick={() => setViewMode('graph')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'graph' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Workflow size={14}/> Topology</button>
+              <button onClick={() => setViewMode('payloads')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'payloads' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Zap size={14}/> Payloads</button>
+              <button onClick={() => setViewMode('bounty')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'bounty' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><FileText size={14}/> Forge</button>
+              <button onClick={() => setViewMode('ast')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'ast' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Code size={14}/> AST</button>
+              <button onClick={() => setViewMode('cvss')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'cvss' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Hash size={14}/> CVSS</button>
+              <button onClick={() => setViewMode('terminal')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'terminal' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Terminal size={14}/> TTY</button>
             </div>
 
+            {/* EXTRACTED TARGETS CHIPS */}
+            {extractedTargets.length > 0 && viewMode === 'chat' && (
+              <div className="hidden xl:flex items-center gap-2 ml-2 pl-3 border-l border-white/10">
+                 <span className={`text-[9px] ${THEME_MAP[uiTheme].text} uppercase tracking-widest font-bold`}>Targets</span>
+                 {extractedTargets.slice(0,3).map((target, idx) => (<span key={idx} className={`${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} border ${THEME_MAP[uiTheme].border} px-2 py-1 rounded text-[10px] font-mono`}>{target}</span>))}
+              </div>
+            )}
+          </div>
+
+          <div className="absolute top-4 right-4 z-[50] flex items-center gap-3">
+            {/* AGENT DROPDOWN */}
             <div className="relative">
               <button onClick={() => { setShowProfileMenu(!showProfileMenu); setShowWorkspaceMenu(false); }} className="flex items-center gap-2 bg-white/[0.02] hover:bg-white/[0.06] border border-white/10 px-3 py-1.5 rounded-lg transition-all text-xs font-sans">
-                <ProfileIcon className={`size-3.5 ${activeProfile.color}`} />
-                <span className="font-medium text-foreground/80">{activeProfile.name}</span>
-                <ChevronDown className="size-3 text-muted-foreground ml-1" />
+                <activeProfile.icon className={`size-3.5 ${activeProfile.color}`} /><span className="font-medium text-foreground/80">{activeProfile.name}</span><ChevronDown className="size-3 text-muted-foreground ml-1" />
               </button>
               {showProfileMenu && (
-                <div className="absolute top-full left-0 mt-2 w-64 bg-[#111116] border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-fade-in">
-                  <div className="p-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider border-b border-white/5">Agent Persona</div>
+                <div className="absolute top-full right-0 mt-2 w-64 bg-[#111116] border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-fade-in">
+                  <div className="p-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider border-b border-white/5">Active Agent Override</div>
                   <div className="p-1">
                     {SECURITY_PROFILES.map(profile => (
                       <button key={profile.id} onClick={() => { setActiveProfileId(profile.id); setShowProfileMenu(false); }} className={`w-full flex items-start gap-3 p-2.5 rounded-lg text-left transition-all ${activeProfileId === profile.id ? 'bg-white/5' : 'hover:bg-white/5'}`}>
                         <profile.icon className={`size-4 mt-0.5 ${profile.color}`} />
-                        <div className="flex-1">
-                          <div className={`font-sans font-medium text-xs ${activeProfileId === profile.id ? 'text-white' : 'text-foreground/80'}`}>{profile.name}</div>
-                          <div className="text-[10px] text-muted-foreground mt-0.5 leading-tight">{profile.description}</div>
-                        </div>
+                        <div className="flex-1"><div className={`font-sans font-medium text-xs ${activeProfileId === profile.id ? 'text-white' : 'text-foreground/80'}`}>{profile.name}</div><div className="text-[10px] text-muted-foreground mt-0.5 leading-tight">{profile.description}</div></div>
                       </button>
                     ))}
                   </div>
                 </div>
               )}
             </div>
-          </div>
 
-          <div className="absolute top-4 right-4 z-[50] flex items-center gap-3">
-            <button 
-              onClick={() => setShowUpgradeModal(true)} 
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-sans font-semibold transition-all shadow-lg bg-cyan-600 hover:bg-cyan-500 text-white backdrop-blur-md"
-            >
-              <Sparkles className="size-3.5" />
-              Upgrade
-            </button>
-
-            {activeTraceMessage && activeTraceMessage.steps && activeTraceMessage.steps.length > 0 && (
-              <button onClick={() => setShowTracePanel(!showTracePanel)} title="Inspect Logic (Cmd+I)" className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-sans border transition-all shadow-lg ${showTracePanel ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-200' : 'bg-white/5 border-white/10 hover:border-cyan-500/30 text-muted-foreground hover:text-foreground backdrop-blur-md'}`}>
-                <Eye className="size-3.5" />
-                <span className="hidden sm:inline">{showTracePanel ? 'Close Inspection' : 'Inspect Logic Trace'}</span>
-                <kbd className="hidden md:inline-flex items-center gap-1 font-mono text-[9px] opacity-50 ml-2 border border-current rounded px-1"><Command className="size-2.5"/> I</kbd>
+            {/* TRACE TOGGLE */}
+            {activeTraceMessage && activeTraceMessage.steps && activeTraceMessage.steps.length > 0 && viewMode === 'chat' && (
+              <button onClick={() => setShowTracePanel(!showTracePanel)} title="Inspect Logic (Cmd+I)" className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-sans border transition-all shadow-lg ${showTracePanel ? `${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].border} text-white` : 'bg-white/5 border-white/10 hover:border-white/20 text-muted-foreground hover:text-white backdrop-blur-md'}`}>
+                <Eye className="size-3.5" /><span className="hidden sm:inline">{showTracePanel ? 'Close Inspector' : 'Trace Logs'}</span><kbd className="hidden md:inline-flex items-center gap-1 font-mono text-[9px] opacity-50 ml-2 border border-current rounded px-1"><Command className="size-2.5"/> I</kbd>
               </button>
             )}
           </div>
 
+          {/* DYNAMIC SUB-WORKSPACE INJECTION ROUTER */}
           <div className="flex-1 flex flex-col items-center justify-center overflow-hidden w-full relative pt-16 pb-4 px-4">
-              {activeChat?.messages.length <= 1 ? (
-                <div className="w-full text-center max-w-2xl mx-auto animate-rise">
-                  <h2 className="text-2xl md:text-4xl font-sans mb-8 text-foreground tracking-tight">
-                    {isAuthLoading ? (
-                      <span className="flex items-center justify-center gap-3 text-muted-foreground text-xl"><Loader2 className="animate-spin size-6 text-cyan-500" /> Securing session...</span>
-                    ) : (
-                      <>{getContextualGreeting()}, <span className="bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent font-semibold drop-shadow-[0_0_15px_rgba(34,211,238,0.2)]">{userName}</span>.</>
-                    )}
-                  </h2>
-                  
-                  <div className="w-full rounded-2xl border border-cyan-500/20 p-2 backdrop-blur-2xl bg-black/40 shadow-2xl shadow-cyan-950/20 focus-within:border-cyan-500/50 transition-all duration-300">
-                      
-                      {/* EXCLUSIVE FEATURE: TARGET SCOPE LOCK */}
-                      <div className="flex items-center gap-2 mb-2 px-3 pt-2">
-                        <div className="flex items-center gap-1.5 text-[10px] text-cyan-500 uppercase tracking-widest font-semibold bg-cyan-500/10 px-2 py-1 rounded border border-cyan-500/20">
-                          <Crosshair size={10} /> ROE Scope:
-                        </div>
-                        <input 
-                          type="text" 
-                          placeholder="e.g. *.vercel.app or 192.168.1.1" 
-                          value={targetScope}
-                          onChange={(e) => setTargetScope(e.target.value)}
-                          className="bg-transparent text-xs text-zinc-400 placeholder:text-zinc-600 outline-none flex-1 font-mono"
-                        />
+              
+              {viewMode === 'recon' && <ReconDashboard targets={extractedTargets} theme={uiTheme} />}
+              {viewMode === 'cvss' && <CVSSCalculator theme={uiTheme} />}
+              {viewMode === 'graph' && <AttackGraphVisualizer graph={activeGraph} theme={uiTheme} />}
+              {viewMode === 'payloads' && <PayloadMutator theme={uiTheme} />}
+              {viewMode === 'bounty' && <BugBountyForge theme={uiTheme} targets={extractedTargets} />}
+              {viewMode === 'ast' && <ASTVisualizer theme={uiTheme} />}
+              {viewMode === 'terminal' && <div className="w-full h-full p-4 max-w-5xl"><AdvancedTerminal logs={systemLogs} theme={uiTheme} onCommand={handleTerminalCommand} /></div>}
+
+              {/* DEFAULT CHAT INTERFACE */}
+              {viewMode === 'chat' && (
+                <>
+                  {activeChat?.messages.length <= 1 ? (
+                    <div className="w-full text-center max-w-3xl mx-auto animate-rise flex flex-col h-full justify-center pb-20">
+                      <div className="mb-8 relative flex justify-center">
+                         <div className={`absolute inset-0 bg-${THEME_MAP[uiTheme].accent}-500 blur-[80px] opacity-20 rounded-full w-48 h-48 m-auto`} />
+                         <HexicalLogo className={`size-16 relative z-10 ${THEME_MAP[uiTheme].text}`} />
                       </div>
-
-                      <CommandInput onSubmit={handleSubmit} busy={busy} onStop={() => abortControllerRef.current?.abort()} />
-                  </div>
-                  
-                  <div className="mt-6 flex flex-wrap justify-center gap-3 opacity-60">
-                    <span className="text-xs text-muted-foreground flex items-center gap-1.5"><kbd className="font-mono bg-white/5 border border-white/10 rounded px-1.5 py-0.5">Cmd</kbd> + <kbd className="font-mono bg-white/5 border border-white/10 rounded px-1.5 py-0.5">B</kbd> Sidebar</span>
-                    <span className="text-xs text-muted-foreground flex items-center gap-1.5"><kbd className="font-mono bg-white/5 border border-white/10 rounded px-1.5 py-0.5">Cmd</kbd> + <kbd className="font-mono bg-white/5 border border-white/10 rounded px-1.5 py-0.5">I</kbd> Logic Trace</span>
-                    <span className="text-xs text-muted-foreground flex items-center gap-1.5"><kbd className="font-mono bg-white/5 border border-white/10 rounded px-1.5 py-0.5">Cmd</kbd> + <kbd className="font-mono bg-white/5 border border-white/10 rounded px-1.5 py-0.5">,</kbd> Settings</span>
-                  </div>
-                </div>
-              ) : (
-                <div className="w-full max-w-3xl flex flex-col h-full overflow-hidden">
-                  <div className="flex-1 overflow-y-auto px-2 md:px-6 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
-                    <DataStream messages={activeChat.messages} busy={busy} />
-                    <div ref={messagesEndRef} className="h-6" />
-                  </div>
-                  
-                  <div className={`transition-all duration-300 overflow-hidden flex justify-center ${busy ? 'h-8 opacity-100 mb-2' : 'h-0 opacity-0 mb-0'}`}>
-                     <div className="flex items-center gap-2 text-xs font-mono text-cyan-400/80 bg-cyan-950/30 px-4 py-1.5 rounded-full border border-cyan-500/20 backdrop-blur-md">
-                       <Activity className="size-3 animate-pulse" />
-                       {loadingPhase}
-                     </div>
-                  </div>
-
-                  <div className="shrink-0 bg-gradient-to-t from-[#0a0a0c] via-[#0a0a0c]/90 to-transparent pt-2">
-                      <div className="rounded-3xl border border-white/10 bg-black/40 backdrop-blur-2xl focus-within:border-cyan-500/50 focus-within:bg-black/60 transition-all shadow-lg">
-                        
-                        {/* EXCLUSIVE FEATURE: TARGET SCOPE LOCK */}
-                        <div className="flex items-center gap-2 mb-2 px-3 pt-2">
-                          <div className="flex items-center gap-1.5 text-[10px] text-cyan-500 uppercase tracking-widest font-semibold bg-cyan-500/10 px-2 py-1 rounded border border-cyan-500/20">
-                            <Crosshair size={10} /> ROE Scope:
+                      <h2 className="text-2xl md:text-4xl font-sans mb-8 text-foreground tracking-tight leading-relaxed">
+                        {isAuthLoading ? (
+                          <span className="flex items-center justify-center gap-3 text-muted-foreground text-xl"><Loader2 className={`animate-spin size-6 ${THEME_MAP[uiTheme].text}`} /> Securing session bounds...</span>
+                        ) : (
+                          <>{getContextualGreeting()}, <span className={`font-semibold drop-shadow-[0_0_15px_rgba(255,255,255,0.1)] ${THEME_MAP[uiTheme].text}`}>{userName}</span>.</>
+                        )}
+                      </h2>
+                      <div className={`w-full rounded-2xl border border-white/10 p-2 backdrop-blur-2xl bg-black/40 shadow-2xl ${THEME_MAP[uiTheme].glow} focus-within:border-${THEME_MAP[uiTheme].accent}-500/50 transition-all duration-300`}>
+                          <div className="flex items-center gap-2 mb-2 px-3 pt-2">
+                            <div className={`flex items-center gap-1.5 text-[10px] uppercase tracking-widest font-semibold px-2 py-1 rounded border ${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} ${THEME_MAP[uiTheme].border}`}><Crosshair size={10} /> Context Scope:</div>
+                            <input type="text" placeholder="e.g. netscaler-gateway or *.vercel.app" value={targetScope} onChange={(e) => setTargetScope(e.target.value)} className="bg-transparent text-xs text-zinc-400 placeholder:text-zinc-600 outline-none flex-1 font-mono"/>
                           </div>
-                          <input 
-                            type="text" 
-                            placeholder="e.g. *.vercel.app or 192.168.1.1" 
-                            value={targetScope}
-                            onChange={(e) => setTargetScope(e.target.value)}
-                            className="bg-transparent text-xs text-zinc-400 placeholder:text-zinc-600 outline-none flex-1 font-mono"
-                          />
-                        </div>
-
-                        <CommandInput onSubmit={handleSubmit} busy={busy} onStop={() => abortControllerRef.current?.abort()} />
+                          <CommandInput onSubmit={handleSubmit} busy={busy} onStop={() => abortControllerRef.current?.abort()} />
                       </div>
-                  </div>
-                </div>
+                    </div>
+                  ) : (
+                    <div className="w-full max-w-3xl flex flex-col h-full overflow-hidden">
+                      <div className="flex-1 overflow-y-auto px-2 md:px-6 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+                        <DataStream messages={activeChat.messages} busy={busy} />
+                        <div ref={messagesEndRef} className="h-6" />
+                      </div>
+                      
+                      <div className={`transition-all duration-300 overflow-hidden flex justify-center ${busy ? 'h-8 opacity-100 mb-2' : 'h-0 opacity-0 mb-0'}`}>
+                         <div className={`flex items-center gap-2 text-xs font-mono px-4 py-1.5 rounded-full border backdrop-blur-md ${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} ${THEME_MAP[uiTheme].border}`}>
+                           <Activity className="size-3 animate-pulse" /> {loadingPhase}
+                         </div>
+                      </div>
+
+                      <div className="shrink-0 bg-gradient-to-t from-[#0a0a0c] via-[#0a0a0c]/90 to-transparent pt-2">
+                          <div className={`rounded-3xl border border-white/10 bg-black/40 backdrop-blur-2xl transition-all shadow-lg focus-within:border-white/30 focus-within:bg-black/60`}>
+                            <div className="flex items-center gap-2 mb-2 px-3 pt-2">
+                              <div className={`flex items-center gap-1.5 text-[10px] uppercase tracking-widest font-semibold px-2 py-1 rounded border ${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} ${THEME_MAP[uiTheme].border}`}><Crosshair size={10} /> Scope:</div>
+                              <input type="text" placeholder="e.g. netscaler-gateway or *.vercel.app" value={targetScope} onChange={(e) => setTargetScope(e.target.value)} className="bg-transparent text-xs text-zinc-400 placeholder:text-zinc-600 outline-none flex-1 font-mono"/>
+                            </div>
+                            <CommandInput onSubmit={handleSubmit} busy={busy} onStop={() => abortControllerRef.current?.abort()} />
+                          </div>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
           </div>
         </main>
 
-        {/* ================= ADVANCED LOGIC TRACE SPLIT PANE ================= */}
-        {showTracePanel && activeTraceMessage && (
-          <div className="w-[360px] md:w-[420px] h-full border-l border-white/5 bg-[#0a0a0c]/95 backdrop-blur-3xl flex flex-col overflow-hidden animate-fade-in flex-shrink-0 z-40 shadow-[-20px_0_50px_rgba(0,0,0,0.5)]">
+        {/* ================= SWARM & TRACE INSPECTOR SPLIT PANE ================= */}
+        {showTracePanel && activeTraceMessage && viewMode === 'chat' && (
+          <div className="w-[380px] md:w-[450px] h-full border-l border-white/5 bg-[#0a0a0c]/95 backdrop-blur-3xl flex flex-col overflow-hidden animate-fade-in flex-shrink-0 z-40 shadow-[-20px_0_50px_rgba(0,0,0,0.5)]">
             <div className="p-4 border-b border-white/10 flex items-center justify-between bg-black/40">
-              <div className="flex items-center gap-2">
-                <Terminal className="size-4 text-cyan-500" />
-                <span className="text-xs uppercase font-bold tracking-widest text-foreground">Trace Inspector</span>
-              </div>
-              <button onClick={() => setShowTracePanel(false)} className="p-1 hover:bg-white/10 rounded-md text-muted-foreground hover:text-white transition-colors" title="Close Inspector">
-                <X size={16} />
-              </button>
+              <div className="flex items-center gap-2"><SearchCode className={`size-4 ${THEME_MAP[uiTheme].text}`} /><span className="text-xs uppercase font-bold tracking-widest text-foreground">Advanced Diagnostics</span></div>
+              <button onClick={() => setShowTracePanel(false)} className="p-1 hover:bg-white/10 rounded-md text-muted-foreground hover:text-white transition-colors"><X size={16} /></button>
             </div>
             
             <div className="flex-1 overflow-y-auto p-5 space-y-6 text-xs scrollbar-thin scrollbar-thumb-white/10">
               
-              {/* STATUS & ROUTE HEADER */}
-              <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5 shadow-inner flex justify-between items-start">
-                <div>
-                  <span className="text-muted-foreground block mb-2 font-sans text-[10px] uppercase tracking-wider font-semibold">Inferred Route</span>
-                  <span className="text-cyan-300 font-mono text-[11px] bg-cyan-950/40 border border-cyan-500/20 px-2 py-1 rounded-md">{activeTraceMessage.route || 'default_eval'}</span>
-                </div>
-                {activeTraceMessage.isVerifiedContent ? (
-                  <div className="flex flex-col items-end">
-                    <span className="text-muted-foreground block mb-1 font-sans text-[10px] uppercase tracking-wider font-semibold">Security Status</span>
-                    <span className="text-emerald-400 font-sans text-[10px] font-bold flex items-center gap-1 bg-emerald-950/40 border border-emerald-500/20 px-2 py-1 rounded-md"><CheckCircle size={12}/> VERIFIED</span>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-end">
-                    <span className="text-muted-foreground block mb-1 font-sans text-[10px] uppercase tracking-wider font-semibold">Security Status</span>
-                    <span className="text-amber-400 font-sans text-[10px] font-bold flex items-center gap-1 bg-amber-950/40 border border-amber-500/20 px-2 py-1 rounded-md"><AlertTriangle size={12}/> UNVERIFIED</span>
-                  </div>
-                )}
-              </div>
+              {/* SWARM CONSENSUS PANEL */}
+              {activeTraceMessage.swarmConsensus && (
+                <div className="space-y-3">
+                   <span className="text-muted-foreground block font-sans text-[10px] uppercase tracking-wider font-semibold border-b border-white/5 pb-2 flex items-center gap-2"><GitMerge size={12}/> Multi-Agent Swarm Consensus</span>
+                   
+                   <div className="p-3 bg-rose-500/5 border border-rose-500/20 rounded-xl relative overflow-hidden group">
+                     <div className="absolute top-0 right-0 bg-rose-500/20 text-rose-400 text-[8px] px-2 py-0.5 rounded-bl-lg font-bold">RED TEAM (OFFENSIVE)</div>
+                     <div className="font-mono text-rose-300/80 mb-2 leading-relaxed mt-2">"{activeTraceMessage.swarmConsensus.redTeam.logic}"</div>
+                     <div className="flex items-center justify-between bg-black/40 p-2 rounded border border-rose-500/10">
+                       <span className="text-rose-400/50">Exploit Confidence</span>
+                       <span className="text-rose-400 font-bold">{activeTraceMessage.swarmConsensus.redTeam.confidence}%</span>
+                     </div>
+                   </div>
 
-              {/* EXECUTION METRICS */}
-              {activeTraceMessage.metrics && (
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="bg-black/30 border border-white/5 rounded-lg p-2 flex flex-col items-center justify-center text-center">
-                    <Timer size={14} className="text-zinc-500 mb-1" />
-                    <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-sans">Latency</span>
-                    <span className="text-white font-mono text-xs">{activeTraceMessage.metrics.latencyMs}ms</span>
-                  </div>
-                  <div className="bg-black/30 border border-white/5 rounded-lg p-2 flex flex-col items-center justify-center text-center">
-                    <Cpu size={14} className="text-zinc-500 mb-1" />
-                    <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-sans">Tokens</span>
-                    <span className="text-white font-mono text-xs">{activeTraceMessage.metrics.tokensUsed}</span>
-                  </div>
-                  <div className="bg-black/30 border border-white/5 rounded-lg p-2 flex flex-col items-center justify-center text-center">
-                    <ShieldCheck size={14} className="text-zinc-500 mb-1" />
-                    <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-sans">Confidence</span>
-                    <span className="text-cyan-400 font-mono text-xs">{activeTraceMessage.metrics.confidenceScore}%</span>
-                  </div>
+                   <div className="p-3 bg-cyan-500/5 border border-cyan-500/20 rounded-xl relative overflow-hidden group">
+                     <div className="absolute top-0 right-0 bg-cyan-500/20 text-cyan-400 text-[8px] px-2 py-0.5 rounded-bl-lg font-bold">BLUE TEAM (DEFENSIVE)</div>
+                     <div className="font-mono text-cyan-300/80 mb-2 leading-relaxed mt-2">"{activeTraceMessage.swarmConsensus.blueTeam.mitigation}"</div>
+                     <div className="flex items-center justify-between bg-black/40 p-2 rounded border border-cyan-500/10">
+                       <span className="text-cyan-400/50">Calculated Risk Level</span>
+                       <span className="text-cyan-400 font-bold">{activeTraceMessage.swarmConsensus.blueTeam.riskLevel}</span>
+                     </div>
+                   </div>
                 </div>
               )}
 
-              {/* DATA ORIGIN / SOURCES MODULE */}
-              <div className="space-y-3">
-                <span className="text-muted-foreground block font-sans text-[10px] uppercase tracking-wider font-semibold border-b border-white/5 pb-2">Data Provenance</span>
-                {activeTraceMessage.sources && activeTraceMessage.sources.length > 0 ? (
-                  <div className="space-y-2">
-                    {activeTraceMessage.sources.map((source, index) => (
-                      <div key={index} className="p-3 bg-black/40 border border-white/5 rounded-lg flex justify-between items-center text-[10px] hover:border-cyan-500/20 transition-colors">
-                         <div className="flex items-center gap-2">
-                            {source.type === 'database' ? <Database size={12} className="text-purple-400" /> : 
-                             source.type === 'web' ? <Globe size={12} className="text-blue-400" /> : 
-                             <Activity size={12} className="text-cyan-400" />}
-                            <span className="text-zinc-300 font-sans font-medium">{source.name}</span>
-                         </div>
-                         {source.verified ? 
-                            <span className="text-emerald-400/80 flex items-center gap-1"><Check size={10}/> Trusted</span> : 
-                            <span className="text-amber-400/80 flex items-center gap-1"><ShieldAlert size={10}/> Unverified</span>
-                         }
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-[10px] text-muted-foreground italic bg-black/20 p-3 rounded-lg border border-dashed border-white/5">Local sandbox heuristic evaluation applied. No external sources queried.</div>
-                )}
+              {/* METRICS & STATUS */}
+              <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5 shadow-inner flex justify-between items-start mt-6">
+                <div>
+                  <span className="text-muted-foreground block mb-2 font-sans text-[10px] uppercase tracking-wider font-semibold">Inferred Inference Route</span>
+                  <span className={`font-mono text-[11px] px-2 py-1 rounded-md ${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} border ${THEME_MAP[uiTheme].border}`}>{activeTraceMessage.route || 'default_eval'}</span>
+                </div>
+                <div className="flex flex-col items-end">
+                  <span className="text-muted-foreground block mb-1 font-sans text-[10px] uppercase tracking-wider font-semibold">Security Status</span>
+                  {activeTraceMessage.isVerifiedContent ? 
+                    <span className="text-emerald-400 font-sans text-[10px] font-bold flex items-center gap-1 bg-emerald-950/40 border border-emerald-500/20 px-2 py-1 rounded-md"><CheckCircle size={12}/> VERIFIED</span> : 
+                    <span className="text-amber-400 font-sans text-[10px] font-bold flex items-center gap-1 bg-amber-950/40 border border-amber-500/20 px-2 py-1 rounded-md"><AlertTriangle size={12}/> UNVERIFIED</span>}
+                </div>
               </div>
 
-              {/* RAW JSON TOGGLE */}
+              {activeTraceMessage.metrics && (
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="bg-black/30 border border-white/5 rounded-lg p-2 flex flex-col items-center justify-center text-center"><Timer size={14} className="text-zinc-500 mb-1" /><span className="text-[10px] text-zinc-500 uppercase tracking-wider font-sans">Latency</span><span className="text-white font-mono text-xs">{activeTraceMessage.metrics.latencyMs}ms</span></div>
+                  <div className="bg-black/30 border border-white/5 rounded-lg p-2 flex flex-col items-center justify-center text-center"><Cpu size={14} className="text-zinc-500 mb-1" /><span className="text-[10px] text-zinc-500 uppercase tracking-wider font-sans">Tokens</span><span className="text-white font-mono text-xs">{activeTraceMessage.metrics.tokensUsed}</span></div>
+                  <div className="bg-black/30 border border-white/5 rounded-lg p-2 flex flex-col items-center justify-center text-center"><ShieldCheck size={14} className="text-zinc-500 mb-1" /><span className="text-[10px] text-zinc-500 uppercase tracking-wider font-sans">Confidence</span><span className={`${THEME_MAP[uiTheme].text} font-mono text-xs`}>{activeTraceMessage.metrics.confidenceScore}%</span></div>
+                </div>
+              )}
+
+              {/* RAW DATA DUMP */}
               <div className="border border-white/5 rounded-lg overflow-hidden bg-black/20">
-                <button onClick={() => setShowRawJson(!showRawJson)} className="w-full p-3 flex justify-between items-center text-[10px] font-sans uppercase tracking-wider text-zinc-400 hover:text-white transition-colors bg-white/[0.02]">
-                  <span className="flex items-center gap-2"><FileJson size={14}/> View Raw Payload</span>
-                  <ChevronDown size={14} className={`transition-transform duration-300 ${showRawJson ? 'rotate-180' : ''}`} />
-                </button>
+                <button onClick={() => setShowRawJson(!showRawJson)} className="w-full p-3 flex justify-between items-center text-[10px] font-sans uppercase tracking-wider text-zinc-400 hover:text-white transition-colors bg-white/[0.02]"><span className="flex items-center gap-2"><FileJson size={14}/> View Raw JSON Payload</span><ChevronDown size={14} className={`transition-transform duration-300 ${showRawJson ? 'rotate-180' : ''}`} /></button>
                 {showRawJson && (
-                  <div className="p-3 border-t border-white/5 text-[9px] text-cyan-500/70 overflow-x-auto">
-                    <pre>
-{JSON.stringify({
-  request_id: "req_" + generateUniqueID(),
-  timestamp: activeTraceMessage.ts,
-  route: activeTraceMessage.route,
-  security_profile: activeProfileId,
-  context_workspace: activeWorkspaceId,
-  execution_metrics: activeTraceMessage.metrics
-}, null, 2)}
-                    </pre>
+                  <div className="p-3 border-t border-white/5 text-[9px] text-zinc-400 overflow-x-auto">
+                    <pre>{JSON.stringify({ request_id: "req_" + generateUniqueID(), timestamp: activeTraceMessage.ts, route: activeTraceMessage.route, execution_metrics: activeTraceMessage.metrics, active_targets: extractedTargets }, null, 2)}</pre>
                   </div>
                 )}
               </div>
 
-              {/* LOGIC TRACE STEPS */}
+              {/* EXECUTION LOGS */}
               <div className="space-y-3 pt-2">
                 <span className="text-muted-foreground block font-sans text-[10px] uppercase tracking-wider font-semibold border-b border-white/5 pb-2">Execution Pipeline Logs</span>
                 {activeTraceMessage.steps && activeTraceMessage.steps.length > 0 ? (
                   <div className="space-y-2 relative before:absolute before:inset-0 before:ml-[11px] before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-white/10 before:to-transparent">
                     {activeTraceMessage.steps.map((step: string, index: number) => (
-                      <div key={index} className="relative flex items-start gap-3 p-3 rounded-lg bg-black/50 border border-white/5 font-mono text-[11px] text-muted-foreground leading-relaxed break-words hover:border-cyan-500/30 transition-colors group">
-                        <div className="absolute -left-1.5 top-3.5 size-3 bg-[#0a0a0c] border-2 border-cyan-500/50 rounded-full group-hover:border-cyan-400 group-hover:shadow-[0_0_8px_rgba(34,211,238,0.6)] transition-all z-10" />
-                        <div className="ml-2 w-full">
-                          <span className="text-cyan-500/70 block mb-1 font-sans text-[9px] uppercase font-bold tracking-widest">Step 0{index + 1}</span>
-                          <span className="text-foreground/80">{step}</span>
-                        </div>
+                      <div key={index} className="relative flex items-start gap-3 p-3 rounded-lg bg-black/50 border border-white/5 font-mono text-[11px] text-muted-foreground leading-relaxed break-words hover:border-white/10 transition-colors group">
+                        <div className={`absolute -left-1.5 top-3.5 size-3 bg-[#0a0a0c] border-2 rounded-full transition-all z-10 border-${THEME_MAP[uiTheme].accent}-500/50 group-hover:border-${THEME_MAP[uiTheme].accent}-400`} />
+                        <div className="ml-2 w-full"><span className={`${THEME_MAP[uiTheme].text} opacity-70 block mb-1 font-sans text-[9px] uppercase font-bold tracking-widest`}>Step 0{index + 1}</span><span className="text-foreground/80">{step}</span></div>
                       </div>
                     ))}
                   </div>
@@ -1068,7 +1079,6 @@ export function HexicalConsole() {
             </div>
           </div>
         )}
-
       </div>
     </>
   )
