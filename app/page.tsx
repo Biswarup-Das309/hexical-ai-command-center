@@ -1,5 +1,10 @@
-import { HexicalConsole } from '@/components/hexical/hexical-console'
+// app/page.tsx
+import { AuthGuard } from '@/components/auth-guard';
 
 export default function Page() {
-  return <HexicalConsole />
+  return (
+    <main className="min-h-screen">
+      <AuthGuard />
+    </main>
+  );
 }
