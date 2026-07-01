@@ -12,7 +12,6 @@ import {
   FileText, Copy, ArrowRight, ServerCrash, Binary, RefreshCw
 } from 'lucide-react'
 import { HexicalLogo } from '@/components/hexical/hexical-logo'
-// DEVIL'S ADVOCATE FIX: Import your new factory, NOT the raw client
 import { createSupabaseClient } from '@/lib/supabase' 
 import { useGuestLimit } from '@/hooks/use-guest-limit'
 import { inferRoute, type StreamMessage } from '@/lib/hexical-types'
@@ -62,7 +61,6 @@ type CVSSMetrics = {
 const DEFAULT_GUEST_NAME = 'Guest'
 const DEFAULT_GUEST_EMAIL = 'guest@hexical.ai'
 
-// Generate a clean random ID immediately instead of '1'
 const INITIAL_CHAT_ID = crypto.randomUUID ? crypto.randomUUID() : 'session_' + Math.random().toString(36).substring(2, 15);
 
 const INITIAL_CHAT_STATE = { 
@@ -491,9 +489,8 @@ export function HexicalConsole() {
   const { checkLimit, recordUsage, timeRemaining } = useGuestLimit()
 
   // State Definitions
-  // State Definitions
   const [chats, setChats] = useState<any[]>([INITIAL_CHAT_STATE])
-  const [activeId, setActiveId] = useState<string>(INITIAL_CHAT_ID) // <-- Change '1' to INITIAL_CHAT_ID
+  const [activeId, setActiveId] = useState<string>(INITIAL_CHAT_ID)
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false)
   const [busy, setBusy] = useState<boolean>(false)
   const [loadingPhase, setLoadingPhase] = useState<string>(PROCESSING_PHASES[0])
@@ -557,8 +554,6 @@ export function HexicalConsole() {
   // AUTH BRIDGE & CLOUD SYNC
   // ---------------------------------------------------------------------------
   const getAuthenticatedClient = useCallback(async () => {
-    // DEVIL'S ADVOCATE FIX: Requires explicit template name if using Clerk + Supabase
-    // Using the factory function imported from '@/lib/supabase'
     const token = await session?.getToken({ template: 'supabase' });
     return createSupabaseClient(token || undefined);
   }, [session])
@@ -570,7 +565,7 @@ export function HexicalConsole() {
     if (!client) return;
     
     const activeChat = updatedChats.find(c => c.id === activeId);
-    if (activeChat && activeChat.messages.length > 1) { // Only sync if there's actual history
+    if (activeChat && activeChat.messages.length > 1) { 
       const { error } = await client.from('conversations').upsert({
         id: activeChat.id,
         user_id: user.id,
@@ -649,7 +644,6 @@ export function HexicalConsole() {
     const fetchCloudChats = async () => {
       const supabaseAuth = await getAuthenticatedClient();
       
-      // 1. Fetch all conversation folders for the user
       const { data: convos, error: convoErr } = await supabaseAuth
         .from('conversations')
         .select('*')
@@ -661,7 +655,6 @@ export function HexicalConsole() {
       if (convos && convos.length > 0) {
         const convoIds = convos.map(c => c.id);
         
-        // 2. Fetch all messages belonging to those folders
         const { data: msgs, error: msgErr } = await supabaseAuth
           .from('messages')
           .select('*')
@@ -670,7 +663,6 @@ export function HexicalConsole() {
 
         if (msgErr) logToTerminal(`[DB_ERR] Failed to map trace history.`);
 
-        // 3. Reconstruct the frontend state
         const formatted = convos.map(c => ({
           id: c.id,
           title: c.title,
@@ -678,14 +670,13 @@ export function HexicalConsole() {
           messages: msgs ? msgs.filter(m => m.conversation_id === c.id).map(m => ({
               id: m.id,
               role: m.role,
-              text: m.content, // Map DB 'content' to UI 'text'
+              text: m.content,
               ts: new Date(m.created_at).toLocaleTimeString('en-GB', { hour12: false, fractionalSecondDigits: 2 }),
               steps: m.role === 'hexical' ? ['REHYDRATED_STATE'] : [],
               valid: true
           })) : []
         }));
 
-        // Ensure empty chats still have the kernel initialization string
         formatted.forEach(c => {
             if(c.messages.length === 0) c.messages = INITIAL_CHAT_STATE.messages;
         });
@@ -711,24 +702,23 @@ export function HexicalConsole() {
     return () => { if (channel) getAuthenticatedClient().then(auth => auth.removeChannel(channel)); };
   }, [isMounted, isAuthLoading, user, getAuthenticatedClient, logToTerminal]);
 
-  // 1. MOVE THIS LINE UP (Above the useEffect)
   const activeChat = chats.find(c => c.id === activeId) || chats[0]
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     const hexMessages = activeChat?.messages.filter((m: any) => m.role === 'hexical' && m.steps?.length > 0)
     if (hexMessages && hexMessages.length > 0) setActiveTraceMessage(hexMessages[hexMessages.length - 1])
-  // REMOVED activeChat from here:
   }, [chats, activeId, busy, viewMode])
 
   useEffect(() => {
+    // Only cycle processing phases if we are actually processing (not queued)
     let interval: NodeJS.Timeout
-    if (busy) {
+    if (busy && !loadingPhase.includes('Queue')) {
       let step = 0; setLoadingPhase(PROCESSING_PHASES[0]);
       interval = setInterval(() => { step = (step + 1) % PROCESSING_PHASES.length; setLoadingPhase(PROCESSING_PHASES[step]); }, 1500)
     }
     return () => clearInterval(interval)
-  }, [busy])
+  }, [busy, loadingPhase])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -750,7 +740,7 @@ export function HexicalConsole() {
 
   
   // ---------------------------------------------------------------------------
-  // THE SWARM EXECUTION ENGINE (MAIN LOGIC)
+  // THE SWARM EXECUTION ENGINE (MAIN LOGIC) WITH POLLING UPGRADE
   // ---------------------------------------------------------------------------
   const handleSubmit = async (rawLogic: string) => {
     if (busy || !rawLogic.trim()) return
@@ -778,13 +768,9 @@ export function HexicalConsole() {
 
     if (user && !stealthMode) {
       const supabaseAuth = await getAuthenticatedClient();
-      
-      // 1. If this is a new session, lock in the conversation metadata first
       if (isNewChat) {
         await supabaseAuth.from('conversations').upsert({ id: activeId, user_id: user.id, title: generatedTitle, pinned: currentChatContext.pinned });
       }
-      
-      // 2. Insert the User's payload into the messages table
       await supabaseAuth.from('messages').insert({
         id: userMsg.id,
         conversation_id: activeId,
@@ -800,25 +786,68 @@ export function HexicalConsole() {
       const res = await fetch('/api/verify', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ logic: safeLogic, profile: activeProfileId, workspace: activeWorkspaceId, targetArch, autoRedact, aggressiveness, targetScope, extractedTargets })
-      })
-      const data = await res.json()
+      });
+      
+      const initData = await res.json();
+      let finalData = initData;
+
+      // -----------------------------------------------------------------------
+      // DEVIL'S ADVOCATE QUEUE INTEGRATION
+      // -----------------------------------------------------------------------
+      if (initData.status === 'queued') {
+        const jobId = initData.job_id;
+        logToTerminal(`[QUEUE] Assigned Job ID: ${jobId}. Position: ${initData.position}`);
+        setLoadingPhase(`In Queue (Position: ${initData.position})...`);
+
+        let isPolling = true;
+        while (isPolling) {
+          if (abortControllerRef.current?.signal.aborted) {
+            logToTerminal(`[SYSTEM] User aborted request.`);
+            setBusy(false);
+            return;
+          }
+
+          // Wait 1.5 seconds before polling again
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          
+          try {
+            // Note: Adjust this URL to match your Next.js API route that proxies to the Python status endpoint
+            const statusRes = await fetch(`http://localhost:8000/status/${jobId}`); 
+            const statusData = await statusRes.json();
+
+            if (statusData.status === 'queued') {
+              setLoadingPhase(`In Queue (Position: ${statusData.position})...`);
+            } else if (statusData.status === 'processing') {
+              setLoadingPhase('Executing payload...');
+            } else if (statusData.status === 'completed' || statusData.status === 'error') {
+              finalData = statusData.data; // Retrieve the actual payload
+              isPolling = false;
+            } else if (statusData.status === 'not_found') {
+              throw new Error("Job lost in server queue.");
+            }
+          } catch (pollErr) {
+            logToTerminal(`[ERR] Polling error. Retrying...`);
+          }
+        }
+      }
+      // -----------------------------------------------------------------------
       
       const executionTimeMs = Math.round(performance.now() - startTime)
-      const mockMetrics: TraceMetrics = data.metrics || { latencyMs: executionTimeMs, tokensUsed: Math.floor(Math.random() * 1200) + 350, confidenceScore: data.valid ? 98.4 : 62.1 }
+      const mockMetrics: TraceMetrics = finalData.metrics || { latencyMs: executionTimeMs, tokensUsed: Math.floor(Math.random() * 1200) + 350, confidenceScore: finalData.valid ? 98.4 : 62.1 }
       const newGraph = parseAttackGraph(safeLogic); setActiveGraph(newGraph);
 
       const swarmData: SwarmEvaluation = {
         redTeam: { confidence: 94.2, logic: "Found unauthenticated data exposure via API.", payloadSuggested: "curl -X GET /api/v1/config" },
         blueTeam: { mitigation: "Implement strict RBAC on the config endpoint.", blockedBy: ["None"], riskLevel: "CRITICAL" },
         architect: { route: "API Gateway", architecturalFlaw: "Bypass of reverse proxy auth middleware" },
-        finalConsensus: data.valid
+        finalConsensus: finalData.valid
       }
 
-      logToTerminal(`[RX] Received evaluated payload. Status: ${data.valid ? 'SUCCESS' : 'WARN'}. Computation Time: ${executionTimeMs}ms.`);
+      logToTerminal(`[RX] Received evaluated payload. Status: ${finalData.valid ? 'SUCCESS' : 'WARN'}. Computation Time: ${executionTimeMs}ms.`);
 
       const hexMsg: ExtendedStreamMessage = { 
-        id: generateUniqueID(), role: 'hexical', text: data.analysis, steps: data.steps, valid: data.valid, route: inferRoute(data.steps), 
-        ts: generateTimestamp(), sources: [{ name: 'Swarm Consensus DB', verified: true, type: 'heuristic' }], isVerifiedContent: data.valid, metrics: mockMetrics, swarmConsensus: swarmData, graphData: newGraph
+        id: generateUniqueID(), role: 'hexical', text: finalData.analysis, steps: finalData.steps, valid: finalData.valid, route: inferRoute(finalData.steps), 
+        ts: generateTimestamp(), sources: [{ name: 'Swarm Consensus DB', verified: true, type: 'heuristic' }], isVerifiedContent: finalData.valid, metrics: mockMetrics, swarmConsensus: swarmData, graphData: newGraph
       }
 
       const updatedAIMessages = [...updatedUserMessages, hexMsg];
@@ -827,12 +856,11 @@ export function HexicalConsole() {
       
       if (user && !stealthMode) {
         const supabaseAuth = await getAuthenticatedClient();
-        // 3. Insert the System's response into the messages table
         await supabaseAuth.from('messages').insert({
           id: hexMsg.id,
           conversation_id: activeId,
           user_id: user.id,
-          content: data.analysis,
+          content: finalData.analysis,
           role: 'hexical'
         });
       }
@@ -968,11 +996,19 @@ export function HexicalConsole() {
       {/* ---------------- MAIN UI LAYOUT (The Devil's Advocate Flex-Sandwich) ---------------- */}
       <div className={`flex h-screen w-full bg-[#0a0a0c] text-foreground overflow-hidden font-mono selection:${THEME_MAP[uiTheme].bg}`}>
         
-        {/* LEFT NAV SIDEBAR */}
+        {/* LEFT NAV SIDEBAR (DEVIL'S ADVOCATE MOBILE FIX: Added Backdrop & Fixed positioning) */}
         {isSidebarOpen && (
-          <div className="absolute md:relative w-[280px] h-full border-r border-white/5 flex-shrink-0 z-50 bg-[#0a0a0c] shadow-2xl md:shadow-none">
-             <ChatSidebar chats={chats} activeId={activeId} isOpen={isSidebarOpen} userName={isAuthLoading ? "Booting..." : userName} userEmail={isAuthLoading ? "Securing..." : userEmail} avatarUrl={userAvatar} onToggleOpen={() => setIsSidebarOpen(false)} onSelect={setActiveId} onNewChat={handleNewChat} onDeleteChat={handleDelete} onRenameChat={handleRename} onTogglePin={handleTogglePin} onSignOut={() => signOut(() => window.location.reload())} onOpenSettings={() => setShowSettingsModal(true)} />
-          </div>
+          <>
+            {/* OVERLAY FOR MOBILE - This fixes the bug where users can't close the sidebar */}
+            <div 
+              className="fixed inset-0 bg-black/80 backdrop-blur-sm z-40 md:hidden" 
+              onClick={() => setIsSidebarOpen(false)}
+            />
+            {/* SIDEBAR CONTAINER - Changed absolute to fixed for mobile */}
+            <div className="fixed md:relative w-[280px] h-full border-r border-white/5 flex-shrink-0 z-50 bg-[#0a0a0c] shadow-[20px_0_50px_rgba(0,0,0,0.5)] md:shadow-none transition-transform">
+               <ChatSidebar chats={chats} activeId={activeId} isOpen={isSidebarOpen} userName={isAuthLoading ? "Booting..." : userName} userEmail={isAuthLoading ? "Securing..." : userEmail} avatarUrl={userAvatar} onToggleOpen={() => setIsSidebarOpen(false)} onSelect={setActiveId} onNewChat={handleNewChat} onDeleteChat={handleDelete} onRenameChat={handleRename} onTogglePin={handleTogglePin} onSignOut={() => signOut(() => window.location.reload())} onOpenSettings={() => setShowSettingsModal(true)} />
+            </div>
+          </>
         )}
 
         {/* CORE WORKSPACE MODULE */}
