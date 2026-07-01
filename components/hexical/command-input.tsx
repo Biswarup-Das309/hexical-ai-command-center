@@ -125,7 +125,7 @@ export function CommandInput({ onSubmit, busy, onStop }: CommandInputProps) {
           aria-label="Command input"
           autoComplete="off"
           spellCheck={false}
-          className="min-w-0 flex-1 bg-transparent font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:opacity-50 resize-none overflow-hidden leading-[1.5rem] py-0 self-center"
+          className="min-w-0 flex-1 bg-transparent font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:opacity-50 resize-none overflow-y-auto leading-[1.5rem] py-0 self-center"
           style={{ minHeight: '1.5rem', maxHeight: '200px' }}
         />
 
