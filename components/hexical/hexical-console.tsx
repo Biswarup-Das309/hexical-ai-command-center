@@ -62,8 +62,13 @@ type CVSSMetrics = {
 const DEFAULT_GUEST_NAME = 'Guest'
 const DEFAULT_GUEST_EMAIL = 'guest@hexical.ai'
 
+// Generate a clean random ID immediately instead of '1'
+const INITIAL_CHAT_ID = crypto.randomUUID ? crypto.randomUUID() : 'session_' + Math.random().toString(36).substring(2, 15);
+
 const INITIAL_CHAT_STATE = { 
-  id: '1', title: 'New Context', pinned: false,
+  id: INITIAL_CHAT_ID, 
+  title: 'New Context', 
+  pinned: false,
   messages: [{ id: 'init', role: 'hexical', text: 'HEXICAL KERNEL ONLINE. SECURE PROTOCOLS ENGAGED. AWAITING TARGET VECTORS.', ts: '00:00', steps: [], valid: true }] 
 }
 
@@ -486,8 +491,9 @@ export function HexicalConsole() {
   const { checkLimit, recordUsage, timeRemaining } = useGuestLimit()
 
   // State Definitions
+  // State Definitions
   const [chats, setChats] = useState<any[]>([INITIAL_CHAT_STATE])
-  const [activeId, setActiveId] = useState<string>('1')
+  const [activeId, setActiveId] = useState<string>(INITIAL_CHAT_ID) // <-- Change '1' to INITIAL_CHAT_ID
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false)
   const [busy, setBusy] = useState<boolean>(false)
   const [loadingPhase, setLoadingPhase] = useState<string>(PROCESSING_PHASES[0])
@@ -561,20 +567,17 @@ export function HexicalConsole() {
     if (!user || stealthMode) return;
     const client = await getAuthenticatedClient();
     
-    // DEVIL'S ADVOCATE FIX: Ensure client exists before proceeding
     if (!client) return;
     
     const activeChat = updatedChats.find(c => c.id === activeId);
-    if (activeChat) {
-      const { error } = await client.from('chats').upsert({
+    if (activeChat && activeChat.messages.length > 1) { // Only sync if there's actual history
+      const { error } = await client.from('conversations').upsert({
         id: activeChat.id,
         user_id: user.id,
         title: activeChat.title,
-        messages: activeChat.messages,
-        pinned: activeChat.pinned,
-        updated_at: new Date().toISOString()
+        pinned: activeChat.pinned
       });
-      if (error) logToTerminal(`[DB_ERR] Sync: ${error.message}`);
+      if (error) logToTerminal(`[DB_ERR] Sync Convo: ${error.message}`);
     }
   }, [user, stealthMode, activeId, getAuthenticatedClient, logToTerminal]);
 
@@ -605,7 +608,7 @@ export function HexicalConsole() {
     
     if (user && !stealthMode) {
         const client = await getAuthenticatedClient();
-        await client?.from('chats').delete().eq('id', id);
+        await client?.from('conversations').delete().eq('id', id);
         logToTerminal(`[DB] Cryptographic purge of workspace data: ${id}`);
     }
 
@@ -645,23 +648,69 @@ export function HexicalConsole() {
     let channel: any = null;
     const fetchCloudChats = async () => {
       const supabaseAuth = await getAuthenticatedClient();
-      const { data, error } = await supabaseAuth.from('chats').select('*').eq('user_id', user.id).order('updated_at', { ascending: false });
+      
+      // 1. Fetch all conversation folders for the user
+      const { data: convos, error: convoErr } = await supabaseAuth
+        .from('conversations')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
 
-      if (!error && data && data.length > 0) {
-        const formatted = data.map(d => ({ ...d, messages: typeof d.messages === 'string' ? JSON.parse(d.messages) : d.messages }));
-        setChats(formatted); setActiveId(prev => (prev === '1' || !formatted.find(c => c.id === prev)) ? formatted[0].id : prev);
-      } else if (data && data.length === 0) { setChats([INITIAL_CHAT_STATE]); setActiveId(INITIAL_CHAT_STATE.id); }
+      if (convoErr) { logToTerminal(`[DB_ERR] Failed to load sessions.`); return; }
+
+      if (convos && convos.length > 0) {
+        const convoIds = convos.map(c => c.id);
+        
+        // 2. Fetch all messages belonging to those folders
+        const { data: msgs, error: msgErr } = await supabaseAuth
+          .from('messages')
+          .select('*')
+          .in('conversation_id', convoIds)
+          .order('created_at', { ascending: true });
+
+        if (msgErr) logToTerminal(`[DB_ERR] Failed to map trace history.`);
+
+        // 3. Reconstruct the frontend state
+        const formatted = convos.map(c => ({
+          id: c.id,
+          title: c.title,
+          pinned: c.pinned,
+          messages: msgs ? msgs.filter(m => m.conversation_id === c.id).map(m => ({
+              id: m.id,
+              role: m.role,
+              text: m.content, // Map DB 'content' to UI 'text'
+              ts: new Date(m.created_at).toLocaleTimeString('en-GB', { hour12: false, fractionalSecondDigits: 2 }),
+              steps: m.role === 'hexical' ? ['REHYDRATED_STATE'] : [],
+              valid: true
+          })) : []
+        }));
+
+        // Ensure empty chats still have the kernel initialization string
+        formatted.forEach(c => {
+            if(c.messages.length === 0) c.messages = INITIAL_CHAT_STATE.messages;
+        });
+
+        setChats(formatted); 
+        setActiveId(prev => (prev === '1' || prev === INITIAL_CHAT_ID || !formatted.find(c => c.id === prev)) ? formatted[0].id : prev);
+      } else { 
+        setChats([INITIAL_CHAT_STATE]); 
+        setActiveId(INITIAL_CHAT_STATE.id); 
+      }
     };
+    
     fetchCloudChats();
 
     getAuthenticatedClient().then(supabaseAuth => {
       channel = supabaseAuth.channel('realtime-sync')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'chats', filter: `user_id=eq.${user.id}` }, () => {
-          logToTerminal(`[SYNC] Multi-device sync detected. Rehydrating UI state.`); fetchCloudChats();
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'messages', filter: `user_id=eq.${user.id}` }, () => {
+          logToTerminal(`[SYNC] Multi-device packet detected. Rehydrating UI state.`); 
+          fetchCloudChats();
         }).subscribe();
     });
+    
     return () => { if (channel) getAuthenticatedClient().then(auth => auth.removeChannel(channel)); };
   }, [isMounted, isAuthLoading, user, getAuthenticatedClient, logToTerminal]);
+
   // 1. MOVE THIS LINE UP (Above the useEffect)
   const activeChat = chats.find(c => c.id === activeId) || chats[0]
 
@@ -699,7 +748,7 @@ export function HexicalConsole() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [activeTraceMessage])
 
- 
+  
   // ---------------------------------------------------------------------------
   // THE SWARM EXECUTION ENGINE (MAIN LOGIC)
   // ---------------------------------------------------------------------------
@@ -720,7 +769,8 @@ export function HexicalConsole() {
 
     const userMsg: ExtendedStreamMessage = { id: generateUniqueID(), role: 'user', text: safeLogic, ts: generateTimestamp() }
     const currentChatContext = chats.find(c => c.id === activeId) || chats[0];
-    const generatedTitle = currentChatContext.messages.length <= 1 ? safeLogic.split(' ').slice(0, 4).join(' ') + '...' : currentChatContext.title;
+    const isNewChat = currentChatContext.messages.length <= 1;
+    const generatedTitle = isNewChat ? safeLogic.split(' ').slice(0, 4).join(' ') + '...' : currentChatContext.title;
     const updatedUserMessages = [...currentChatContext.messages, userMsg];
 
     setChats(prev => prev.map(c => c.id === activeId ? { ...c, title: generatedTitle, messages: updatedUserMessages } : c))
@@ -728,7 +778,20 @@ export function HexicalConsole() {
 
     if (user && !stealthMode) {
       const supabaseAuth = await getAuthenticatedClient();
-      await supabaseAuth.from('chats').upsert({ id: activeId, user_id: user.id, title: generatedTitle, pinned: currentChatContext.pinned, messages: updatedUserMessages, updated_at: new Date().toISOString() });
+      
+      // 1. If this is a new session, lock in the conversation metadata first
+      if (isNewChat) {
+        await supabaseAuth.from('conversations').upsert({ id: activeId, user_id: user.id, title: generatedTitle, pinned: currentChatContext.pinned });
+      }
+      
+      // 2. Insert the User's payload into the messages table
+      await supabaseAuth.from('messages').insert({
+        id: userMsg.id,
+        conversation_id: activeId,
+        user_id: user.id,
+        content: safeLogic,
+        role: 'user'
+      });
     }
     
     const startTime = performance.now()
@@ -764,7 +827,14 @@ export function HexicalConsole() {
       
       if (user && !stealthMode) {
         const supabaseAuth = await getAuthenticatedClient();
-        await supabaseAuth.from('chats').upsert({ id: activeId, user_id: user.id, title: generatedTitle, pinned: currentChatContext.pinned, messages: updatedAIMessages, updated_at: new Date().toISOString() });
+        // 3. Insert the System's response into the messages table
+        await supabaseAuth.from('messages').insert({
+          id: hexMsg.id,
+          conversation_id: activeId,
+          user_id: user.id,
+          content: data.analysis,
+          role: 'hexical'
+        });
       }
       recordUsage()
     } catch (err) { logToTerminal(`[ERR] Pipeline crash during remote execution.`); } 
@@ -796,13 +866,11 @@ export function HexicalConsole() {
         void (async () => {
           try {
             const supabaseAuth = await getAuthenticatedClient()
-            await supabaseAuth.from('chats').upsert({
+            await supabaseAuth.from('conversations').upsert({
               id: toggledChat.id,
               user_id: user.id,
               title: toggledChat.title,
               pinned: toggledChat.pinned,
-              messages: toggledChat.messages,
-              updated_at: new Date().toISOString()
             })
           } catch (error) {
             logToTerminal(`[WARN] Failed to sync pin state for chat ${id}.`)
