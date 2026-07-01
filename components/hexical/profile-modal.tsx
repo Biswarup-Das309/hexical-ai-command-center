@@ -2,7 +2,11 @@
 
 import { useState } from 'react'
 import { X, Mail, Lock, LogOut, ChevronUp } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
+import * as supabaseModule from '@/lib/supabase'
+
+const supabase = (supabaseModule as { default?: any; supabase?: any; client?: any }).default
+  ?? (supabaseModule as { default?: any; supabase?: any; client?: any }).supabase
+  ?? (supabaseModule as { default?: any; supabase?: any; client?: any }).client
 
 interface ProfileModalProps {
   isOpen: boolean

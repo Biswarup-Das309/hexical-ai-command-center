@@ -12,7 +12,8 @@ import {
   FileText, Copy, ArrowRight, ServerCrash, Binary, RefreshCw
 } from 'lucide-react'
 import { HexicalLogo } from '@/components/hexical/hexical-logo'
-import { createClient } from '@supabase/supabase-js'
+// DEVIL'S ADVOCATE FIX: Import your new factory, NOT the raw client
+import { createSupabaseClient } from '@/lib/supabase' 
 import { useGuestLimit } from '@/hooks/use-guest-limit'
 import { inferRoute, type StreamMessage } from '@/lib/hexical-types'
 import { ChatSidebar } from '@/components/hexical/chat-sidebar'
@@ -240,7 +241,7 @@ const CVSSCalculator = ({ theme }: { theme: AccentTheme }) => {
 
 const BugBountyForge = ({ theme, targets }: { theme: AccentTheme, targets: string[] }) => {
   const defaultTarget = targets.length > 0 ? targets[0] : 'vulnerable-domain.com';
-  const [report, setReport] = useState(`## Summary\nAn unauthenticated Information Disclosure vulnerability was discovered in ${defaultTarget}...\n\n## Description\nDue to improper access controls on the REST API endpoint, sensitive metadata is exposed.\n\n## Steps To Reproduce\n1. Run \`curl -X GET https://${defaultTarget}/api/v1/metadata\`\n2. Observe the leaked tokens in the JSON response.\n\n## Impact\nAttackers can leverage these tokens to pivot into the internal network.`);
+  const [report, setReport] = useState(`## Summary\nAn unauthenticated Information Disclosure vulnerability was discovered in ${defaultTarget}...\n\n## Description\nDue to improper access controls on the REST API endpoint, sensitive metadata is exposed.\n\n## Steps To Reproduce\n1. Run \`curl -X GET https://${defaultTarget}/api/v1/metadata\`\n2. Observe the leaked tokens in the JSON-response.\n\n## Impact\nAttackers can leverage these tokens to pivot into the internal network.`);
 
   return (
     <div className="flex-1 w-full h-full p-6 flex flex-col font-sans bg-[#0a0a0c]">
@@ -534,7 +535,7 @@ export function HexicalConsole() {
     if (cmd.startsWith('nmap')) {
       setTimeout(() => logToTerminal(`Starting Nmap 7.94...`), 200);
       setTimeout(() => logToTerminal(`Nmap scan report for ${cmd.split(' ')[1] || 'target'}`), 800);
-      setTimeout(() => logToTerminal(`PORT     STATE SERVICE\n80/tcp   open  http\n443/tcp  open  https\n8080/tcp open  http-proxy`), 1500);
+      setTimeout(() => logToTerminal(`PORT    STATE SERVICE\n80/tcp   open  http\n443/tcp  open  https\n8080/tcp open  http-proxy`), 1500);
     } else if (cmd.startsWith('ffuf')) {
       setTimeout(() => logToTerminal(`[WARN] Directory brute-forcing initiated. WAF detection likely.`), 300);
       setTimeout(() => logToTerminal(`[SUCCESS] Found: /api/v1/users (Status: 401)`), 1200);
@@ -550,12 +551,17 @@ export function HexicalConsole() {
   // AUTH BRIDGE & CLOUD SYNC
   // ---------------------------------------------------------------------------
   const getAuthenticatedClient = useCallback(async () => {
-    const token = await session?.getToken();
-    return createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { global: { headers: { Authorization: token ? `Bearer ${token}` : "" } } })
+    // DEVIL'S ADVOCATE FIX: Requires explicit template name if using Clerk + Supabase
+    // Using the factory function imported from '@/lib/supabase'
+    const token = await session?.getToken({ template: 'supabase' });
+    return createSupabaseClient(token || undefined);
   }, [session])
+  
   const syncToCloud = useCallback(async (updatedChats: any[]) => {
     if (!user || stealthMode) return;
     const client = await getAuthenticatedClient();
+    
+    // DEVIL'S ADVOCATE FIX: Ensure client exists before proceeding
     if (!client) return;
     
     const activeChat = updatedChats.find(c => c.id === activeId);
@@ -573,11 +579,9 @@ export function HexicalConsole() {
   }, [user, stealthMode, activeId, getAuthenticatedClient, logToTerminal]);
 
   const handleNewChat = useCallback(async () => {
-    // 1. Check for existing empty chat to prevent duplication
     const existing = chats.find(c => c.messages.length <= 1);
     if (existing) { setActiveId(existing.id); setActiveTraceMessage(null); return; }
 
-    // 2. Prepare new chat state
     const newChat = { 
         id: generateUniqueID(), 
         title: 'New Context', 
@@ -585,7 +589,6 @@ export function HexicalConsole() {
         messages: [{ id: generateUniqueID(), role: 'hexical', text: 'KERNEL READY.', ts: generateTimestamp(), steps: [], valid: true }] 
     };
 
-    // 3. Update state locally FIRST
     const next = [newChat, ...chats];
     setChats(next);
     setActiveId(newChat.id);
@@ -593,30 +596,26 @@ export function HexicalConsole() {
     setExtractedTargets([]); 
     setActiveGraph({nodes:[], edges:[]});
     
-    // 4. Await the cloud sync (This fixes the "sync loss" problem)
     await syncToCloud(next); 
     logToTerminal(`[SYSTEM] Initialized secure context: ${newChat.id}`);
-}, [chats, syncToCloud, logToTerminal]);
+  }, [chats, syncToCloud, logToTerminal]);
 
- const handleDelete = useCallback(async (id: string) => {
-    // 1. Calculate the next state first
+  const handleDelete = useCallback(async (id: string) => {
     const next = chats.filter(c => c.id !== id);
     
-    // 2. Perform the deletion in the database AWAITING completion
     if (user && !stealthMode) {
         const client = await getAuthenticatedClient();
         await client?.from('chats').delete().eq('id', id);
         logToTerminal(`[DB] Cryptographic purge of workspace data: ${id}`);
     }
 
-    // 3. Update UI state after DB deletion is confirmed
     if (next.length === 0) {
-        handleNewChat(); // Forces a clean reset if last chat is deleted
+        handleNewChat();
     } else {
         setChats(next);
         if (activeId === id) setActiveId(next[0].id);
     }
-}, [chats, activeId, user, stealthMode, getAuthenticatedClient, handleNewChat, logToTerminal]);
+  }, [chats, activeId, user, stealthMode, getAuthenticatedClient, handleNewChat, logToTerminal]);
 
   // ---------------------------------------------------------------------------
   // LIFECYCLE HOOKS
@@ -663,11 +662,14 @@ export function HexicalConsole() {
     });
     return () => { if (channel) getAuthenticatedClient().then(auth => auth.removeChannel(channel)); };
   }, [isMounted, isAuthLoading, user, getAuthenticatedClient, logToTerminal]);
+  // 1. MOVE THIS LINE UP (Above the useEffect)
+  const activeChat = chats.find(c => c.id === activeId) || chats[0]
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     const hexMessages = activeChat?.messages.filter((m: any) => m.role === 'hexical' && m.steps?.length > 0)
     if (hexMessages && hexMessages.length > 0) setActiveTraceMessage(hexMessages[hexMessages.length - 1])
+  // REMOVED activeChat from here:
   }, [chats, activeId, busy, viewMode])
 
   useEffect(() => {
@@ -697,8 +699,7 @@ export function HexicalConsole() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [activeTraceMessage])
 
-  const activeChat = chats.find(c => c.id === activeId) || chats[0]
-
+ 
   // ---------------------------------------------------------------------------
   // THE SWARM EXECUTION ENGINE (MAIN LOGIC)
   // ---------------------------------------------------------------------------
@@ -783,7 +784,7 @@ export function HexicalConsole() {
   }
 
   function handleRename(id: string, newTitle: string): void {
-    throw new Error('Function not implemented.')
+    // Implement rename logic if needed
   }
 
   function handleTogglePin(id: string): void {
@@ -896,7 +897,7 @@ export function HexicalConsole() {
         </div>
       )}
 
-      {/* ---------------- MAIN UI LAYOUT ---------------- */}
+      {/* ---------------- MAIN UI LAYOUT (The Devil's Advocate Flex-Sandwich) ---------------- */}
       <div className={`flex h-screen w-full bg-[#0a0a0c] text-foreground overflow-hidden font-mono selection:${THEME_MAP[uiTheme].bg}`}>
         
         {/* LEFT NAV SIDEBAR */}
@@ -907,124 +908,127 @@ export function HexicalConsole() {
         )}
 
         {/* CORE WORKSPACE MODULE */}
-        <main className="flex-1 flex flex-col relative bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-zinc-950 via-[#0a0a0c] to-[#0a0a0c] min-w-0">
+        <main className="flex-1 flex flex-col relative bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-zinc-950 via-[#0a0a0c] to-[#0a0a0c] min-w-0 overflow-hidden">
           
-          {/* DYNAMIC HEADER BAR */}
-          <div className="absolute top-4 left-4 z-[50] flex items-center gap-3" ref={headerMenuRef}>
-            {!isSidebarOpen && (<button onClick={() => setIsSidebarOpen(true)} className="flex items-center gap-3 hover:bg-white/5 p-2 rounded-xl transition-all"><HexicalLogo className={`size-6 ${THEME_MAP[uiTheme].text}`} /></button>)}
-            <div className="h-6 w-px bg-white/10 mx-1 hidden md:block"></div>
-            
-            {/* VIEW MULTIPLEXER */}
-            <div className="hidden lg:flex p-1 bg-white/[0.02] border border-white/5 rounded-lg backdrop-blur-md">
-              <button onClick={() => setViewMode('chat')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'chat' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><LayoutDashboard size={14}/> Core</button>
-              <button onClick={() => setViewMode('graph')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'graph' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Workflow size={14}/> Topology</button>
-              <button onClick={() => setViewMode('payloads')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'payloads' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Zap size={14}/> Payloads</button>
-              <button onClick={() => setViewMode('bounty')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'bounty' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><FileText size={14}/> Forge</button>
-              <button onClick={() => setViewMode('ast')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'ast' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Code size={14}/> AST</button>
-              <button onClick={() => setViewMode('cvss')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'cvss' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Hash size={14}/> CVSS</button>
-              <button onClick={() => setViewMode('terminal')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'terminal' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Terminal size={14}/> TTY</button>
-            </div>
+          {/* 1. FIXED HEADER (shrink-0 prevents squishing) */}
+          <header className="relative z-[50] flex shrink-0 h-16 items-center justify-between gap-3 border-b border-white/5 bg-[#0a0a0c]/80 px-4 md:px-6 backdrop-blur-md">
+            <div className="flex items-center gap-3 min-w-0" ref={headerMenuRef}>
+              {!isSidebarOpen && (
+                <button onClick={() => setIsSidebarOpen(true)} className="flex items-center gap-3 hover:bg-white/5 p-2 rounded-xl transition-all">
+                  <HexicalLogo className={`size-6 ${THEME_MAP[uiTheme].text}`} />
+                </button>
+              )}
+              <div className="h-6 w-px bg-white/10 mx-1 hidden md:block"></div>
 
-            {/* EXTRACTED TARGETS CHIPS */}
-            {extractedTargets.length > 0 && viewMode === 'chat' && (
-              <div className="hidden xl:flex items-center gap-2 ml-2 pl-3 border-l border-white/10">
-                 <span className={`text-[9px] ${THEME_MAP[uiTheme].text} uppercase tracking-widest font-bold`}>Targets</span>
-                 {extractedTargets.slice(0,3).map((target, idx) => (<span key={idx} className={`${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} border ${THEME_MAP[uiTheme].border} px-2 py-1 rounded text-[10px] font-mono`}>{target}</span>))}
+              <div className="hidden lg:flex p-1 bg-white/[0.02] border border-white/5 rounded-lg backdrop-blur-md">
+                <button onClick={() => setViewMode('chat')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'chat' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><LayoutDashboard size={14}/> Core</button>
+                <button onClick={() => setViewMode('graph')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'graph' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Workflow size={14}/> Topology</button>
+                <button onClick={() => setViewMode('payloads')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'payloads' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Zap size={14}/> Payloads</button>
+                <button onClick={() => setViewMode('bounty')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'bounty' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><FileText size={14}/> Forge</button>
+                <button onClick={() => setViewMode('ast')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'ast' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Code size={14}/> AST</button>
+                <button onClick={() => setViewMode('cvss')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'cvss' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Hash size={14}/> CVSS</button>
+                <button onClick={() => setViewMode('terminal')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'terminal' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Terminal size={14}/> TTY</button>
               </div>
-            )}
-          </div>
 
-          <div className="absolute top-4 right-4 z-[50] flex items-center gap-3">
-            {/* AGENT DROPDOWN */}
-            <div className="relative">
-              <button onClick={() => { setShowProfileMenu(!showProfileMenu); setShowWorkspaceMenu(false); }} className="flex items-center gap-2 bg-white/[0.02] hover:bg-white/[0.06] border border-white/10 px-3 py-1.5 rounded-lg transition-all text-xs font-sans">
-                <activeProfile.icon className={`size-3.5 ${activeProfile.color}`} /><span className="font-medium text-foreground/80">{activeProfile.name}</span><ChevronDown className="size-3 text-muted-foreground ml-1" />
-              </button>
-              {showProfileMenu && (
-                <div className="absolute top-full right-0 mt-2 w-64 bg-[#111116] border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-fade-in">
-                  <div className="p-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider border-b border-white/5">Active Agent Override</div>
-                  <div className="p-1">
-                    {SECURITY_PROFILES.map(profile => (
-                      <button key={profile.id} onClick={() => { setActiveProfileId(profile.id); setShowProfileMenu(false); }} className={`w-full flex items-start gap-3 p-2.5 rounded-lg text-left transition-all ${activeProfileId === profile.id ? 'bg-white/5' : 'hover:bg-white/5'}`}>
-                        <profile.icon className={`size-4 mt-0.5 ${profile.color}`} />
-                        <div className="flex-1"><div className={`font-sans font-medium text-xs ${activeProfileId === profile.id ? 'text-white' : 'text-foreground/80'}`}>{profile.name}</div><div className="text-[10px] text-muted-foreground mt-0.5 leading-tight">{profile.description}</div></div>
-                      </button>
-                    ))}
-                  </div>
+              {extractedTargets.length > 0 && viewMode === 'chat' && (
+                <div className="hidden xl:flex items-center gap-2 ml-2 pl-3 border-l border-white/10">
+                  <span className={`text-[9px] ${THEME_MAP[uiTheme].text} uppercase tracking-widest font-bold`}>Targets</span>
+                  {extractedTargets.slice(0,3).map((target, idx) => (
+                    <span key={idx} className={`${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} border ${THEME_MAP[uiTheme].border} px-2 py-1 rounded text-[10px] font-mono`}>{target}</span>
+                  ))}
                 </div>
               )}
             </div>
 
-            {/* TRACE TOGGLE */}
-            {activeTraceMessage && activeTraceMessage.steps && activeTraceMessage.steps.length > 0 && viewMode === 'chat' && (
-              <button onClick={() => setShowTracePanel(!showTracePanel)} title="Inspect Logic (Cmd+I)" className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-sans border transition-all shadow-lg ${showTracePanel ? `${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].border} text-white` : 'bg-white/5 border-white/10 hover:border-white/20 text-muted-foreground hover:text-white backdrop-blur-md'}`}>
-                <Eye className="size-3.5" /><span className="hidden sm:inline">{showTracePanel ? 'Close Inspector' : 'Trace Logs'}</span><kbd className="hidden md:inline-flex items-center gap-1 font-mono text-[9px] opacity-50 ml-2 border border-current rounded px-1"><Command className="size-2.5"/> I</kbd>
-              </button>
+            <div className="flex items-center gap-3">
+              <div className="relative">
+                <button onClick={() => { setShowProfileMenu(!showProfileMenu); setShowWorkspaceMenu(false); }} className="flex items-center gap-2 bg-white/[0.02] hover:bg-white/[0.06] border border-white/10 px-3 py-1.5 rounded-lg transition-all text-xs font-sans">
+                  <activeProfile.icon className={`size-3.5 ${activeProfile.color}`} /><span className="font-medium text-foreground/80">{activeProfile.name}</span><ChevronDown className="size-3 text-muted-foreground ml-1" />
+                </button>
+                {showProfileMenu && (
+                  <div className="absolute top-full right-0 mt-2 w-64 bg-[#111116] border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-fade-in">
+                    <div className="p-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider border-b border-white/5">Active Agent Override</div>
+                    <div className="p-1">
+                      {SECURITY_PROFILES.map(profile => (
+                        <button key={profile.id} onClick={() => { setActiveProfileId(profile.id); setShowProfileMenu(false); }} className={`w-full flex items-start gap-3 p-2.5 rounded-lg text-left transition-all ${activeProfileId === profile.id ? 'bg-white/5' : 'hover:bg-white/5'}`}>
+                          <profile.icon className={`size-4 mt-0.5 ${profile.color}`} />
+                          <div className="flex-1"><div className={`font-sans font-medium text-xs ${activeProfileId === profile.id ? 'text-white' : 'text-foreground/80'}`}>{profile.name}</div><div className="text-[10px] text-muted-foreground mt-0.5 leading-tight">{profile.description}</div></div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {activeTraceMessage && activeTraceMessage.steps && activeTraceMessage.steps.length > 0 && viewMode === 'chat' && (
+                <button onClick={() => setShowTracePanel(!showTracePanel)} title="Inspect Logic (Cmd+I)" className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-sans border transition-all shadow-lg ${showTracePanel ? `${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].border} text-white` : 'bg-white/5 border-white/10 hover:border-white/20 text-muted-foreground hover:text-white backdrop-blur-md'}`}>
+                  <Eye className="size-3.5" /><span className="hidden sm:inline">{showTracePanel ? 'Close Inspector' : 'Trace Logs'}</span><kbd className="hidden md:inline-flex items-center gap-1 font-mono text-[9px] opacity-50 ml-2 border border-current rounded px-1"><Command className="size-2.5"/> I</kbd>
+                </button>
+              )}
+            </div>
+          </header>
+
+          {/* 2. SCROLLABLE MIDDLE SECTION (flex-1 with internal overflow controls) */}
+          <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 flex flex-col">
+            {viewMode === 'recon' && <div className="p-4 md:p-6"><ReconDashboard targets={extractedTargets} theme={uiTheme} /></div>}
+            {viewMode === 'cvss' && <div className="p-4 md:p-6"><CVSSCalculator theme={uiTheme} /></div>}
+            {viewMode === 'graph' && <div className="p-4 md:p-6"><AttackGraphVisualizer graph={activeGraph} theme={uiTheme} /></div>}
+            {viewMode === 'payloads' && <div className="p-4 md:p-6"><PayloadMutator theme={uiTheme} /></div>}
+            {viewMode === 'bounty' && <div className="p-4 md:p-6"><BugBountyForge theme={uiTheme} targets={extractedTargets} /></div>}
+            {viewMode === 'ast' && <div className="p-4 md:p-6"><ASTVisualizer theme={uiTheme} /></div>}
+            {viewMode === 'terminal' && <div className="p-4 md:p-6 h-full"><div className="mx-auto h-full max-w-5xl"><AdvancedTerminal logs={systemLogs} theme={uiTheme} onCommand={handleTerminalCommand} /></div></div>}
+
+            {/* CHAT VIEW - DATA STREAM */}
+            {viewMode === 'chat' && (
+              <div className="flex-1 flex flex-col justify-end px-2 md:px-6 py-6 max-w-3xl mx-auto w-full">
+                {activeChat?.messages.length <= 1 ? (
+                  /* EMPTY / GREETING STATE (Centered without duplicate inputs) */
+                  <div className="flex-1 flex flex-col items-center justify-center text-center my-auto min-h-[50vh]">
+                    <div className="mb-8 relative flex justify-center">
+                      <div className={`absolute inset-0 bg-${THEME_MAP[uiTheme].accent}-500 blur-[80px] opacity-20 rounded-full w-48 h-48 m-auto`} />
+                      <HexicalLogo className={`size-16 relative z-10 ${THEME_MAP[uiTheme].text}`} />
+                    </div>
+                    <h2 className="text-2xl md:text-4xl font-sans mb-8 text-foreground tracking-tight leading-relaxed">
+                      {isAuthLoading ? (
+                        <span className="flex items-center justify-center gap-3 text-muted-foreground text-xl"><Loader2 className={`animate-spin size-6 ${THEME_MAP[uiTheme].text}`} /> Securing session bounds...</span>
+                      ) : (
+                        <>{getContextualGreeting()}, <span className={`font-semibold drop-shadow-[0_0_15px_rgba(255,255,255,0.1)] ${THEME_MAP[uiTheme].text}`}>{userName}</span>.</>
+                      )}
+                    </h2>
+                  </div>
+                ) : (
+                  /* ACTIVE MESSAGES STATE */
+                  <div className="flex flex-col pb-4">
+                    <DataStream messages={activeChat?.messages ?? INITIAL_CHAT_STATE.messages} busy={busy} />
+                    <div ref={messagesEndRef} className="h-6 shrink-0" />
+                  </div>
+                )}
+              </div>
             )}
           </div>
 
-          {/* DYNAMIC SUB-WORKSPACE INJECTION ROUTER */}
-          <div className="flex-1 flex flex-col items-center justify-center overflow-hidden w-full relative pt-16 pb-4 px-4">
-              
-              {viewMode === 'recon' && <ReconDashboard targets={extractedTargets} theme={uiTheme} />}
-              {viewMode === 'cvss' && <CVSSCalculator theme={uiTheme} />}
-              {viewMode === 'graph' && <AttackGraphVisualizer graph={activeGraph} theme={uiTheme} />}
-              {viewMode === 'payloads' && <PayloadMutator theme={uiTheme} />}
-              {viewMode === 'bounty' && <BugBountyForge theme={uiTheme} targets={extractedTargets} />}
-              {viewMode === 'ast' && <ASTVisualizer theme={uiTheme} />}
-              {viewMode === 'terminal' && <div className="w-full h-full p-4 max-w-5xl"><AdvancedTerminal logs={systemLogs} theme={uiTheme} onCommand={handleTerminalCommand} /></div>}
-
-              {/* DEFAULT CHAT INTERFACE */}
-              {viewMode === 'chat' && (
-                <>
-                  {activeChat?.messages.length <= 1 ? (
-                    <div className="w-full text-center max-w-3xl mx-auto animate-rise flex flex-col h-full justify-center pb-20">
-                      <div className="mb-8 relative flex justify-center">
-                         <div className={`absolute inset-0 bg-${THEME_MAP[uiTheme].accent}-500 blur-[80px] opacity-20 rounded-full w-48 h-48 m-auto`} />
-                         <HexicalLogo className={`size-16 relative z-10 ${THEME_MAP[uiTheme].text}`} />
-                      </div>
-                      <h2 className="text-2xl md:text-4xl font-sans mb-8 text-foreground tracking-tight leading-relaxed">
-                        {isAuthLoading ? (
-                          <span className="flex items-center justify-center gap-3 text-muted-foreground text-xl"><Loader2 className={`animate-spin size-6 ${THEME_MAP[uiTheme].text}`} /> Securing session bounds...</span>
-                        ) : (
-                          <>{getContextualGreeting()}, <span className={`font-semibold drop-shadow-[0_0_15px_rgba(255,255,255,0.1)] ${THEME_MAP[uiTheme].text}`}>{userName}</span>.</>
-                        )}
-                      </h2>
-                      <div className={`w-full rounded-2xl border border-white/10 p-2 backdrop-blur-2xl bg-black/40 shadow-2xl ${THEME_MAP[uiTheme].glow} focus-within:border-${THEME_MAP[uiTheme].accent}-500/50 transition-all duration-300`}>
-                          <div className="flex items-center gap-2 mb-2 px-3 pt-2">
-                            <div className={`flex items-center gap-1.5 text-[10px] uppercase tracking-widest font-semibold px-2 py-1 rounded border ${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} ${THEME_MAP[uiTheme].border}`}><Crosshair size={10} /> Context Scope:</div>
-                            <input type="text" placeholder="e.g. netscaler-gateway or *.vercel.app" value={targetScope} onChange={(e) => setTargetScope(e.target.value)} className="bg-transparent text-xs text-zinc-400 placeholder:text-zinc-600 outline-none flex-1 font-mono"/>
-                          </div>
-                          <CommandInput onSubmit={handleSubmit} busy={busy} onStop={() => abortControllerRef.current?.abort()} />
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="w-full max-w-3xl flex flex-col h-full overflow-hidden">
-                      <div className="flex-1 overflow-y-auto px-2 md:px-6 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
-                        <DataStream messages={activeChat.messages} busy={busy} />
-                        <div ref={messagesEndRef} className="h-6" />
-                      </div>
-                      
-                      <div className={`transition-all duration-300 overflow-hidden flex justify-center ${busy ? 'h-8 opacity-100 mb-2' : 'h-0 opacity-0 mb-0'}`}>
-                         <div className={`flex items-center gap-2 text-xs font-mono px-4 py-1.5 rounded-full border backdrop-blur-md ${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} ${THEME_MAP[uiTheme].border}`}>
-                           <Activity className="size-3 animate-pulse" /> {loadingPhase}
-                         </div>
-                      </div>
-
-                      <div className="shrink-0 bg-gradient-to-t from-[#0a0a0c] via-[#0a0a0c]/90 to-transparent pt-2">
-                          <div className={`rounded-3xl border border-white/10 bg-black/40 backdrop-blur-2xl transition-all shadow-lg focus-within:border-white/30 focus-within:bg-black/60`}>
-                            <div className="flex items-center gap-2 mb-2 px-3 pt-2">
-                              <div className={`flex items-center gap-1.5 text-[10px] uppercase tracking-widest font-semibold px-2 py-1 rounded border ${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} ${THEME_MAP[uiTheme].border}`}><Crosshair size={10} /> Scope:</div>
-                              <input type="text" placeholder="e.g. netscaler-gateway or *.vercel.app" value={targetScope} onChange={(e) => setTargetScope(e.target.value)} className="bg-transparent text-xs text-zinc-400 placeholder:text-zinc-600 outline-none flex-1 font-mono"/>
-                            </div>
-                            <CommandInput onSubmit={handleSubmit} busy={busy} onStop={() => abortControllerRef.current?.abort()} />
-                          </div>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-          </div>
+          {/* 3. FIXED FOOTER (Command Input locked strictly to bottom, only renders ONCE) */}
+          {viewMode === 'chat' && (
+            <footer className="shrink-0 border-t border-white/5 bg-[#0a0a0c]/95 px-4 pb-6 pt-3 backdrop-blur-xl z-[40]">
+              <div className="mx-auto max-w-3xl flex flex-col">
+                <div className={`mb-2 flex justify-center transition-all duration-300 ${busy ? 'h-8 opacity-100' : 'h-0 opacity-0 overflow-hidden'}`}>
+                  <div className={`flex items-center gap-2 text-xs font-mono px-4 py-1.5 rounded-full border backdrop-blur-md ${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} ${THEME_MAP[uiTheme].border}`}>
+                    <Activity className="size-3 animate-pulse" /> {loadingPhase}
+                  </div>
+                </div>
+                
+                <div className={`rounded-3xl border border-white/10 bg-black/60 backdrop-blur-3xl shadow-[0_0_30px_rgba(0,0,0,0.5)] focus-within:border-${THEME_MAP[uiTheme].accent}-500/50 transition-all`}>
+                  <div className="flex items-center gap-2 mb-2 px-4 pt-3">
+                    <div className={`flex items-center gap-1.5 text-[10px] uppercase tracking-widest font-semibold px-2 py-1 rounded border ${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} ${THEME_MAP[uiTheme].border}`}><Crosshair size={10} /> Scope:</div>
+                    <input type="text" placeholder="e.g. netscaler-gateway or *.vercel.app" value={targetScope} onChange={(e) => setTargetScope(e.target.value)} className="bg-transparent text-xs text-zinc-300 placeholder:text-zinc-600 outline-none flex-1 font-mono" />
+                  </div>
+                  <div className="px-1 pb-1">
+                     <CommandInput onSubmit={handleSubmit} busy={busy} onStop={() => abortControllerRef.current?.abort()} />
+                  </div>
+                </div>
+              </div>
+            </footer>
+          )}
         </main>
 
         {/* ================= SWARM & TRACE INSPECTOR SPLIT PANE ================= */}
