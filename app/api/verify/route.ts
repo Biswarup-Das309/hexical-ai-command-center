@@ -7,7 +7,7 @@ import { PLAN_LIMITS, type PlanTier } from '@/lib/hexical-types';
 export async function POST(req: Request) {
   try {
     // ============================================================================
-    // 1. LAZY INSTANTIATION (CI/CD Pipeline Shield)
+    // 1. LAZY INSTANTIATION & INFRASTRUCTURE SHIELD
     // ============================================================================
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
       throw new Error("FATAL: Missing Supabase infrastructure keys.");
@@ -25,32 +25,43 @@ export async function POST(req: Request) {
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
     // ============================================================================
-    // 2. CRYPTOGRAPHIC AUTHENTICATION
+    // 2. CRYPTOGRAPHIC AUTH & MALFORMED PAYLOAD DEFENSE
     // ============================================================================
     const { userId } = await auth();
     console.log(`[HEXICAL_AUTH_TRACE]: Authenticating transaction for User ID: ${userId || 'ANONYMOUS'}`);
     
-    const body = await req.json();
+    let body;
+    try {
+      body = await req.json();
+    } catch (parseError) {
+      // DEFENSE: Prevents attackers from crashing the server with malformed non-JSON requests
+      return NextResponse.json({ error: "Malformed request payload. Strict JSON required." }, { status: 400 });
+    }
+
     const { 
       logic, 
       profile = 'recon', 
       workspace = 'global', 
       targetArch = 'x64', 
-      autoRedact, 
+      autoRedact = false, 
       aggressiveness = 'low', 
       targetScope, 
       extractedTargets,
       bountyPlatform,
     } = body;
 
+    // DEFENSE: Hard-cap payload size immediately to prevent memory exhaustion (DoS)
     if (!logic || typeof logic !== 'string') {
       return NextResponse.json({ error: "Invalid execution payload. Prompt logic string required." }, { status: 400 });
     }
+    if (logic.length > 25000) {
+      return NextResponse.json({ error: "Payload exceeds maximum absolute infrastructure limits (25,000 chars). Payload dropped." }, { status: 413 });
+    }
 
     // ============================================================================
-    // 3. DATABASE TIER ENFORCEMENT & SECURE ASSET SEEDING
+    // 3. DATABASE TIER ENFORCEMENT & ENUM-SAFE SEEDING
     // ============================================================================
-    // CRITICAL FIX: The absolute default MUST be 'free' to prevent IDOR/Privilege Escalation
+    // CRITICAL FIX: The absolute default MUST be 'free' to prevent Privilege Escalation
     let activeTier: string = 'free'; 
 
     if (userId) {
@@ -58,21 +69,23 @@ export async function POST(req: Request) {
         .from('profiles')
         .select('tier')
         .eq('user_id', userId)
-        .single();
+        .maybeSingle(); // Changed to maybeSingle to prevent silent 500s on missing rows
         
-      if (dbError && dbError.code === 'PGRST116') {
-        console.log(`[DATABASE_SYNC_WARN]: Profile missing for user ${userId}. Auto-seeding FREE tier asset...`);
+      if (!userProfile) {
+        console.log(`[DATABASE_SYNC_WARN]: Profile missing for user ${userId}. Attempting to auto-seed FREE tier...`);
         const { data: newProfile, error: insertError } = await supabaseAdmin
           .from('profiles')
-          // CRITICAL FIX: Replaced 'go' with 'free'
           .insert({ user_id: userId, tier: 'free' }) 
           .select('tier')
-          .single();
+          .maybeSingle();
           
         if (!insertError && newProfile) {
           userProfile = newProfile;
         } else {
-          console.error("[DATABASE_SYNC_CRITICAL]: Failed to auto-seed user registration row:", insertError);
+          // MEMORY-STATE FALLBACK: 
+          // If the database rejects 'free' because of the ENUM restriction, 
+          // we don't crash. We just keep them as 'free' in the server memory for this request!
+          console.warn("[DATABASE_ENUM_BLOCK]: Failed to save user to database (likely ENUM restriction). Running in ephemeral free mode.");
         }
       }
         
@@ -83,14 +96,7 @@ export async function POST(req: Request) {
 
     console.log(`[HEXICAL_GATE_RESOLVED]: Processing payload under authorized [${activeTier.toUpperCase()}] tier matrix.`);
     
-    // Safe limit resolution in case PLAN_LIMITS is strictly typed and missing 'free'
     const currentLimits = PLAN_LIMITS[activeTier as PlanTier] || { maxMessages: 50, features: [] };
-
-    if (logic.length > currentLimits.maxMessages * 100) { 
-      return NextResponse.json({ 
-        error: `Payload volume exceeds authorized tier constraints. Upgrade license to parse larger execution payloads.` 
-      }, { status: 403 });
-    }
 
     if (profile === 'swarm' && (!currentLimits.features || !currentLimits.features.includes('swarm_intelligence'))) {
       console.warn(`[SECURITY_GATE_BLOCKED]: Intercepted unauthorized Swarm Intelligence pipeline call from User: ${userId}`);
@@ -102,7 +108,6 @@ export async function POST(req: Request) {
     // ============================================================================
     // 4. DYNAMIC MODEL ROUTING & PRE-FLIGHT INTENT ROUTER
     // ============================================================================
-    // CRITICAL FIX: Added 'free' tier mapping to prevent undefined SDK crashes
     const MODEL_MAP: Record<string, string> = {
       free: 'llama-3.1-8b-instant',
       go: 'llama-3.1-8b-instant',      
@@ -127,7 +132,8 @@ export async function POST(req: Request) {
       ],
       model: 'llama-3.1-8b-instant',
       response_format: { type: "json_object" },
-      temperature: 0.1
+      temperature: 0.1,
+      max_tokens: 50 // DEFENSE: Cap the JSON output to prevent token bleeding
     });
 
     totalTokens += intentCheck.usage?.total_tokens || 0;
