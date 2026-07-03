@@ -7,6 +7,8 @@ import {
   Hash, Code, FileText, CheckCircle, Timer, Cpu, ShieldCheck, FileJson, Workflow,
   Network, Lock
 } from 'lucide-react'
+import { toast } from 'sonner' // CRITICAL FIX: Imported for Gemini fallback UI
+
 import { HexicalLogo } from '@/components/hexical/hexical-logo'
 import { createSupabaseClient } from '@/lib/supabase' 
 import { useGuestLimit } from '@/hooks/use-guest-limit'
@@ -14,7 +16,9 @@ import { inferRoute, type StreamMessage, type PlanTier, PLAN_LIMITS } from '@/li
 import { ChatSidebar } from '@/components/hexical/chat-sidebar'
 import { DataStream } from '@/components/hexical/data-stream'
 import { CommandInput } from '@/components/hexical/command-input'
-import { UpgradeModal } from '@/components/hexical/upgrade-modal'
+
+// CRITICAL FIX: Removed curly braces to prevent Vercel build crash
+import UpgradeModal from '@/components/hexical/upgrade-modal'
 import { useUser, useClerk, useSession } from '@clerk/nextjs'
 
 // --- THE NEW ENTERPRISE BARREL IMPORT ---
@@ -97,8 +101,8 @@ const THEME_MAP: Record<AccentTheme, { border: string, text: string, bg: string,
 }
 
 const SECURITY_PROFILES = [
-  { id: 'swarm', name: 'Swarm Intelligence', description: 'Multi-agent Red/Blue team consensus', icon: GitMerge, color: 'text-amber-400', reqFeature: 'swarm_intelligence' },
   { id: 'recon', name: 'Recon Engine', description: 'Attack surface mapping & enumeration', icon: Network, color: 'text-emerald-400', reqFeature: 'core_heuristics' },
+  { id: 'swarm', name: 'Swarm Intelligence', description: 'Multi-agent Red/Blue team consensus', icon: GitMerge, color: 'text-amber-400', reqFeature: 'swarm_intelligence' },
   { id: 'bug-hunter', name: 'Exploit Architect', description: 'Weaponized PoC generation', icon: Crosshair, color: 'text-rose-400', reqFeature: 'core_heuristics' },
   { id: 'defense', name: 'Defense Matrix', description: 'WAF rules & code patch generation', icon: Shield, color: 'text-cyan-400', reqFeature: 'core_heuristics' }
 ]
@@ -135,7 +139,7 @@ function generateUniqueID(): string {
 
 function sanitizeLocalPayload(text: string, isActive: boolean): string {
   if (!isActive) return text;
-  let s = text.replace(/\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g, '[REDACTED_IPv4]');
+  let s = text.replace(/\b(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g, '[REDACTED_IPv4]');
   s = s.replace(/(eyJ[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,})/g, '[REDACTED_JWT]');
   s = s.replace(/(?:api_key|access_token|secret_key|password)[=:\s]*(["']?)[a-zA-Z0-9_\-]{16,}\1/gi, '[REDACTED_SECRET]');
   s = s.replace(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|org|net|io|gov|edu|ai|app)\b/gi, '[REDACTED_DOMAIN]');
@@ -143,7 +147,7 @@ function sanitizeLocalPayload(text: string, isActive: boolean): string {
 }
 
 const extractTargetsFromLogic = (text: string): string[] => {
-  const ipRegex = /\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g;
+  const ipRegex = /\b(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g;
   const domainRegex = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|org|net|io|gov|edu|ai|app|local)\b/gi;
   return Array.from(new Set([...(text.match(ipRegex) || []), ...(text.match(domainRegex) || [])])).slice(0, 8);
 }
@@ -294,7 +298,6 @@ export function HexicalConsole() {
     logToTerminal(`[SYSTEM] Spawned isolated lazy context: ${newId}`);
   }, [chats, logToTerminal]);
 
-  // FIX 1: THE BULLETPROOF DELETE FUNCTION
   const handleDelete = useCallback(async (id: string) => {
     if (id === sessionStorage.getItem(PENDING_SESSION_ID)) {
       sessionStorage.removeItem(PENDING_SESSION_ID);
@@ -460,7 +463,9 @@ export function HexicalConsole() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [activeTraceMessage])
 
-  // FIX 2: THE TOKEN INTERCEPTOR AND CRASH HANDLER
+  // ============================================================================
+  // SECURE TRANSACTION HANDLER
+  // ============================================================================
   const handleSubmit = async (rawLogic: string) => {
     if (busy || !rawLogic.trim()) return
 
@@ -504,12 +509,16 @@ export function HexicalConsole() {
       await supabaseAuth.from('messages').insert({ id: userMsg.id, conversation_id: activeId, user_id: user.id, content: safeLogic, role: 'user' });
     }
     
-    const startTime = performance.now()
+    const startTime = performance.now();
+    
+    // CRITICAL FIX: Instantiate the AbortController securely before fetch
+    abortControllerRef.current = new AbortController();
 
     try {
       const res = await fetch('/api/verify', {
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' },
+        signal: abortControllerRef.current.signal, // Wired controller to allow clean interruption
         body: JSON.stringify({ 
           logic: safeLogic, profile: activeProfileId, workspace: activeWorkspaceId, 
           targetArch, autoRedact, aggressiveness, targetScope, extractedTargets,
@@ -517,7 +526,6 @@ export function HexicalConsole() {
         })
       });
       
-      // ERROR INTERCEPTOR: Catches Token Limits (402) and Permissions (403)
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         if (res.status === 402 || res.status === 403) {
@@ -605,8 +613,12 @@ export function HexicalConsole() {
       }
       recordUsage()
     } catch (err: any) { 
+      // CRITICAL FIX: Ignore DOMException AbortError cleanly
+      if (err.name === 'AbortError') {
+         logToTerminal(`[SYSTEM] Execution aborted by operator.`);
+         return;
+      }
       logToTerminal(`[ERR] Pipeline crash during remote execution: ${err.message}`); 
-      // Ensure the user doesn't get stuck in a loading loop if the server crashes
       const errorMsg: ExtendedStreamMessage = { 
         id: generateUniqueID(), role: 'hexical', text: `**FATAL ERROR:** ${err.message || 'Pipeline sequence failed.'}`, 
         steps: ['SYSTEM_CRASH'], valid: false, route: 'unknown' as any, ts: generateTimestamp() 
@@ -720,7 +732,8 @@ export function HexicalConsole() {
 
         <main className="flex-1 flex flex-col relative bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-zinc-950 via-[#0a0a0c] to-[#0a0a0c] min-w-0 overflow-hidden">
           
-          <header className="relative z-[50] flex shrink-0 h-16 items-center justify-between gap-3 border-b border-white/5 bg-[#0a0a0c]/80 px-4 md:px-6 backdrop-blur-md overflow-hidden">
+          {/* CRITICAL FIX: Changed overflow-hidden to overflow-visible to un-clip the dropdown */}
+          <header className="relative z-[50] flex shrink-0 h-16 items-center justify-between gap-3 border-b border-white/5 bg-[#0a0a0c]/80 px-4 md:px-6 backdrop-blur-md overflow-visible">
             
             <div className="flex items-center gap-3 shrink-0" ref={headerMenuRef}>
               {!isSidebarOpen && (
@@ -779,8 +792,9 @@ export function HexicalConsole() {
                   <ChevronDown className="size-3 text-muted-foreground ml-1" />
                 </button>
                 
+                {/* CRITICAL FIX: Z-index boosted to z-[100] to overlay cleanly above all chat content */}
                 {showProfileMenu && (
-                  <div className="absolute top-full right-0 mt-2 w-64 bg-[#111116] border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-fade-in">
+                  <div className="absolute top-full right-0 mt-2 w-64 bg-[#111116] border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-fade-in z-[100]">
                     <div className="p-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider border-b border-white/5">
                       Active Agent Override
                     </div>
@@ -795,7 +809,13 @@ export function HexicalConsole() {
                                 setActiveProfileId(profile.id); 
                                 setShowProfileMenu(false);
                               } else {
-                                setShowUpgradeModal(true);
+                                // CRITICAL UX FIX: The Gemini-Style FOMO Interceptor
+                                toast.error(`${profile.name} locked.`, {
+                                  description: "Requires advanced matrix license. Defaulting to Recon Engine."
+                                });
+                                setActiveProfileId('recon'); 
+                                setShowProfileMenu(false);
+                                setTimeout(() => setShowUpgradeModal(true), 500); 
                               }
                             }} 
                             className={`w-full flex items-start gap-3 p-2.5 rounded-lg text-left transition-all ${!canAccessProfile ? 'opacity-50 hover:bg-white/5' : activeProfileId === profile.id ? 'bg-white/5' : 'hover:bg-white/5'}`}
@@ -930,6 +950,7 @@ export function HexicalConsole() {
                        onSubmit={handleSubmit} 
                        busy={busy} 
                        onStop={() => abortControllerRef.current?.abort()} 
+                       activeTier={currentTier}
                      />
                   </div>
                 </div>
@@ -938,7 +959,6 @@ export function HexicalConsole() {
           )}
         </main>
 
-        {/* RESTORED SWARM & TRACE INSPECTOR PANEL */}
         {showTracePanel && activeTraceMessage && viewMode === 'chat' && (
           <div className="w-[380px] md:w-[450px] h-full border-l border-white/5 bg-[#0a0a0c]/95 backdrop-blur-3xl flex flex-col overflow-hidden animate-fade-in flex-shrink-0 z-40 shadow-[-20px_0_50px_rgba(0,0,0,0.5)]">
             <div className="p-4 border-b border-white/10 flex items-center justify-between bg-black/40">
