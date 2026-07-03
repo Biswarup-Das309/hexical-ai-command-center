@@ -5,12 +5,12 @@ import {
   Loader2, Eye, Crosshair, ChevronDown, Activity, X, Command, AlertTriangle, 
   TerminalSquare, LayoutDashboard, Zap, SearchCode, GitMerge, Shield, 
   Hash, Code, FileText, CheckCircle, Timer, Cpu, ShieldCheck, FileJson, Workflow,
-  Network // <--- ADD THIS RIGHT HERE
+  Network, Lock
 } from 'lucide-react'
 import { HexicalLogo } from '@/components/hexical/hexical-logo'
 import { createSupabaseClient } from '@/lib/supabase' 
 import { useGuestLimit } from '@/hooks/use-guest-limit'
-import { inferRoute, type StreamMessage } from '@/lib/hexical-types'
+import { inferRoute, type StreamMessage, type PlanTier, PLAN_LIMITS } from '@/lib/hexical-types'
 import { ChatSidebar } from '@/components/hexical/chat-sidebar'
 import { DataStream } from '@/components/hexical/data-stream'
 import { CommandInput } from '@/components/hexical/command-input'
@@ -97,10 +97,10 @@ const THEME_MAP: Record<AccentTheme, { border: string, text: string, bg: string,
 }
 
 const SECURITY_PROFILES = [
-  { id: 'swarm', name: 'Swarm Intelligence', description: 'Multi-agent Red/Blue team consensus', icon: GitMerge, color: 'text-amber-400' },
-  { id: 'recon', name: 'Recon Engine', description: 'Attack surface mapping & enumeration', icon: Network, color: 'text-emerald-400' },
-  { id: 'bug-hunter', name: 'Exploit Architect', description: 'Weaponized PoC generation', icon: Crosshair, color: 'text-rose-400' },
-  { id: 'defense', name: 'Defense Matrix', description: 'WAF rules & code patch generation', icon: Shield, color: 'text-cyan-400' }
+  { id: 'swarm', name: 'Swarm Intelligence', description: 'Multi-agent Red/Blue team consensus', icon: GitMerge, color: 'text-amber-400', reqFeature: 'swarm_intelligence' },
+  { id: 'recon', name: 'Recon Engine', description: 'Attack surface mapping & enumeration', icon: Network, color: 'text-emerald-400', reqFeature: 'core_heuristics' },
+  { id: 'bug-hunter', name: 'Exploit Architect', description: 'Weaponized PoC generation', icon: Crosshair, color: 'text-rose-400', reqFeature: 'core_heuristics' },
+  { id: 'defense', name: 'Defense Matrix', description: 'WAF rules & code patch generation', icon: Shield, color: 'text-cyan-400', reqFeature: 'core_heuristics' }
 ]
 
 const WORKSPACES = [
@@ -135,28 +135,21 @@ function generateUniqueID(): string {
 
 function sanitizeLocalPayload(text: string, isActive: boolean): string {
   if (!isActive) return text;
-  
   let s = text.replace(/\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g, '[REDACTED_IPv4]');
   s = s.replace(/(eyJ[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,})/g, '[REDACTED_JWT]');
   s = s.replace(/(?:api_key|access_token|secret_key|password)[=:\s]*(["']?)[a-zA-Z0-9_\-]{16,}\1/gi, '[REDACTED_SECRET]');
   s = s.replace(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|org|net|io|gov|edu|ai|app)\b/gi, '[REDACTED_DOMAIN]');
-  
   return s;
 }
 
 const extractTargetsFromLogic = (text: string): string[] => {
   const ipRegex = /\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g;
   const domainRegex = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|org|net|io|gov|edu|ai|app|local)\b/gi;
-  
-  return Array.from(new Set([
-    ...(text.match(ipRegex) || []), 
-    ...(text.match(domainRegex) || [])
-  ])).slice(0, 8);
+  return Array.from(new Set([...(text.match(ipRegex) || []), ...(text.match(domainRegex) || [])])).slice(0, 8);
 }
 
 const parseAttackGraph = (logic: string): AttackGraph => {
   const isWeb = logic.includes('xss') || logic.includes('sql') || logic.includes('http');
-  
   if (isWeb) {
     return {
       nodes: [
@@ -173,7 +166,6 @@ const parseAttackGraph = (logic: string): AttackGraph => {
       ]
     };
   }
-  
   return {
     nodes: [
       { id: '1', label: 'External Attack Surface', type: 'entry', x: 50, y: 150 },
@@ -203,6 +195,9 @@ export function HexicalConsole() {
   const [loadingPhase, setLoadingPhase] = useState<string>(PROCESSING_PHASES[0])
   const [viewMode, setViewMode] = useState<ViewMode>('chat')
   const [uiTheme, setUiTheme] = useState<AccentTheme>('cyan')
+  
+  // TIER STATE DRIVER
+  const [currentTier, setCurrentTier] = useState<PlanTier>('go') 
   
   const [systemLogs, setSystemLogs] = useState<string[]>([
     '[SYSTEM] Kernel loaded.', 
@@ -241,6 +236,10 @@ export function HexicalConsole() {
   const headerMenuRef = useRef<HTMLDivElement | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
+  const hasFeatureAccess = useCallback((requiredFeature: string) => {
+    return PLAN_LIMITS[currentTier].features.includes(requiredFeature);
+  }, [currentTier]);
+
   const logToTerminal = useCallback((msg: string) => {
     setSystemLogs(prev => [...prev, msg])
   }, []);
@@ -274,27 +273,6 @@ export function HexicalConsole() {
     return createSupabaseClient(token || undefined);
   }, [session])
   
-  const syncToCloud = useCallback(async (updatedChats: any[], forceSync = false) => {
-    if (!user || stealthMode) return;
-    const activeChat = updatedChats.find(c => c.id === activeId);
-    
-    if (activeChat && (activeChat.messages.length > 1 || forceSync)) { 
-      const client = await getAuthenticatedClient();
-      if (!client) return;
-      
-      const { error } = await client.from('conversations').upsert({
-        id: activeChat.id, 
-        user_id: user.id, 
-        title: activeChat.title, 
-        pinned: activeChat.pinned
-      });
-      
-      if (error) {
-        logToTerminal(`[DB_ERR] Sync Convo: ${error.message}`);
-      }
-    }
-  }, [user, stealthMode, activeId, getAuthenticatedClient, logToTerminal]);
-
   const handleNewChat = useCallback(() => {
     const existingEmpty = chats.find(c => c.messages.length <= 1);
     if (existingEmpty) { 
@@ -316,28 +294,44 @@ export function HexicalConsole() {
     logToTerminal(`[SYSTEM] Spawned isolated lazy context: ${newId}`);
   }, [chats, logToTerminal]);
 
+  // FIX 1: THE BULLETPROOF DELETE FUNCTION
   const handleDelete = useCallback(async (id: string) => {
-    const next = chats.filter(c => c.id !== id);
-    
-    if (user && !stealthMode) {
-        const client = await getAuthenticatedClient();
-        await client?.from('conversations').delete().eq('id', id);
-        logToTerminal(`[DB] Cryptographic purge of workspace data: ${id}`);
+    if (id === sessionStorage.getItem(PENDING_SESSION_ID)) {
+      sessionStorage.removeItem(PENDING_SESSION_ID);
     }
+
+    const nextChats = chats.filter(c => c.id !== id);
     
-    if (next.length === 0) {
+    if (nextChats.length === 0) {
       handleNewChat();
     } else {
-        setChats(next);
-        if (activeId === id) setActiveId(next[0].id);
+      setChats(nextChats);
+      if (activeId === id) {
+        setActiveId(nextChats[0].id);
+      }
+    }
+
+    if (user && !stealthMode) {
+      try {
+        const client = await getAuthenticatedClient();
+        if (!client) throw new Error("Cryptographic token missing.");
+        
+        const { error } = await client.from('conversations').delete().eq('id', id);
+        
+        if (error) {
+          logToTerminal(`[DB_ERR] Supabase RLS blocked purge: ${error.message}`);
+          console.error("Supabase Delete Error:", error);
+        } else {
+          logToTerminal(`[DB] Permanent cryptographic purge executed for workspace: ${id}`);
+        }
+      } catch (err: any) {
+        logToTerminal(`[DB_ERR] Kernel panic during database purge sequence.`);
+      }
     }
   }, [chats, activeId, user, stealthMode, getAuthenticatedClient, handleNewChat, logToTerminal]);
 
   useEffect(() => { setIsMounted(true) }, [])
-
-  useEffect(() => { 
-    if (window.innerWidth >= 768) setIsSidebarOpen(true) 
-  }, [])
+  useEffect(() => { if (window.innerWidth >= 768) setIsSidebarOpen(true) }, [])
   
   useEffect(() => {
     if (isLoaded) {
@@ -346,10 +340,12 @@ export function HexicalConsole() {
         setUserEmail(user.primaryEmailAddress?.emailAddress || 'no-email@hexical.ai')
         setUserAvatar(user.imageUrl || null)
         logToTerminal(`[AUTH] Cloud token derived. Sync engine online.`);
+        setCurrentTier('pro'); 
       } else {
         setUserName(DEFAULT_GUEST_NAME); 
         setUserEmail(DEFAULT_GUEST_EMAIL); 
         setUserAvatar(null);
+        setCurrentTier('go');
         logToTerminal(`[WARN] Ephemeral session. All telemetry and sync disabled.`);
       }
       setIsAuthLoading(false)
@@ -412,14 +408,19 @@ export function HexicalConsole() {
         formatted.unshift(createFreshChatState(pendingId));
       }
 
-      if (formatted.length === 0) {
+      const existingEmptyChat = formatted.find(c => c.messages.length <= 1);
+      
+      if (existingEmptyChat) {
+        setChats(formatted);
+        setActiveId(existingEmptyChat.id);
+      } else {
         const freshId = generateUniqueID();
-        formatted.push(createFreshChatState(freshId));
+        const freshChat = createFreshChatState(freshId);
+        formatted.unshift(freshChat);
         sessionStorage.setItem(PENDING_SESSION_ID, freshId);
+        setChats(formatted);
+        setActiveId(freshId);
       }
-
-      setChats(formatted); 
-      setActiveId(prev => (prev && formatted.find(c => c.id === prev)) ? prev : formatted[0].id);
     };
     
     initializeChats();
@@ -454,31 +455,19 @@ export function HexicalConsole() {
       if ((e.metaKey || e.ctrlKey) && e.key === 'b') { e.preventDefault(); setIsSidebarOpen(prev => !prev); }
       if ((e.metaKey || e.ctrlKey) && e.key === 'i') { e.preventDefault(); if (activeTraceMessage) setShowTracePanel(prev => !prev); }
       if ((e.metaKey || e.ctrlKey) && e.key === ',') { e.preventDefault(); setShowSettingsModal(true); }
-      if ((e.metaKey || e.ctrlKey) && e.key === '1') { e.preventDefault(); setViewMode('chat'); }
-      if ((e.metaKey || e.ctrlKey) && e.key === '2') { e.preventDefault(); setViewMode('recon'); }
-      if ((e.metaKey || e.ctrlKey) && e.key === '3') { e.preventDefault(); setViewMode('payloads'); }
-      if ((e.metaKey || e.ctrlKey) && e.key === '4') { e.preventDefault(); setViewMode('graph'); }
-      if ((e.metaKey || e.ctrlKey) && e.key === '5') { e.preventDefault(); setViewMode('ast'); }
-      if ((e.metaKey || e.ctrlKey) && e.key === '6') { e.preventDefault(); setViewMode('cvss'); }
-      if ((e.metaKey || e.ctrlKey) && e.key === '7') { e.preventDefault(); setViewMode('bounty'); }
-      if ((e.metaKey || e.ctrlKey) && e.key === '8') { e.preventDefault(); setViewMode('terminal'); }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [activeTraceMessage])
 
+  // FIX 2: THE TOKEN INTERCEPTOR AND CRASH HANDLER
   const handleSubmit = async (rawLogic: string) => {
     if (busy || !rawLogic.trim()) return
 
     if (!checkLimit()) {
       const systemWarning: ExtendedStreamMessage = { 
-        id: generateUniqueID(), 
-        role: 'hexical', 
-        text: `**LOCKOUT:** Limit reached.`, 
-        steps: ['GUEST_LIMIT_REACHED'], 
-        valid: false, 
-        route: 'auth_required' as any, 
-        ts: generateTimestamp() 
+        id: generateUniqueID(), role: 'hexical', text: `**LOCKOUT:** Guest Limit reached.`, 
+        steps: ['GUEST_LIMIT_REACHED'], valid: false, route: 'unknown' as any, ts: generateTimestamp() 
       }
       setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, { id: generateUniqueID(), role: 'user', text: rawLogic, ts: generateTimestamp() }, systemWarning] } : c))
       openSignIn(); 
@@ -496,13 +485,7 @@ export function HexicalConsole() {
       logToTerminal(`[SEC] Zero-Knowledge Regex triggered. Secrets stripped prior to transit.`);
     }
 
-    const userMsg: ExtendedStreamMessage = { 
-      id: generateUniqueID(), 
-      role: 'user', 
-      text: safeLogic, 
-      ts: generateTimestamp() 
-    }
-    
+    const userMsg: ExtendedStreamMessage = { id: generateUniqueID(), role: 'user', text: safeLogic, ts: generateTimestamp() }
     const currentChatContext = chats.find(c => c.id === activeId) || chats[0];
     const isNewChat = currentChatContext.messages.length <= 1;
     const generatedTitle = isNewChat ? safeLogic.split(' ').slice(0, 4).join(' ') + '...' : currentChatContext.title;
@@ -515,21 +498,10 @@ export function HexicalConsole() {
     if (user && !stealthMode) {
       const supabaseAuth = await getAuthenticatedClient();
       if (isNewChat) {
-        await supabaseAuth.from('conversations').upsert({ 
-          id: activeId, 
-          user_id: user.id, 
-          title: generatedTitle, 
-          pinned: currentChatContext.pinned 
-        });
+        await supabaseAuth.from('conversations').upsert({ id: activeId, user_id: user.id, title: generatedTitle, pinned: currentChatContext.pinned });
         sessionStorage.removeItem(PENDING_SESSION_ID); 
       }
-      await supabaseAuth.from('messages').insert({ 
-        id: userMsg.id, 
-        conversation_id: activeId, 
-        user_id: user.id, 
-        content: safeLogic, 
-        role: 'user' 
-      });
+      await supabaseAuth.from('messages').insert({ id: userMsg.id, conversation_id: activeId, user_id: user.id, content: safeLogic, role: 'user' });
     }
     
     const startTime = performance.now()
@@ -539,19 +511,29 @@ export function HexicalConsole() {
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          logic: safeLogic, 
-          profile: activeProfileId, 
-          workspace: activeWorkspaceId, 
-          targetArch, 
-          autoRedact, 
-          aggressiveness, 
-          targetScope, 
-          extractedTargets,
-          bountyPlatform, 
-          maxConcurrency, 
-          contextWindow
+          logic: safeLogic, profile: activeProfileId, workspace: activeWorkspaceId, 
+          targetArch, autoRedact, aggressiveness, targetScope, extractedTargets,
+          bountyPlatform, maxConcurrency, contextWindow, tier: currentTier
         })
       });
+      
+      // ERROR INTERCEPTOR: Catches Token Limits (402) and Permissions (403)
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        if (res.status === 402 || res.status === 403) {
+           logToTerminal(`[SYSTEM_HALT] Transaction rejected: ${res.status}`);
+           const systemWarning: ExtendedStreamMessage = { 
+             id: generateUniqueID(), role: 'hexical', 
+             text: `**SYSTEM HALT:** ${errData.error || 'Token allocation exhausted or feature locked.'}`, 
+             steps: ['LIMIT_REACHED'], valid: false, route: 'unknown' as any, ts: generateTimestamp() 
+           }
+           setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...updatedUserMessages, systemWarning] } : c));
+           setShowUpgradeModal(true);
+           setBusy(false);
+           return;
+        }
+        throw new Error(errData.error || "Server connection severed.");
+      }
       
       const initData = await res.json();
       let finalData = initData;
@@ -592,9 +574,7 @@ export function HexicalConsole() {
       
       const executionTimeMs = Math.round(performance.now() - startTime)
       const mockMetrics: TraceMetrics = finalData.metrics || { 
-        latencyMs: executionTimeMs, 
-        tokensUsed: Math.floor(Math.random() * 1200) + 350, 
-        confidenceScore: finalData.valid ? 98.4 : 62.1 
+        latencyMs: executionTimeMs, tokensUsed: Math.floor(Math.random() * 1200) + 350, confidenceScore: finalData.valid ? 98.4 : 62.1 
       }
       const newGraph = parseAttackGraph(safeLogic); 
       setActiveGraph(newGraph);
@@ -609,18 +589,10 @@ export function HexicalConsole() {
       logToTerminal(`[RX] Received evaluated payload. Status: ${finalData.valid ? 'SUCCESS' : 'WARN'}. Computation Time: ${executionTimeMs}ms.`);
 
       const hexMsg: ExtendedStreamMessage = { 
-        id: generateUniqueID(), 
-        role: 'hexical', 
-        text: finalData.analysis, 
-        steps: finalData.steps, 
-        valid: finalData.valid, 
-        route: inferRoute(finalData.steps), 
-        ts: generateTimestamp(), 
+        id: generateUniqueID(), role: 'hexical', text: finalData.analysis, steps: finalData.steps, 
+        valid: finalData.valid, route: inferRoute(finalData.steps), ts: generateTimestamp(), 
         sources: [{ name: 'Swarm Consensus DB', verified: true, type: 'heuristic' }], 
-        isVerifiedContent: finalData.valid, 
-        metrics: mockMetrics, 
-        swarmConsensus: swarmData, 
-        graphData: newGraph
+        isVerifiedContent: finalData.valid, metrics: mockMetrics, swarmConsensus: swarmData, graphData: newGraph
       }
 
       const updatedAIMessages = [...updatedUserMessages, hexMsg];
@@ -629,17 +601,17 @@ export function HexicalConsole() {
       
       if (user && !stealthMode) {
         const supabaseAuth = await getAuthenticatedClient();
-        await supabaseAuth.from('messages').insert({ 
-          id: hexMsg.id, 
-          conversation_id: activeId, 
-          user_id: user.id, 
-          content: finalData.analysis, 
-          role: 'hexical' 
-        });
+        await supabaseAuth.from('messages').insert({ id: hexMsg.id, conversation_id: activeId, user_id: user.id, content: finalData.analysis, role: 'hexical' });
       }
       recordUsage()
-    } catch (err) { 
-      logToTerminal(`[ERR] Pipeline crash during remote execution.`); 
+    } catch (err: any) { 
+      logToTerminal(`[ERR] Pipeline crash during remote execution: ${err.message}`); 
+      // Ensure the user doesn't get stuck in a loading loop if the server crashes
+      const errorMsg: ExtendedStreamMessage = { 
+        id: generateUniqueID(), role: 'hexical', text: `**FATAL ERROR:** ${err.message || 'Pipeline sequence failed.'}`, 
+        steps: ['SYSTEM_CRASH'], valid: false, route: 'unknown' as any, ts: generateTimestamp() 
+      }
+      setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...updatedUserMessages, errorMsg] } : c));
     } finally { 
       setBusy(false) 
     }
@@ -668,10 +640,7 @@ export function HexicalConsole() {
           try {
             const supabaseAuth = await getAuthenticatedClient()
             await supabaseAuth.from('conversations').upsert({ 
-              id: toggledChat.id, 
-              user_id: user.id, 
-              title: toggledChat.title, 
-              pinned: toggledChat.pinned 
+              id: toggledChat.id, user_id: user.id, title: toggledChat.title, pinned: toggledChat.pinned 
             })
           } catch (error) { 
             logToTerminal(`[WARN] Failed to sync pin state for chat ${id}.`) 
@@ -682,8 +651,28 @@ export function HexicalConsole() {
     })
   }
 
-  // Extract the most recent user prompt to feed the AST Visualizer dynamically
   const lastUserPayload = activeChat?.messages?.filter((m: any) => m.role === 'user').slice(-1)[0]?.text || '';
+
+  const LockedFeatureOverlay = ({ featureName }: { featureName: string }) => (
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-md font-sans p-6 text-center">
+      <div className="max-w-md bg-[#111116] border border-white/10 rounded-2xl p-8 shadow-2xl flex flex-col items-center">
+        <div className="size-16 rounded-full bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center mb-6">
+          <Lock className="size-8 text-cyan-400" />
+        </div>
+        <h3 className="text-xl font-bold text-white mb-2">Restricted Action</h3>
+        <p className="text-sm text-zinc-400 mb-8 leading-relaxed">
+          The <span className="text-white font-medium">{featureName}</span> is locked under your current license. 
+          Upgrade to a Plus or Pro workspace to deploy advanced diagnostic matrices.
+        </p>
+        <button 
+          onClick={() => setShowUpgradeModal(true)}
+          className="w-full py-3 bg-white text-black hover:bg-white/90 font-bold rounded-xl transition-colors shadow-[0_0_20px_rgba(255,255,255,0.1)]"
+        >
+          View System Licenses
+        </button>
+      </div>
+    </div>
+  )
 
   return (
     <>
@@ -715,6 +704,7 @@ export function HexicalConsole() {
                  userName={isAuthLoading ? "Booting..." : userName} 
                  userEmail={isAuthLoading ? "Securing..." : userEmail} 
                  avatarUrl={userAvatar} 
+                 currentTier={currentTier}
                  onToggleOpen={() => setIsSidebarOpen(false)} 
                  onSelect={setActiveId} 
                  onNewChat={handleNewChat} 
@@ -722,7 +712,7 @@ export function HexicalConsole() {
                  onRenameChat={handleRename} 
                  onTogglePin={handleTogglePin} 
                  onSignOut={() => signOut(() => window.location.reload())} 
-                 onOpenSettings={() => setShowSettingsModal(true)} 
+                 onOpenUpgrade={() => setShowUpgradeModal(true)}
                />
             </div>
           </>
@@ -747,9 +737,17 @@ export function HexicalConsole() {
             <div className="flex-1 flex items-center overflow-x-auto no-scrollbar gap-2 shrink">
               <div className="hidden lg:flex p-1 bg-white/[0.02] border border-white/5 rounded-lg backdrop-blur-md shrink-0">
                 <button onClick={() => setViewMode('chat')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'chat' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><LayoutDashboard size={14}/> Core</button>
-                <button onClick={() => setViewMode('graph')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'graph' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Workflow size={14}/> Topology</button>
-                <button onClick={() => setViewMode('payloads')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'payloads' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Zap size={14}/> Payloads</button>
-                <button onClick={() => setViewMode('bounty')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'bounty' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><FileText size={14}/> Forge</button>
+                
+                <button onClick={() => setViewMode('graph')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'graph' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}>
+                  {hasFeatureAccess('interactive_topology') ? <Workflow size={14}/> : <Lock size={12} className="text-zinc-600" />} Topology
+                </button>
+                <button onClick={() => setViewMode('payloads')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'payloads' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}>
+                  {hasFeatureAccess('core_heuristics') ? <Zap size={14}/> : <Lock size={12} className="text-zinc-600" />} Payloads
+                </button>
+                <button onClick={() => setViewMode('bounty')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'bounty' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}>
+                  {hasFeatureAccess('bounty_forge') ? <FileText size={14}/> : <Lock size={12} className="text-zinc-600" />} Forge
+                </button>
+                
                 <button onClick={() => setViewMode('ast')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'ast' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Code size={14}/> AST</button>
                 <button onClick={() => setViewMode('cvss')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'cvss' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Hash size={14}/> CVSS</button>
                 <button onClick={() => setViewMode('terminal')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'terminal' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><TerminalSquare size={14}/> TTY</button>
@@ -787,23 +785,33 @@ export function HexicalConsole() {
                       Active Agent Override
                     </div>
                     <div className="p-1">
-                      {SECURITY_PROFILES.map(profile => (
-                        <button 
-                          key={profile.id} 
-                          onClick={() => { setActiveProfileId(profile.id); setShowProfileMenu(false); }} 
-                          className={`w-full flex items-start gap-3 p-2.5 rounded-lg text-left transition-all ${activeProfileId === profile.id ? 'bg-white/5' : 'hover:bg-white/5'}`}
-                        >
-                          <profile.icon className={`size-4 mt-0.5 ${profile.color}`} />
-                          <div className="flex-1">
-                            <div className={`font-sans font-medium text-xs ${activeProfileId === profile.id ? 'text-white' : 'text-foreground/80'}`}>
-                              {profile.name}
+                      {SECURITY_PROFILES.map(profile => {
+                        const canAccessProfile = hasFeatureAccess(profile.reqFeature);
+                        return (
+                          <button 
+                            key={profile.id} 
+                            onClick={() => { 
+                              if(canAccessProfile) {
+                                setActiveProfileId(profile.id); 
+                                setShowProfileMenu(false);
+                              } else {
+                                setShowUpgradeModal(true);
+                              }
+                            }} 
+                            className={`w-full flex items-start gap-3 p-2.5 rounded-lg text-left transition-all ${!canAccessProfile ? 'opacity-50 hover:bg-white/5' : activeProfileId === profile.id ? 'bg-white/5' : 'hover:bg-white/5'}`}
+                          >
+                            {canAccessProfile ? <profile.icon className={`size-4 mt-0.5 ${profile.color}`} /> : <Lock className="size-4 mt-0.5 text-zinc-500" />}
+                            <div className="flex-1">
+                              <div className={`font-sans font-medium text-xs ${activeProfileId === profile.id && canAccessProfile ? 'text-white' : 'text-foreground/80'}`}>
+                                {profile.name}
+                              </div>
+                              <div className="text-[10px] text-muted-foreground mt-0.5 leading-tight">
+                                {profile.description}
+                              </div>
                             </div>
-                            <div className="text-[10px] text-muted-foreground mt-0.5 leading-tight">
-                              {profile.description}
-                            </div>
-                          </div>
-                        </button>
-                      ))}
+                          </button>
+                        )
+                      })}
                     </div>
                   </div>
                 )}
@@ -825,18 +833,40 @@ export function HexicalConsole() {
             </div>
           </header>
 
-          <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 flex flex-col">
+          <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 flex flex-col relative">
             
-            {/* --- MODULAR TAB ROUTER --- */}
-            {viewMode === 'recon' && <div className="p-4 md:p-6 h-full"><ReconDashboard targets={extractedTargets} theme={uiTheme} /></div>}
+            {viewMode === 'recon' && (
+              <div className="p-4 md:p-6 h-full relative">
+                {!hasFeatureAccess('core_heuristics') && <LockedFeatureOverlay featureName="Reconnaissance Engine" />}
+                <div className={!hasFeatureAccess('core_heuristics') ? 'blur-md pointer-events-none' : ''}><ReconDashboard targets={extractedTargets} theme={uiTheme} /></div>
+              </div>
+            )}
+            
+            {viewMode === 'graph' && (
+              <div className="p-4 md:p-6 h-full relative">
+                {!hasFeatureAccess('interactive_topology') && <LockedFeatureOverlay featureName="Interactive Topology Graph" />}
+                <div className={!hasFeatureAccess('interactive_topology') ? 'blur-md pointer-events-none' : ''}><AttackGraphVisualizer graph={activeGraph} theme={uiTheme} /></div>
+              </div>
+            )}
+
+            {viewMode === 'payloads' && (
+              <div className="p-4 md:p-6 h-full relative">
+                {!hasFeatureAccess('core_heuristics') && <LockedFeatureOverlay featureName="Advanced Payload Mutator" />}
+                <div className={!hasFeatureAccess('core_heuristics') ? 'blur-md pointer-events-none' : ''}><PayloadMutator theme={uiTheme} /></div>
+              </div>
+            )}
+
+            {viewMode === 'bounty' && (
+              <div className="p-4 md:p-6 h-full relative">
+                {!hasFeatureAccess('bounty_forge') && <LockedFeatureOverlay featureName="Bug Bounty Forge Integration" />}
+                <div className={!hasFeatureAccess('bounty_forge') ? 'blur-md pointer-events-none' : ''}><BugBountyForge theme={uiTheme} targets={extractedTargets} /></div>
+              </div>
+            )}
+
             {viewMode === 'cvss' && <div className="p-4 md:p-6 h-full"><CVSSCalculator theme={uiTheme} /></div>}
-            {viewMode === 'graph' && <div className="p-4 md:p-6 h-full"><AttackGraphVisualizer graph={activeGraph} theme={uiTheme} /></div>}
-            {viewMode === 'payloads' && <div className="p-4 md:p-6 h-full"><PayloadMutator theme={uiTheme} /></div>}
-            {viewMode === 'bounty' && <div className="p-4 md:p-6 h-full"><BugBountyForge theme={uiTheme} targets={extractedTargets} /></div>}
             {viewMode === 'ast' && <div className="p-4 md:p-6 h-full"><ASTVisualizer theme={uiTheme} codePayload={lastUserPayload} /></div>}
             {viewMode === 'terminal' && <div className="p-4 md:p-6 h-full"><div className="mx-auto h-full max-w-5xl"><AdvancedTerminal logs={systemLogs} theme={uiTheme} onCommand={handleTerminalCommand} /></div></div>}
 
-            {/* --- CHAT ENGINE --- */}
             {viewMode === 'chat' && (
               <div className="flex-1 flex flex-col justify-end px-2 md:px-6 py-6 max-w-3xl mx-auto w-full">
                 {activeChat?.messages.length <= 1 ? (
