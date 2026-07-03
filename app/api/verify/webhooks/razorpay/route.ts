@@ -2,33 +2,57 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 
-// Initialize outside the handler to utilize connection pooling
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// ============================================================================
+// THE IMMUTABLE ASSET MATRICES
+// ============================================================================
+const TIER_PRICE_MAP: Record<string, number> = {
+  go: 299 * 100,     // 299 INR
+  plus: 1999 * 100,  // 1,999 INR
+  pro: 9599 * 100,   // 9,599 INR
+};
+
+const TOKEN_ALLOCATIONS: Record<string, number> = {
+  go: 5_000_000,
+  plus: 7_000_000,
+  pro: 30_000_000,
+};
 
 export async function POST(req: Request) {
   try {
-    const body = await req.text();
+    // 1. LAZY INSTANTIATION (CI/CD Shield)
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      throw new Error("FATAL: Missing Supabase infrastructure keys.");
+    }
+    if (!process.env.RAZORPAY_WEBHOOK_SECRET) {
+      throw new Error("FATAL: Missing Razorpay Webhook Secret.");
+    }
+
+    const supabaseAdmin = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
+
+    const bodyText = await req.text();
     const signature = req.headers.get('x-razorpay-signature');
     const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
 
-    // 1. CONFIGURATION & PRESENCE CHECKS
-    if (!secret) {
-      console.error('[WEBHOOK_CRITICAL]: Missing RAZORPAY_WEBHOOK_SECRET');
-      return NextResponse.json({ error: 'Server misconfiguration' }, { status: 500 });
-    }
-
     if (!signature) {
-      return NextResponse.json({ error: 'Missing signature' }, { status: 401 });
+      return NextResponse.json({ error: 'Missing cryptographic signature' }, { status: 401 });
     }
 
-    // 2. CRYPTOGRAPHIC VERIFICATION (Immune to Timing Attacks)
+    // ============================================================================
+    // 2. CRYPTOGRAPHIC VERIFICATION (Immune to Timing Attacks & Buffer Crashes)
+    // ============================================================================
     const expectedSignature = crypto
       .createHmac('sha256', secret)
-      .update(body)
+      .update(bodyText)
       .digest('hex');
+
+    // CRITICAL FIX: Prevent Buffer length mismatch crash (DDoS protection)
+    if (signature.length !== expectedSignature.length) {
+      console.warn('[WEBHOOK_WARNING]: Signature length mismatch rejected.');
+      return NextResponse.json({ error: 'Invalid signature length' }, { status: 400 });
+    }
 
     const isSignatureValid = crypto.timingSafeEqual(
       Buffer.from(signature),
@@ -40,79 +64,94 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
     }
 
-    const event = JSON.parse(body);
+    const event = JSON.parse(bodyText);
 
+    // ============================================================================
     // 3. SECURE EVENT HANDLING
-    if (event.event === 'payment.captured') {
+    // ============================================================================
+    if (event.event === 'payment.captured' || event.event === 'order.paid') {
       const paymentEntity = event.payload.payment.entity;
       const paymentId = paymentEntity.id;
-      const amountPaid = paymentEntity.amount; // Note: Razorpay amounts are in paise (50000 = 500 INR)
+      const orderId = paymentEntity.order_id;
+      const amountPaid = paymentEntity.amount; 
       
-      // Safely extract notes with a fallback
       const notes = paymentEntity.notes || {};
       const { clerkUserId, requestedTier } = notes;
 
-      // 4. MALFORMED DATA DEFENSE
       if (!clerkUserId || !requestedTier) {
-        console.error(`[WEBHOOK_ERROR]: Missing vital notes for payment ${paymentId}`);
-        // Return 200 so Razorpay stops retrying a permanently malformed payload
-        return NextResponse.json({ status: 'ignored', reason: 'malformed_payload' }, { status: 200 });
+         console.error(`[WEBHOOK_ERROR]: Missing vital routing notes for payment ${paymentId}`);
+         return NextResponse.json({ status: 'ignored', reason: 'malformed_payload' }, { status: 200 });
       }
 
-      // 5. BUSINESS LOGIC VERIFICATION (The most critical fix)
-      // Force the webhook to verify that the amount paid actually buys the requested tier.
-      const tierPrices: Record<string, number> = {
-        'Basic': 19900, // 199 INR
-        'Pro': 49900,   // 499 INR
-      };
+      const targetTier = requestedTier.toLowerCase();
 
-      const expectedAmount = tierPrices[requestedTier];
+      // ============================================================================
+      // 4. BUSINESS LOGIC VERIFICATION 
+      // ============================================================================
+      const expectedAmount = TIER_PRICE_MAP[targetTier];
 
       if (!expectedAmount || amountPaid < expectedAmount) {
-        console.error(`[WEBHOOK_FRAUD]: User ${clerkUserId} paid ${amountPaid} for ${requestedTier}`);
-        // Return 200 to prevent retries of fraudulent payloads
-        return NextResponse.json({ status: 'ignored', reason: 'price_mismatch' }, { status: 200 });
+         console.error(`[WEBHOOK_FRAUD]: User ${clerkUserId} paid ${amountPaid} for ${targetTier}`);
+         return NextResponse.json({ status: 'ignored', reason: 'price_mismatch' }, { status: 200 });
       }
 
-      // 6. IDEMPOTENCY & STATE UPDATE
-      const { data: existingUser, error: fetchError } = await supabaseAdmin
+      // ============================================================================
+      // 5. TRUE IDEMPOTENCY (Audit Table Integration)
+      // ============================================================================
+      const { error: auditError } = await supabaseAdmin.from('transactions').insert({
+        id: paymentId,
+        user_id: clerkUserId,
+        order_id: orderId,
+        tier_purchased: targetTier,
+        status: 'webhook_verified'
+      });
+
+      if (auditError) {
+        // Postgres Unique Violation (23505) means this exact payment was already processed
+        if (auditError.code === '23505') { 
+          console.log(`[WEBHOOK_IDEMPOTENCY]: Payment ${paymentId} already processed.`);
+          return NextResponse.json({ status: 'already_processed' }, { status: 200 });
+        }
+        throw auditError;
+      }
+
+      // ============================================================================
+      // 6. ASSET INJECTION (Tier + Tokens)
+      // ============================================================================
+      const tokenBudget = TOKEN_ALLOCATIONS[targetTier] || 0;
+
+      const { data: existingUser } = await supabaseAdmin
         .from('profiles')
-        .select('current_period_end, last_payment_id')
+        .select('current_period_end')
         .eq('user_id', clerkUserId)
-        .single();
+        .maybeSingle();
 
-      if (fetchError) throw fetchError;
-
-      // Stop processing if we've already handled this exact payment
-      if (existingUser.last_payment_id === paymentId) {
-         console.log(`[WEBHOOK_IDEMPOTENCY]: Payment ${paymentId} already processed.`);
-         return NextResponse.json({ status: 'already_processed' }, { status: 200 });
-      }
-
-      // Calculate new expiry (stacks if they renew early, otherwise starts from today)
-      const currentExpiry = existingUser.current_period_end ? new Date(existingUser.current_period_end) : new Date();
+      const currentExpiry = existingUser?.current_period_end ? new Date(existingUser.current_period_end) : new Date();
       const baseDate = currentExpiry > new Date() ? currentExpiry : new Date();
+      
+      // Add 30 days to the license
       baseDate.setDate(baseDate.getDate() + 30);
 
       const { error: updateError } = await supabaseAdmin
         .from('profiles')
         .update({ 
-          tier: requestedTier, 
+          tier: targetTier, 
           current_period_end: baseDate.toISOString(),
-          last_payment_id: paymentId // Store this to prevent replay attacks
+          monthly_tokens_remaining: tokenBudget, // CRITICAL FIX: Injecting the purchased tokens
+          tier_updated_at: new Date().toISOString()
         })
         .eq('user_id', clerkUserId);
 
       if (updateError) {
-         console.error(`[SUPABASE_ERROR]: Failed to update user ${clerkUserId}`, updateError);
+         console.error(`[SUPABASE_ERROR]: Failed to inject assets for user ${clerkUserId}`, updateError);
          throw updateError;
       }
 
-      console.log(`[WEBHOOK_SUCCESS]: User ${clerkUserId} upgraded to ${requestedTier}`);
+      console.log(`[WEBHOOK_SUCCESS]: User ${clerkUserId} upgraded to ${targetTier}. ${tokenBudget} tokens injected.`);
     }
 
     return NextResponse.json({ status: 'ok' });
-  } catch (err) {
+  } catch (err: any) {
     console.error("[WEBHOOK_CRITICAL_ERROR]:", err);
     return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 });
   }
