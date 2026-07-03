@@ -1,14 +1,13 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import Link from 'next/link'
 import { 
   MessageSquare, MoreVertical, Trash2, Edit2, Pin, Settings, 
-  Plus, PanelLeftClose, PanelLeftOpen, Download 
+  Plus, PanelLeftClose, PanelLeftOpen, Download, Zap, ShieldCheck 
 } from 'lucide-react'
 
 // --- CLERK AUTHENTICATION IMPORTS ---
-// FIXED: Ripped out SignedIn/SignedOut wrappers to bypass Turbopack export errors.
-// Added 'useAuth' for programmatic, flicker-free client-side authentication.
 import { UserButton, SignInButton, useAuth } from '@clerk/nextjs'
 
 // --- PROJECT SPECIFIC IMPORTS ---
@@ -31,14 +30,15 @@ interface ChatSidebarProps {
   userName: string
   userEmail: string
   avatarUrl: string | null
+  currentTier?: 'go' | 'plus' | 'pro' | string | null // FIX: Added null safety
   onToggleOpen: () => void
   onSelect: (id: string) => void
   onNewChat: () => void
   onDeleteChat: (id: string) => void
   onRenameChat: (id: string, newTitle: string) => void
   onTogglePin: (id: string) => void
-  onSignOut: () => void
-  onOpenSettings: () => void
+  onSignOut?: () => void // FIX: Made optional since Clerk handles it natively
+  onOpenUpgrade: () => void 
 }
 
 // -----------------------------------------------------------------------------
@@ -51,19 +51,18 @@ export function ChatSidebar({
   isOpen, 
   userName, 
   userEmail, 
-  avatarUrl, 
+  avatarUrl,
+  currentTier, 
   onToggleOpen, 
   onSelect, 
   onNewChat, 
   onDeleteChat, 
   onRenameChat, 
   onTogglePin, 
-  onSignOut,
-  onOpenSettings
+  onOpenUpgrade
 }: ChatSidebarProps) {
   
   // --- AUTHENTICATION STATE ---
-  // This completely bypasses the Turbopack export bug.
   const { isLoaded, userId } = useAuth()
 
   // --- UI STATE MANAGEMENT ---
@@ -71,6 +70,9 @@ export function ChatSidebar({
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
   const menuRef = useRef<HTMLDivElement>(null)
+
+  // FIX: Secure the tier variable against null/undefined hydration crashes
+  const safeTier = (currentTier || 'go').toLowerCase();
 
   // --- MENU CLICK-OUTSIDE HANDLER ---
   useEffect(() => {
@@ -121,7 +123,7 @@ export function ChatSidebar({
   // ---------------------------------------------------------------------------
 
   return (
-    <div className="relative flex flex-col h-full w-full bg-[#0a0a0c] text-foreground transition-all duration-300 border-r border-white/5">
+    <div className="relative flex flex-col h-full w-full bg-[#0a0a0c] text-foreground transition-all duration-300 border-r border-white/5 shadow-[4px_0_24px_rgba(0,0,0,0.5)]">
       
       {/* 1. Sidebar Header Area */}
       <div className="flex items-center p-4 gap-3 h-16">
@@ -133,13 +135,13 @@ export function ChatSidebar({
         </button>
         {isOpen && (
           <div className="flex items-center gap-2 animate-fade-in whitespace-nowrap overflow-hidden">
-            <HexicalLogo className="size-7 text-cyan-400" />
-            <span className="font-sans text-xl font-semibold tracking-wide">Hexical</span>
+            <HexicalLogo className="size-7 text-cyan-400 drop-shadow-[0_0_8px_rgba(34,211,238,0.5)]" />
+            <span className="font-sans text-xl font-bold tracking-wide text-white">Hexical</span>
           </div>
         )}
       </div>
 
-      {/* 2. New Chat Button Area */}
+      {/* 2. New Target Button Area */}
       <div className="px-3 mb-6 mt-2">
         <button 
           onClick={onNewChat} 
@@ -155,7 +157,7 @@ export function ChatSidebar({
         <div className="flex-1 overflow-y-auto px-3 space-y-6 scrollbar-thin scrollbar-thumb-white/10">
           {pinnedChats.length > 0 && (
             <div>
-              <p className="px-4 mb-2 text-[10px] font-bold text-cyan-500/70 uppercase tracking-widest">Pinned</p>
+              <p className="px-4 mb-2 text-[10px] font-bold text-cyan-500/70 uppercase tracking-widest">Pinned Targets</p>
               <div className="space-y-[2px]">
                 {pinnedChats.map(chat => (
                   <ChatItem key={chat.id} chat={chat} {...chatItemProps} />
@@ -175,23 +177,64 @@ export function ChatSidebar({
         </div>
       )}
 
-      {/* 4. Auth & User Button Area */}
-      <div className="p-3 mt-auto border-t border-white/5 flex flex-col gap-1 bg-[#0a0a0c]">
+      {/* 4. Monetization & User Area */}
+      <div className="p-3 mt-auto border-t border-white/5 flex flex-col gap-2 bg-[#0a0a0c]">
         
-        {/* Settings Button */}
-        <button 
-          onClick={onOpenSettings}
-          className={`flex items-center gap-3 p-2.5 rounded-xl hover:bg-white/5 transition-colors text-muted-foreground hover:text-cyan-400 group ${isOpen ? 'w-full' : 'justify-center w-12 mx-auto'}`}
+        {/* THE SMART TIER MODULE */}
+        <div className={`flex flex-col gap-2 p-2 rounded-xl border ${
+          safeTier === 'pro' ? 'border-amber-500/20 bg-amber-500/5' : 
+          safeTier === 'plus' ? 'border-fuchsia-500/20 bg-fuchsia-500/5' :
+          'border-cyan-500/10 bg-cyan-500/5'
+        }`}>
+          <div className={`flex items-center justify-between ${isOpen ? 'px-1' : 'hidden'}`}>
+            <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">System License</span>
+            <span className={`text-[9px] font-bold uppercase tracking-widest ${
+              safeTier === 'pro' ? 'text-amber-400' : 
+              safeTier === 'plus' ? 'text-fuchsia-400' : 
+              'text-cyan-400'
+            }`}>
+              {safeTier.toUpperCase()} (Active)
+            </span>
+          </div>
+          
+          {/* SMART BUTTON RENDERING */}
+          {safeTier === 'pro' ? (
+            <Link 
+              href="/dashboard/settings"
+              className={`flex items-center justify-center gap-2 rounded-lg bg-black/40 hover:bg-white/5 border border-white/5 hover:border-white/10 transition-all text-zinc-400 hover:text-zinc-300 ${isOpen ? 'w-full py-2 px-3' : 'p-2 w-10 mx-auto'}`}
+            >
+              <ShieldCheck size={14} className="flex-shrink-0" />
+              {isOpen && <span className="text-xs font-bold tracking-wide">MANAGE LICENSE</span>}
+            </Link>
+          ) : (
+            <button 
+              onClick={onOpenUpgrade}
+              className={`flex items-center justify-center gap-2 rounded-lg transition-all ${
+                safeTier === 'plus' 
+                ? 'bg-fuchsia-500/10 hover:bg-fuchsia-500/20 border-fuchsia-500/20 text-fuchsia-400' 
+                : 'bg-cyan-500/10 hover:bg-cyan-500/20 border-cyan-500/20 text-cyan-400'
+              } ${isOpen ? 'w-full py-2 px-3 border' : 'p-2 w-10 mx-auto border'}`}
+            >
+              <Zap size={14} className="flex-shrink-0" />
+              {isOpen && <span className="text-xs font-bold tracking-wide">UPGRADE TO PRO</span>}
+            </button>
+          )}
+        </div>
+
+        {/* SECURE ROUTING: Settings Link */}
+        <Link 
+          href="/dashboard/settings" 
+          className={`flex items-center gap-3 p-2.5 rounded-xl hover:bg-white/5 transition-colors text-muted-foreground hover:text-white group ${isOpen ? 'w-full' : 'justify-center w-12 mx-auto'}`}
         >
           <Settings size={18} className="flex-shrink-0 group-hover:rotate-45 transition-transform duration-300" />
           {isOpen && <span className="text-sm font-medium">System Config</span>}
           {isOpen && <span className="ml-auto text-[9px] text-zinc-600 bg-white/5 px-1.5 py-0.5 rounded border border-white/5 tracking-widest hidden md:inline">Cmd+,</span>}
-        </button>
+        </Link>
         
         {/* User Account / Login Toggle */}
         <div className={`flex items-center rounded-xl transition-colors mt-1 ${isOpen ? 'w-full hover:bg-white/5 p-2' : 'justify-center w-12 mx-auto p-2 min-h-[48px]'}`}>
           
-          {/* THE UPGRADE: Skeleton Loader while Clerk boots up */}
+          {/* Skeleton Loader */}
           {!isLoaded && (
              <div className="flex items-center gap-3 w-full animate-pulse">
                 <div className="size-8 bg-white/10 rounded-md flex-shrink-0" />
@@ -204,7 +247,7 @@ export function ChatSidebar({
              </div>
           )}
 
-          {/* SIGNED IN STATE */}
+          {/* SIGNED IN */}
           {isLoaded && userId && (
             <div className="flex items-center gap-3 w-full">
               <div className="flex-shrink-0 flex items-center justify-center">
@@ -219,7 +262,7 @@ export function ChatSidebar({
             </div>
           )}
 
-          {/* SIGNED OUT STATE */}
+          {/* SIGNED OUT */}
           {isLoaded && !userId && (
             <SignInButton mode="modal">
                <button className="flex items-center gap-3 w-full text-sm font-medium text-cyan-400">
