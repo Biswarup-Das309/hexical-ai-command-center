@@ -10,12 +10,14 @@ import {
   Target, FileBadge, Loader2
 } from 'lucide-react'
 
+// CRITICAL FIX: Made currentTier optional (?) to perfectly match the dashboard initialization
 interface UpgradeModalProps {
   onClose: () => void
-  currentTier: string 
+  currentTier?: string 
 }
 
-export function UpgradeModal({ onClose, currentTier }: UpgradeModalProps) {
+// CRITICAL FIX: Changed to default export to match your dashboard import path statement
+export default function UpgradeModal({ onClose, currentTier = 'free' }: UpgradeModalProps) {
   const router = useRouter()
   const [billingCycle, setBillingCycle] = useState<'personal' | 'business'>('personal')
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null)
@@ -38,7 +40,7 @@ export function UpgradeModal({ onClose, currentTier }: UpgradeModalProps) {
 
       const payloadTier = plan.toLowerCase();
 
-      // 1. Request a secure Order ID from your backend
+      // 1. Request a secure Order ID from your backend proxy routing channel
       const res = await fetch('/api/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -59,19 +61,19 @@ export function UpgradeModal({ onClose, currentTier }: UpgradeModalProps) {
         description: `Deployment Authorization: ${plan} Access Pass`,
         order_id: orderData.id,
         prefill: {
-          name: orderData.userMeta.name,
-          email: orderData.userMeta.email,
+          name: orderData.userMeta?.name || "Hexical Operative",
+          email: orderData.userMeta?.email || "",
         },
         theme: {
           color: "#06b6d4" 
         },
-        // THE FIX: Cryptographic Verification Handshake
+        // Cryptographic Verification Handshake
         handler: async function (response: any) {
           setIsVerifying(true);
           toast.loading("Verifying cryptographic signature...", { id: "payment-verify" });
 
           try {
-            // Send the tokens back to your server to PROVE the payment is real
+            // Send parameters back to the validation vault to check authenticity
             const verifyRes = await fetch('/api/verify-payment', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -83,7 +85,7 @@ export function UpgradeModal({ onClose, currentTier }: UpgradeModalProps) {
               })
             });
 
-            if (!verifyRes.ok) throw new Error("Signature verification failed.");
+            if (!verifyRes.ok) throw new Error("Signature verification rejected by infrastructure.");
 
             toast.success("Deployment Complete", {
               id: "payment-verify",
@@ -128,11 +130,11 @@ export function UpgradeModal({ onClose, currentTier }: UpgradeModalProps) {
 
   return (
     <>
-      {/* THE FIX: Load script before interactive so it's ready when the user clicks */}
+      {/* CRITICAL FIX: Changed strategy from beforeInteractive to afterInteractive to prevent Next.js layout crash */}
       <Script 
         id="razorpay-checkout-js" 
         src="https://checkout.razorpay.com/v1/checkout.js" 
-        strategy="beforeInteractive" 
+        strategy="afterInteractive" 
       />
 
       <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
@@ -156,7 +158,7 @@ export function UpgradeModal({ onClose, currentTier }: UpgradeModalProps) {
               </div>
             )}
 
-            {/* Personal / Business Toggle */}
+            {/* Selector Toggle Switch */}
             <div className="flex items-center bg-white/[0.03] p-1 rounded-xl border border-white/5 mt-2">
               <button
                 onClick={() => setBillingCycle('personal')}
@@ -193,7 +195,7 @@ export function UpgradeModal({ onClose, currentTier }: UpgradeModalProps) {
                 <div className="text-4xl text-white font-bold mb-2">
                   ₹0 <span className="text-xs text-muted-foreground font-normal tracking-wide">/ month</span>
                 </div>
-                <p className="text-sm text-muted-foreground mb-6 h-10">Essential tools for code analysis.</p>
+                <p className="text-sm text-muted-foreground mb-6 h-10">Essential tools for baseline heuristic exploration.</p>
                 
                 {activeTier === 'free' ? (
                   <button className="w-full py-3 rounded-xl bg-white/5 text-muted-foreground font-medium mb-8 cursor-default border border-white/5 transition-colors">
@@ -206,20 +208,20 @@ export function UpgradeModal({ onClose, currentTier }: UpgradeModalProps) {
                 )}
                 
                 <div className="space-y-4 text-sm text-foreground/80 flex-1 font-medium">
-                  <div className="flex items-start gap-3"><TerminalSquare size={18} className="text-muted-foreground shrink-0 mt-0.5" /> Llama-3.1 Core Model</div>
+                  <div className="flex items-start gap-3"><TerminalSquare size={18} className="text-muted-foreground shrink-0 mt-0.5" /> Llama-3.1 8B Compute Node</div>
                   <div className="flex items-start gap-3"><Network size={18} className="text-muted-foreground shrink-0 mt-0.5" /> Basic AST Path Tracing</div>
-                  <div className="flex items-start gap-3"><Activity size={18} className="text-muted-foreground shrink-0 mt-0.5" /> Standard Heuristic Scans</div>
-                  <div className="flex items-start gap-3"><FileJson size={18} className="text-muted-foreground shrink-0 mt-0.5" /> 50 Executions / month</div>
+                  <div className="flex items-start gap-3"><Activity size={18} className="text-muted-foreground shrink-0 mt-0.5" /> Standard Intent Analysis</div>
+                  <div className="flex items-start gap-3"><FileJson size={18} className="text-muted-foreground shrink-0 mt-0.5" /> Restricted Seeding Vol</div>
                 </div>
               </div>
 
               {/* 2. GO TIER */}
-              <div className="bg-[#111116] border border-cyan-500/10 rounded-2xl p-6 flex flex-col hover:border-cyan-500/30 transition-colors">
+              <div className="bg-[#111116] border border-emerald-500/10 rounded-2xl p-6 flex flex-col hover:border-emerald-500/30 transition-colors">
                 <h3 className="text-xl font-semibold text-white mb-2">Go</h3>
                 <div className="text-4xl text-white font-bold mb-2">
                   ₹299 <span className="text-xs text-muted-foreground font-normal tracking-wide">/ month</span>
                 </div>
-                <p className="text-sm text-muted-foreground mb-6 h-10">Expanded access for rapid testing.</p>
+                <p className="text-sm text-muted-foreground mb-6 h-10">Expanded throughput boundaries for rapid testing.</p>
                 
                 {activeTier === 'go' ? (
                    <button className="w-full py-3 rounded-xl bg-white/5 text-muted-foreground font-medium mb-8 cursor-default border border-white/5 transition-colors">
@@ -240,10 +242,11 @@ export function UpgradeModal({ onClose, currentTier }: UpgradeModalProps) {
                 )}
                 
                 <div className="space-y-4 text-sm text-foreground/80 flex-1 font-medium">
-                  <div className="flex items-start gap-3"><Zap size={18} className="text-cyan-400 shrink-0 mt-0.5" /> Priority API Queue</div>
-                  <div className="flex items-start gap-3"><Network size={18} className="text-muted-foreground shrink-0 mt-0.5" /> Enhanced AST Visualization</div>
-                  <div className="flex items-start gap-3"><Shield size={18} className="text-muted-foreground shrink-0 mt-0.5" /> Unlimited Chat History</div>
-                  <div className="flex items-start gap-3"><FileJson size={18} className="text-muted-foreground shrink-0 mt-0.5" /> 200 Executions / month</div>
+                  {/* CRITICAL TEXT SYNCHRONIZATION TO MATCH YOUR RETAINED PROFIT MARGIN CORES */}
+                  <div className="flex items-start gap-3"><Zap size={18} className="text-emerald-400 shrink-0 mt-0.5" /> 5,000,000 Operations / mo</div>
+                  <div className="flex items-start gap-3"><TerminalSquare size={18} className="text-muted-foreground shrink-0 mt-0.5" /> Llama 3.1 8B Engine Acceleration</div>
+                  <div className="flex items-start gap-3"><Shield size={18} className="text-muted-foreground shrink-0 mt-0.5" /> Unlimited Telemetry History</div>
+                  <div className="flex items-start gap-3"><Network size={18} className="text-muted-foreground shrink-0 mt-0.5" /> Enhanced AST Mapping Matrix</div>
                 </div>
               </div>
 
@@ -257,7 +260,7 @@ export function UpgradeModal({ onClose, currentTier }: UpgradeModalProps) {
                 <div className="text-4xl text-white font-bold mb-2">
                   ₹1,999 <span className="text-xs text-cyan-200/50 font-normal tracking-wide">/ month</span>
                 </div>
-                <p className="text-sm text-cyan-200/70 mb-6 h-10">Optimized workflows for Bug Bounty.</p>
+                <p className="text-sm text-cyan-200/70 mb-6 h-10">Optimized workflows for deep vulnerability target analysis.</p>
                 
                 {activeTier === 'plus' ? (
                   <button className="w-full py-3 rounded-xl bg-cyan-500/20 text-cyan-400 font-bold mb-8 cursor-default border border-cyan-500/30 transition-colors">
@@ -278,11 +281,12 @@ export function UpgradeModal({ onClose, currentTier }: UpgradeModalProps) {
                 )}
                 
                 <div className="space-y-4 text-sm text-white flex-1 font-medium">
-                  <div className="flex items-start gap-3"><Target size={18} className="text-cyan-400 shrink-0 mt-0.5" /> Interactive Topology Graph</div>
+                  {/* CRITICAL TEXT SYNCHRONIZATION TO MATCH YOUR RETAINED PROFIT MARGIN CORES */}
+                  <div className="flex items-start gap-3"><Zap size={18} className="text-cyan-400 shrink-0 mt-0.5" /> 7,000,000 Premium Operations</div>
+                  <div className="flex items-start gap-3"><TerminalSquare size={18} className="text-cyan-400 shrink-0 mt-0.5" /> Llama 3.3 70B Core Evaluation</div>
                   <div className="flex items-start gap-3"><Crosshair size={18} className="text-cyan-400 shrink-0 mt-0.5" /> HackerOne/Bugcrowd Webhooks</div>
-                  <div className="flex items-start gap-3"><TerminalSquare size={18} className="text-cyan-400 shrink-0 mt-0.5" /> Deep Context (128k Tokens)</div>
-                  <div className="flex items-start gap-3"><GitMerge size={18} className="text-cyan-400 shrink-0 mt-0.5" /> Payload Mutation Engine</div>
-                  <div className="flex items-start gap-3"><FileJson size={18} className="text-cyan-400 shrink-0 mt-0.5" /> 1,000 Executions / month</div>
+                  <div className="flex items-start gap-3"><Target size={18} className="text-cyan-400 shrink-0 mt-0.5" /> Interactive Topology Diagnostics</div>
+                  <div className="flex items-start gap-3"><GitMerge size={18} className="text-cyan-400 shrink-0 mt-0.5" /> Structural Payload Mutation</div>
                 </div>
               </div>
 
@@ -296,7 +300,7 @@ export function UpgradeModal({ onClose, currentTier }: UpgradeModalProps) {
                 <div className="text-4xl text-white font-bold mb-2">
                   ₹9,599 <span className="text-xs text-muted-foreground font-normal tracking-wide">/ month</span>
                 </div>
-                <p className="text-sm text-muted-foreground mb-6 h-10">Full adversarial simulation & consensus.</p>
+                <p className="text-sm text-muted-foreground mb-6 h-10">Advanced cross-agent adversarial simulations.</p>
                 
                 {activeTier === 'pro' ? (
                   <button className="w-full py-3 rounded-xl bg-amber-500/20 text-amber-500 font-bold mb-8 cursor-default border border-amber-500/30 transition-colors">
@@ -318,11 +322,11 @@ export function UpgradeModal({ onClose, currentTier }: UpgradeModalProps) {
                 
                 <div className="space-y-4 text-sm text-foreground/80 flex-1 font-medium">
                   <div className="text-[10px] font-bold text-amber-500/80 uppercase tracking-widest mb-3">Includes Plus, and:</div>
-                  <div className="flex items-start gap-3"><Shield size={18} className="text-amber-500 shrink-0 mt-0.5" /> Red/Blue Agent Swarm</div>
-                  <div className="flex items-start gap-3"><Sparkles size={18} className="text-amber-500 shrink-0 mt-0.5" /> Zero-Day Heuristics AI</div>
-                  <div className="flex items-start gap-3"><FileBadge size={18} className="text-amber-500 shrink-0 mt-0.5" /> Professional Audit PDF Exports</div>
-                  <div className="flex items-start gap-3"><Zap size={18} className="text-amber-500 shrink-0 mt-0.5" /> Dedicated Compute Instances</div>
-                  <div className="flex items-start gap-3"><Activity size={18} className="text-amber-500 shrink-0 mt-0.5" /> Unlimited Executions</div>
+                  {/* CRITICAL TEXT SYNCHRONIZATION TO MATCH YOUR RETAINED PROFIT MARGIN CORES */}
+                  <div className="flex items-start gap-3"><Sparkles size={18} className="text-amber-500 shrink-0 mt-0.5" /> 30,000,000 Premium Operations</div>
+                  <div className="flex items-start gap-3"><Shield size={18} className="text-amber-500 shrink-0 mt-0.5" /> Red/Blue/Architect Agent Swarm</div>
+                  <div className="flex items-start gap-3"><FileBadge size={18} className="text-amber-500 shrink-0 mt-0.5" /> Automated Exploit PDF Audits</div>
+                  <div className="flex items-start gap-3"><Zap size={18} className="text-amber-500 shrink-0 mt-0.5" /> Isolated High-Compute Routing</div>
                 </div>
               </div>
 
