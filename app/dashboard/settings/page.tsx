@@ -4,18 +4,24 @@ import { useState, useEffect } from 'react'
 import { Settings, Shield, Key, CreditCard, User, Terminal, Webhook, Zap, Loader2 } from 'lucide-react'
 import { UserProfile, useUser } from '@clerk/nextjs'
 import { dark } from '@clerk/themes'
-// If you are using Supabase on the client, import it here:
-// import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
+
+// ============================================================================
+// CRITICAL FIX: Import your actual Upgrade Modal component
+// ============================================================================
+import UpgradeModal from '@/components/hexical/upgrade-modal'
 
 export default function SettingsPage() {
   const { user, isLoaded } = useUser();
   const [activeTab, setActiveTab] = useState<'identity' | 'api' | 'billing' | 'integrations'>('identity')
   
-  // 1. ADDED DYNAMIC STATE: Default to the lowest tier ('go') to prevent leaks
-  const [activeTier, setActiveTier] = useState<'go' | 'plus' | 'pro'>('go')
+  // 1. ADDED 4-TIER DYNAMIC STATE: Defaults to 'free' as the absolute baseline
+  const [activeTier, setActiveTier] = useState<'free' | 'go' | 'plus' | 'pro'>('free')
   const [isFetchingTier, setIsFetchingTier] = useState(true)
+  
+  // 2. CRITICAL FIX: State to actually control the modal visibility
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false)
 
-  // 2. ADDED HYDRATION EFFECT: Fetch the real tier from your database
+  // 3. HYDRATION EFFECT: Fetch the real tier from your database
   useEffect(() => {
     const fetchRealTier = async () => {
       if (!user?.id) return;
@@ -27,18 +33,18 @@ export default function SettingsPage() {
         // Example if using an API route:
         // const res = await fetch('/api/user/profile');
         // const data = await res.json();
-        // setActiveTier(data.tier || 'go');
+        // setActiveTier(data.tier || 'free');
         // ====================================================================
         
         // Simulating the network request to prove the dynamic UI works:
         setTimeout(() => {
-          setActiveTier('go'); // Change this string to 'pro' locally to test the UI swap
+          setActiveTier('free'); // Currently simulating a brand new free user
           setIsFetchingTier(false);
         }, 800);
 
       } catch (error) {
         console.error("[TIER_FETCH_ERROR]:", error);
-        setActiveTier('go'); // Always fallback to free tier on failure
+        setActiveTier('free'); // Always fallback to free tier on network failure
         setIsFetchingTier(false);
       }
     }
@@ -49,7 +55,7 @@ export default function SettingsPage() {
   }, [user, isLoaded]);
 
   return (
-    <div className="p-6 md:p-10 max-w-6xl mx-auto space-y-8 bg-[#0a0a0c] min-h-screen text-foreground font-sans animate-fade-in">
+    <div className="p-6 md:p-10 max-w-6xl mx-auto space-y-8 bg-[#0a0a0c] min-h-screen text-foreground font-sans animate-fade-in relative">
       
       {/* HEADER */}
       <div className="flex items-center gap-4 border-b border-white/5 pb-6">
@@ -187,7 +193,7 @@ export default function SettingsPage() {
             </div>
           )}
 
-          {/* TAB 4: BILLING (FULLY DYNAMIC & HARDENED) */}
+          {/* TAB 4: BILLING (FULLY DYNAMIC 4-TIER SYSTEM) */}
           {activeTab === 'billing' && (
             <div className="space-y-6 animate-fade-in">
               <div>
@@ -197,15 +203,18 @@ export default function SettingsPage() {
                 <p className="text-sm text-muted-foreground mb-6">View your usage volume and manage your Hexical AI matrix access tier.</p>
               </div>
               
+              {/* Dynamic styling based on all 4 tiers */}
               <div className={`p-8 rounded-xl border flex flex-col md:flex-row items-start md:items-center justify-between gap-6 transition-colors ${
                 activeTier === 'pro' ? 'border-amber-500/20 bg-amber-500/5' : 
                 activeTier === 'plus' ? 'border-blue-500/20 bg-blue-500/5' : 
-                'border-zinc-500/20 bg-zinc-500/5'
+                activeTier === 'go' ? 'border-emerald-500/20 bg-emerald-500/5' : 
+                'border-zinc-500/20 bg-zinc-500/5' // FREE TIER STYLE
               }`}>
                 <div>
                   <div className={`text-[10px] font-bold uppercase tracking-widest mb-1 ${
                     activeTier === 'pro' ? 'text-amber-500' : 
                     activeTier === 'plus' ? 'text-blue-500' : 
+                    activeTier === 'go' ? 'text-emerald-500' : 
                     'text-zinc-500'
                   }`}>
                     Current License
@@ -220,7 +229,7 @@ export default function SettingsPage() {
                     <div className="text-3xl font-bold text-white flex items-baseline gap-2">
                       {activeTier.toUpperCase()} 
                       <span className="text-sm font-normal text-muted-foreground">
-                        {activeTier === 'go' ? '/ Starter' : '/ Active'}
+                        {activeTier === 'free' ? '/ Base Node' : '/ Active'}
                       </span>
                     </div>
                   )}
@@ -229,20 +238,30 @@ export default function SettingsPage() {
                     {activeTier === 'pro' && "Multi-Agent Swarm logic unlocked. You have unlimited execution volume."}
                     {activeTier === 'plus' && "Advanced heuristics enabled. 7,000,000 operations per cycle."}
                     {activeTier === 'go' && "Standard execution paths enabled. Limited to 5,000,000 operations."}
+                    {activeTier === 'free' && "Basic heuristic node access. Upgrade required for high-volume execution."}
                   </p>
                 </div>
                 
                 <button 
-                  onClick={() => alert(activeTier === 'go' ? "Opening Upgrade Modal..." : "Redirecting to Billing Portal...")}
+                  // CRITICAL FIX: Actually open the modal instead of an alert!
+                  onClick={() => setShowUpgradeModal(true)}
                   className={`px-6 py-3 font-bold rounded-lg text-sm transition-colors whitespace-nowrap ${
                     activeTier === 'pro' ? 'bg-amber-500 hover:bg-amber-400 text-black' :
                     activeTier === 'plus' ? 'bg-blue-500 hover:bg-blue-400 text-white' :
-                    'bg-zinc-100 hover:bg-white text-black'
+                    activeTier === 'go' ? 'bg-emerald-500 hover:bg-emerald-400 text-black' :
+                    'bg-white hover:bg-zinc-200 text-black'
                   }`}
                  >
-                  {activeTier === 'go' ? 'Upgrade License' : 'Manage Payment Method'}
+                  {activeTier === 'pro' ? 'Manage License' : 'Upgrade License'}
                 </button>
               </div>
+
+              {/* ============================================================================ */}
+              {/* RENDER THE UPGRADE MODAL HERE IF TRIGGERED */}
+              {/* ============================================================================ */}
+              {showUpgradeModal && (
+                <UpgradeModal onClose={() => setShowUpgradeModal(false)} />
+              )}
             </div>
           )}
 
