@@ -3,24 +3,6 @@ import { auth, currentUser } from '@clerk/nextjs/server';
 import Razorpay from 'razorpay';
 import { createClient } from '@supabase/supabase-js';
 
-// ============================================================================
-// 1. INITIALIZE INFRASTRUCTURE
-// ============================================================================
-if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
-  throw new Error("FATAL: Missing RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET in environment variables.");
-}
-
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
-
-// Initialize Supabase Admin for system infrastructure verification
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
 // Price configuration in Paisa (1 INR = 100 Paisa)
 const TIER_PRICE_MAP: Record<string, number> = {
   go: 299 * 100,     // ₹299
@@ -30,7 +12,29 @@ const TIER_PRICE_MAP: Record<string, number> = {
 
 export async function POST(req: Request) {
   try {
-    // 1. Authenticate the User
+    // ============================================================================
+    // 1. LAZY INSTANTIATION: The Vercel Build Shield
+    // ============================================================================
+    if (!process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+      throw new Error("FATAL: Missing Razorpay cryptographic keys in environment variables.");
+    }
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      throw new Error("FATAL: Missing Supabase infrastructure keys.");
+    }
+
+    const razorpay = new Razorpay({
+      key_id: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET,
+    });
+
+    const supabaseAdmin = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
+
+    // ============================================================================
+    // 2. CRYPTOGRAPHIC IDENTITY VALIDATION
+    // ============================================================================
     const { userId } = await auth();
     const user = await currentUser();
 
@@ -38,7 +42,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Unauthorized access bounds." }, { status: 401 });
     }
 
-    const { tier } = await req.json();
+    const body = await req.json();
+    const tier = body.tier?.toLowerCase();
     const amountInPaisa = TIER_PRICE_MAP[tier];
 
     if (!amountInPaisa) {
@@ -46,9 +51,7 @@ export async function POST(req: Request) {
     }
 
     // ============================================================================
-    // DEVIL'S ADVOCATE CHECK: THE DOUBLE-PAYMENT SHIELD
-    // We check Supabase to ensure the user doesn't already have this exact 
-    // active tier. If they do, we block the transaction to save their money.
+    // 3. THE DOUBLE-PAYMENT SHIELD
     // ============================================================================
     const { data: profile, error: dbError } = await supabaseAdmin
       .from('profiles')
@@ -56,39 +59,40 @@ export async function POST(req: Request) {
       .eq('user_id', userId)
       .maybeSingle();
 
+    if (dbError) {
+      console.warn(`[DB_TRACE]: Failed to verify existing license for ${userId}. Proceeding with caution.`);
+    }
+
     if (profile && profile.tier === tier && profile.current_period_end) {
       const endDate = new Date(profile.current_period_end);
       if (endDate > new Date()) {
         return NextResponse.json(
-          { error: `You already have an active ${tier.toUpperCase()} license valid until ${endDate.toLocaleDateString()}.` },
-          { status: 400 } // Bad Request (Already Subscribed)
+          { error: `Transaction blocked: You already hold an active ${tier.toUpperCase()} license valid until ${endDate.toLocaleDateString()}.` },
+          { status: 400 } 
         );
       }
     }
 
     // ============================================================================
-    // THE RAZORPAY ORDER OBJECT
+    // 4. THE RAZORPAY ORDER OBJECT
     // ============================================================================
-    // Fix: Receipt length must be <= 40 chars. 
-    // Format: rpt_ + 15 chars of userId + 8 chars of timestamp = ~28 chars total. Safe.
     const safeReceiptString = `rpt_${userId.substring(0, 15)}_${Date.now().toString().slice(-8)}`;
 
     const options = {
       amount: amountInPaisa,
       currency: "INR",
       receipt: safeReceiptString,
-      // Fix: Razorpay uses 'notes' for custom payload data, NOT 'metadata'.
-      // This is crucial. Our webhook will read these 'notes' later.
       notes: {
         clerkUserId: userId,
         requestedTier: tier,
       },
     };
 
-    // Generate the Cryptographic Order ID from Razorpay Servers
     const order = await razorpay.orders.create(options);
 
-    // Return the payload back to the frontend checkout frame
+    // ============================================================================
+    // 5. SECURE METADATA DISPATCH
+    // ============================================================================
     return NextResponse.json({
       id: order.id,
       amount: order.amount,
@@ -97,7 +101,7 @@ export async function POST(req: Request) {
       userMeta: {
         name: user.fullName || "Hexical Researcher",
         email: user.primaryEmailAddress?.emailAddress || "",
-        contact: "" // Razorpay likes having a contact field available
+        contact: "" 
       }
     });
 
