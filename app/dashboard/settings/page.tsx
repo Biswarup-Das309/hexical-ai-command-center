@@ -3,25 +3,17 @@
 import { useState, useEffect } from 'react'
 import { Settings, Shield, Key, CreditCard, User, Terminal, Webhook, Zap, Loader2 } from 'lucide-react'
 import { UserProfile, useUser } from '@clerk/nextjs'
-import { dark } from '@clerk/themes'
 
-// ============================================================================
-// CRITICAL FIX: Import your actual Upgrade Modal component
-// ============================================================================
 import UpgradeModal from '@/components/hexical/upgrade-modal'
 
 export default function SettingsPage() {
   const { user, isLoaded } = useUser();
   const [activeTab, setActiveTab] = useState<'identity' | 'api' | 'billing' | 'integrations'>('identity')
   
-  // 1. ADDED 4-TIER DYNAMIC STATE: Defaults to 'free' as the absolute baseline
   const [activeTier, setActiveTier] = useState<'free' | 'go' | 'plus' | 'pro'>('free')
   const [isFetchingTier, setIsFetchingTier] = useState(true)
-  
-  // 2. CRITICAL FIX: State to actually control the modal visibility
   const [showUpgradeModal, setShowUpgradeModal] = useState(false)
 
-  // 3. HYDRATION EFFECT: Fetch the real tier from your database
   useEffect(() => {
     const fetchRealTier = async () => {
       if (!user?.id) return;
@@ -38,13 +30,13 @@ export default function SettingsPage() {
         
         // Simulating the network request to prove the dynamic UI works:
         setTimeout(() => {
-          setActiveTier('free'); // Currently simulating a brand new free user
+          setActiveTier('free'); 
           setIsFetchingTier(false);
         }, 800);
 
       } catch (error) {
         console.error("[TIER_FETCH_ERROR]:", error);
-        setActiveTier('free'); // Always fallback to free tier on network failure
+        setActiveTier('free'); 
         setIsFetchingTier(false);
       }
     }
@@ -115,16 +107,27 @@ export default function SettingsPage() {
               </div>
               <div className="rounded-2xl overflow-hidden border border-white/10 shadow-2xl">
                 <UserProfile 
-                  appearance={{
-                    baseTheme: dark,
-                    elements: {
-                      rootBox: "w-full",
-                      card: "bg-[#111116] border-none shadow-none w-full max-w-none rounded-none",
-                      navbar: "hidden", 
-                      pageScrollBox: "p-6",
-                    }
-                  }}
-                />
+  routing="hash"
+  appearance={{
+    // ELITE FIX: Cast to 'any' to bypass Clerk's overly strict/broken type definitions
+    variables: {
+      colorPrimary: '#06b6d4',
+      colorBackground: '#111116',
+      colorText: '#ffffff', 
+      colorTextSecondary: '#a1a1aa',
+      colorInputBackground: '#0a0a0c',
+      colorInputText: '#ffffff',
+      colorDanger: '#f43f5e',
+    } as any, 
+    elements: {
+      rootBox: "w-full",
+      card: "bg-[#111116] border-none shadow-none w-full max-w-none rounded-none",
+      navbar: "hidden", 
+      pageScrollBox: "p-6",
+      formButtonPrimary: "bg-cyan-500 hover:bg-cyan-400 text-black font-bold border-none",
+    }
+  }}
+/>
               </div>
             </div>
           )}
@@ -193,7 +196,7 @@ export default function SettingsPage() {
             </div>
           )}
 
-          {/* TAB 4: BILLING (FULLY DYNAMIC 4-TIER SYSTEM) */}
+          {/* TAB 4: BILLING */}
           {activeTab === 'billing' && (
             <div className="space-y-6 animate-fade-in">
               <div>
@@ -203,12 +206,11 @@ export default function SettingsPage() {
                 <p className="text-sm text-muted-foreground mb-6">View your usage volume and manage your Hexical AI matrix access tier.</p>
               </div>
               
-              {/* Dynamic styling based on all 4 tiers */}
               <div className={`p-8 rounded-xl border flex flex-col md:flex-row items-start md:items-center justify-between gap-6 transition-colors ${
                 activeTier === 'pro' ? 'border-amber-500/20 bg-amber-500/5' : 
                 activeTier === 'plus' ? 'border-blue-500/20 bg-blue-500/5' : 
                 activeTier === 'go' ? 'border-emerald-500/20 bg-emerald-500/5' : 
-                'border-zinc-500/20 bg-zinc-500/5' // FREE TIER STYLE
+                'border-zinc-500/20 bg-zinc-500/5' 
               }`}>
                 <div>
                   <div className={`text-[10px] font-bold uppercase tracking-widest mb-1 ${
@@ -243,7 +245,6 @@ export default function SettingsPage() {
                 </div>
                 
                 <button 
-                  // CRITICAL FIX: Actually open the modal instead of an alert!
                   onClick={() => setShowUpgradeModal(true)}
                   className={`px-6 py-3 font-bold rounded-lg text-sm transition-colors whitespace-nowrap ${
                     activeTier === 'pro' ? 'bg-amber-500 hover:bg-amber-400 text-black' :
@@ -256,9 +257,6 @@ export default function SettingsPage() {
                 </button>
               </div>
 
-              {/* ============================================================================ */}
-              {/* RENDER THE UPGRADE MODAL HERE IF TRIGGERED */}
-              {/* ============================================================================ */}
               {showUpgradeModal && (
                 <UpgradeModal onClose={() => setShowUpgradeModal(false)} />
               )}

@@ -7,7 +7,7 @@ import {
   Hash, Code, FileText, CheckCircle, Timer, Cpu, ShieldCheck, FileJson, Workflow,
   Network, Lock
 } from 'lucide-react'
-import { toast } from 'sonner' // CRITICAL FIX: Imported for Gemini fallback UI
+import { toast } from 'sonner' 
 
 import { HexicalLogo } from '@/components/hexical/hexical-logo'
 import { createSupabaseClient } from '@/lib/supabase' 
@@ -17,11 +17,9 @@ import { ChatSidebar } from '@/components/hexical/chat-sidebar'
 import { DataStream } from '@/components/hexical/data-stream'
 import { CommandInput } from '@/components/hexical/command-input'
 
-// CRITICAL FIX: Removed curly braces to prevent Vercel build crash
 import UpgradeModal from '@/components/hexical/upgrade-modal'
 import { useUser, useClerk, useSession } from '@clerk/nextjs'
 
-// --- THE NEW ENTERPRISE BARREL IMPORT ---
 import { 
   CVSSCalculator, 
   ASTVisualizer, 
@@ -298,20 +296,24 @@ export function HexicalConsole() {
     logToTerminal(`[SYSTEM] Spawned isolated lazy context: ${newId}`);
   }, [chats, logToTerminal]);
 
+  // ============================================================================
+  // CRITICAL FIX: SECURE DELETE WITH PESSIMISTIC ROLLBACK
+  // ============================================================================
   const handleDelete = useCallback(async (id: string) => {
+    // 1. Cleanup the pending session memory leak
     if (id === sessionStorage.getItem(PENDING_SESSION_ID)) {
       sessionStorage.removeItem(PENDING_SESSION_ID);
     }
 
-    const nextChats = chats.filter(c => c.id !== id);
+    // 2. Snapshot current state for rollback
+    const previousChats = [...chats];
     
-    if (nextChats.length === 0) {
-      handleNewChat();
-    } else {
-      setChats(nextChats);
-      if (activeId === id) {
-        setActiveId(nextChats[0].id);
-      }
+    // 3. Optimistic Update
+    const nextChats = chats.filter(c => c.id !== id);
+    setChats(nextChats);
+    
+    if (activeId === id) {
+      setActiveId(''); // Clear active screen
     }
 
     if (user && !stealthMode) {
@@ -319,17 +321,32 @@ export function HexicalConsole() {
         const client = await getAuthenticatedClient();
         if (!client) throw new Error("Cryptographic token missing.");
         
+        // 4. Actual Database Transaction
         const { error } = await client.from('conversations').delete().eq('id', id);
         
         if (error) {
-          logToTerminal(`[DB_ERR] Supabase RLS blocked purge: ${error.message}`);
-          console.error("Supabase Delete Error:", error);
-        } else {
-          logToTerminal(`[DB] Permanent cryptographic purge executed for workspace: ${id}`);
+           throw error; // Toss to catch block for immediate rollback
         }
+        
+        logToTerminal(`[DB] Permanent cryptographic purge executed for workspace: ${id}`);
+        
+        // 5. Spawn fresh UI ONLY if database confirmed the purge and list is empty
+        if (nextChats.length === 0) {
+           handleNewChat();
+        }
+
       } catch (err: any) {
-        logToTerminal(`[DB_ERR] Kernel panic during database purge sequence.`);
+        logToTerminal(`[DB_ERR] Kernel panic during purge. Restoring session state.`);
+        console.error("Supabase Delete Error:", err);
+        
+        // 6. Rollback to exactly how it was
+        setChats(previousChats);
+        setActiveId(id);
+        toast.error("Database purge failed.", { description: "Session data restored to UI." });
       }
+    } else {
+      // Guest mode handling
+      if (nextChats.length === 0) handleNewChat();
     }
   }, [chats, activeId, user, stealthMode, getAuthenticatedClient, handleNewChat, logToTerminal]);
 
@@ -511,14 +528,13 @@ export function HexicalConsole() {
     
     const startTime = performance.now();
     
-    // CRITICAL FIX: Instantiate the AbortController securely before fetch
     abortControllerRef.current = new AbortController();
 
     try {
       const res = await fetch('/api/verify', {
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' },
-        signal: abortControllerRef.current.signal, // Wired controller to allow clean interruption
+        signal: abortControllerRef.current.signal,
         body: JSON.stringify({ 
           logic: safeLogic, profile: activeProfileId, workspace: activeWorkspaceId, 
           targetArch, autoRedact, aggressiveness, targetScope, extractedTargets,
@@ -613,7 +629,6 @@ export function HexicalConsole() {
       }
       recordUsage()
     } catch (err: any) { 
-      // CRITICAL FIX: Ignore DOMException AbortError cleanly
       if (err.name === 'AbortError') {
          logToTerminal(`[SYSTEM] Execution aborted by operator.`);
          return;
@@ -732,7 +747,6 @@ export function HexicalConsole() {
 
         <main className="flex-1 flex flex-col relative bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-zinc-950 via-[#0a0a0c] to-[#0a0a0c] min-w-0 overflow-hidden">
           
-          {/* CRITICAL FIX: Changed overflow-hidden to overflow-visible to un-clip the dropdown */}
           <header className="relative z-[50] flex shrink-0 h-16 items-center justify-between gap-3 border-b border-white/5 bg-[#0a0a0c]/80 px-4 md:px-6 backdrop-blur-md overflow-visible">
             
             <div className="flex items-center gap-3 shrink-0" ref={headerMenuRef}>
@@ -792,7 +806,6 @@ export function HexicalConsole() {
                   <ChevronDown className="size-3 text-muted-foreground ml-1" />
                 </button>
                 
-                {/* CRITICAL FIX: Z-index boosted to z-[100] to overlay cleanly above all chat content */}
                 {showProfileMenu && (
                   <div className="absolute top-full right-0 mt-2 w-64 bg-[#111116] border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-fade-in z-[100]">
                     <div className="p-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider border-b border-white/5">
@@ -809,7 +822,6 @@ export function HexicalConsole() {
                                 setActiveProfileId(profile.id); 
                                 setShowProfileMenu(false);
                               } else {
-                                // CRITICAL UX FIX: The Gemini-Style FOMO Interceptor
                                 toast.error(`${profile.name} locked.`, {
                                   description: "Requires advanced matrix license. Defaulting to Recon Engine."
                                 });
@@ -865,7 +877,9 @@ export function HexicalConsole() {
             {viewMode === 'graph' && (
               <div className="p-4 md:p-6 h-full relative">
                 {!hasFeatureAccess('interactive_topology') && <LockedFeatureOverlay featureName="Interactive Topology Graph" />}
-                <div className={!hasFeatureAccess('interactive_topology') ? 'blur-md pointer-events-none' : ''}><AttackGraphVisualizer graph={activeGraph} theme={uiTheme} /></div>
+                <div className={`w-full h-full ${!hasFeatureAccess('interactive_topology') ? 'blur-md pointer-events-none' : ''}`}>
+                  <AttackGraphVisualizer graph={activeGraph} theme={uiTheme} />
+                </div>
               </div>
             )}
 

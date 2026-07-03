@@ -1,4 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+'use client'
+
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   ReactFlow, 
   Background, 
@@ -12,10 +14,11 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { Workflow, Globe, GitMerge, Bug, Target, Shield, X, Download } from 'lucide-react';
-import { AccentTheme } from './cvss-calculator'; // Import your shared theme type
+
+// ELITE FIX 1: Decoupled Type to prevent broken imports across your file tree
+export type AccentTheme = 'cyan' | 'emerald' | 'rose' | 'violet' | 'amber';
 
 // --- 1. THE CUSTOM "THREAT NODE" COMPONENT ---
-// This makes your graph look like a million-dollar cybersecurity product.
 const ThreatNode = ({ data }: { data: any }) => {
   const isEntry = data.type === 'entry';
   const isVuln = data.type === 'vuln';
@@ -33,7 +36,6 @@ const ThreatNode = ({ data }: { data: any }) => {
 
   return (
     <div className={`relative px-4 py-3 rounded-xl border backdrop-blur-md shadow-xl transition-all duration-300 hover:scale-105 min-w-[160px] ${config.bg} ${config.border} ${config.glow}`}>
-      {/* Target Handle (Left) */}
       {!isEntry && <Handle type="target" position={Position.Left} className="!bg-zinc-500 !w-2 !h-4 !rounded-sm !border-none" />}
       
       <div className="flex flex-col items-center justify-center gap-2">
@@ -46,7 +48,6 @@ const ThreatNode = ({ data }: { data: any }) => {
         </div>
       </div>
 
-      {/* Source Handle (Right) */}
       <Handle type="source" position={Position.Right} className={`!w-2 !h-4 !rounded-sm !border-none ${isVuln ? '!bg-rose-500 animate-pulse' : '!bg-zinc-500'}`} />
     </div>
   );
@@ -59,10 +60,15 @@ export const AttackGraphVisualizer = ({ graph, theme }: { graph: any, theme: Acc
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [selectedNode, setSelectedNode] = useState<any | null>(null);
+  
+  const lastGraphDataSignature = useRef<string>('');
 
-  // Sync incoming AI graph data to React Flow's interactive state
   useEffect(() => {
     if (!graph || !graph.nodes || graph.nodes.length === 0) return;
+
+    const currentSignature = JSON.stringify({ nodes: graph.nodes, edges: graph.edges });
+    if (lastGraphDataSignature.current === currentSignature) return; 
+    lastGraphDataSignature.current = currentSignature;
 
     const formattedNodes = graph.nodes.map((n: any) => ({
       id: n.id,
@@ -71,7 +77,6 @@ export const AttackGraphVisualizer = ({ graph, theme }: { graph: any, theme: Acc
       data: { 
         label: n.label, 
         type: n.type,
-        // Mock mitigation data for the interactive HUD
         mitigation: n.type === 'vuln' ? 'Implement strict input sanitization and parameterized queries.' : 
                     n.type === 'entry' ? 'Review WAF rules and rate-limiting policies at the gateway.' :
                     'Enforce Zero-Trust RBAC network segmentation.'
@@ -83,7 +88,7 @@ export const AttackGraphVisualizer = ({ graph, theme }: { graph: any, theme: Acc
       source: e.source,
       target: e.target,
       label: e.label,
-      animated: true, // The animated data-flow effect
+      animated: true, 
       style: { stroke: 'rgba(255,255,255,0.4)', strokeWidth: 2 },
       labelStyle: { fill: 'rgba(255,255,255,0.9)', fontWeight: 'bold', fontSize: 10, fontFamily: 'monospace' },
       labelBgStyle: { fill: '#111116', fillOpacity: 0.9, rx: 4, ry: 4 },
@@ -99,16 +104,15 @@ export const AttackGraphVisualizer = ({ graph, theme }: { graph: any, theme: Acc
     setSelectedNode(node);
   }, []);
 
-  // Empty State Guard
   if (!graph || !graph.nodes || graph.nodes.length === 0) {
     return (
-      <div className="flex-1 w-full h-full p-6 flex flex-col bg-[#0a0a0c]">
+      <div className="w-full h-full min-h-[500px] flex-1 p-6 flex flex-col bg-[#0a0a0c]">
         <div className="flex items-center gap-3 mb-6">
-          <Workflow className={`size-6 text-zinc-500`} />
+          <Workflow className="size-6 text-zinc-500" />
           <h2 className="text-2xl font-medium text-white tracking-tight">Attack Path Topology</h2>
         </div>
-        <div className="flex-1 border border-dashed border-white/10 rounded-2xl bg-[#111116]/50 flex flex-col items-center justify-center text-center shadow-inner">
-          <Workflow className={`size-12 text-zinc-700 opacity-50 mb-4`} />
+        <div className="flex-1 border border-dashed border-white/10 rounded-2xl bg-[#111116]/50 flex flex-col items-center justify-center text-center shadow-inner min-h-[400px]">
+          <Workflow className="size-12 text-zinc-700 opacity-50 mb-4" />
           <h3 className="text-zinc-300 font-mono text-sm uppercase tracking-widest font-bold mb-2">Awaiting Architecture Data</h3>
           <p className="text-zinc-500 font-mono text-xs max-w-sm leading-relaxed">
             Execute an active reconnaissance payload in the Core terminal to generate a dynamic threat map.
@@ -119,12 +123,11 @@ export const AttackGraphVisualizer = ({ graph, theme }: { graph: any, theme: Acc
   }
 
   return (
-    <div className="flex-1 w-full h-full p-6 flex flex-col bg-[#0a0a0c] relative">
+    <div className="w-full h-full min-h-[500px] flex-1 p-4 md:p-6 flex flex-col bg-[#0a0a0c] relative">
       
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 shrink-0 z-10">
          <div className="flex items-center gap-3">
-           <Workflow className={`size-6 text-emerald-400`} />
+           <Workflow className="size-6 text-emerald-400" />
            <h2 className="text-2xl font-sans font-medium text-white tracking-tight">Attack Path Topology</h2>
          </div>
          <div className="flex gap-2">
@@ -137,33 +140,34 @@ export const AttackGraphVisualizer = ({ graph, theme }: { graph: any, theme: Acc
          </div>
       </div>
       
-      {/* Canvas Container */}
-      <div className="flex-1 border border-white/10 rounded-2xl bg-[#111116] relative overflow-hidden shadow-inner flex">
+      {/* ELITE FIX 2: Absolute constraint wrapper ensures the Canvas is forced to render dimensions */}
+      <div className="w-full relative flex-1 min-h-[450px] border border-white/10 rounded-2xl bg-[#111116] overflow-hidden shadow-inner">
         
-        {/* React Flow Engine */}
-        <ReactFlow 
-          nodes={nodes} 
-          edges={edges} 
-          nodeTypes={nodeTypes}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onNodeClick={onNodeClick}
-          fitView 
-          minZoom={0.2} 
-          maxZoom={1.5}
-          attributionPosition="bottom-right"
-        >
-          <Background color="#fff" gap={24} size={1} style={{ opacity: 0.02 }} />
-          <Controls className="!bg-black/80 !border-white/10 !fill-white !rounded-lg overflow-hidden shadow-2xl" />
-          <MiniMap 
-            className="!bg-black/80 !border-white/10 !rounded-lg shadow-2xl" 
-            maskColor="rgba(255,255,255,0.1)" 
-            nodeColor={(n) => n.data.type === 'vuln' ? '#f43f5e' : '#3b82f6'} 
-          />
-        </ReactFlow>
+        {/* Anchored rigidly to all 4 corners of the relative parent */}
+        <div className="absolute inset-0">
+          <ReactFlow 
+            nodes={nodes} 
+            edges={edges} 
+            nodeTypes={nodeTypes}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onNodeClick={onNodeClick}
+            fitView 
+            minZoom={0.2} 
+            maxZoom={1.5}
+            attributionPosition="bottom-right"
+          >
+            <Background color="#fff" gap={24} size={1} style={{ opacity: 0.02 }} />
+            <Controls className="!bg-black/80 !border-white/10 !fill-white !rounded-lg overflow-hidden shadow-2xl" />
+            <MiniMap 
+              className="!bg-black/80 !border-white/10 !rounded-lg shadow-2xl" 
+              maskColor="rgba(255,255,255,0.1)" 
+              nodeColor={(n) => n.data.type === 'vuln' ? '#f43f5e' : '#3b82f6'} 
+            />
+          </ReactFlow>
+        </div>
 
-        {/* Interactive Node Inspector HUD (Slides in from the right) */}
-        <div className={`absolute top-4 right-4 bottom-4 w-72 bg-black/90 backdrop-blur-xl border border-white/10 rounded-xl shadow-[0_0_50px_rgba(0,0,0,0.5)] transition-transform duration-300 flex flex-col overflow-hidden z-10 ${selectedNode ? 'translate-x-0' : 'translate-x-[120%]'}`}>
+        <div className={`absolute top-4 right-4 bottom-4 w-72 bg-black/90 backdrop-blur-xl border border-white/10 rounded-xl shadow-[0_0_50px_rgba(0,0,0,0.5)] transition-transform duration-300 flex flex-col overflow-hidden z-20 ${selectedNode ? 'translate-x-0' : 'translate-x-[120%]'}`}>
           {selectedNode && (
             <>
               <div className="p-4 border-b border-white/10 flex justify-between items-center bg-white/[0.02]">
@@ -201,7 +205,6 @@ export const AttackGraphVisualizer = ({ graph, theme }: { graph: any, theme: Acc
             </>
           )}
         </div>
-
       </div>
     </div>
   );
