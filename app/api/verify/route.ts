@@ -4,27 +4,32 @@ import { createClient } from '@supabase/supabase-js';
 import Groq from 'groq-sdk';
 import { PLAN_LIMITS, type PlanTier } from '@/lib/hexical-types';
 
-// Initialize Supabase Admin Client for secure backend database adjustments
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
-
 export async function POST(req: Request) {
   try {
+    // ============================================================================
+    // 1. LAZY INSTANTIATION (CI/CD Pipeline Shield)
+    // ============================================================================
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      throw new Error("FATAL: Missing Supabase infrastructure keys.");
+    }
     if (!process.env.GROQ_API_KEY) {
       console.error("[HEXICAL_KERNEL_CRITICAL]: Missing GROQ_API_KEY inside environment variables.");
       return NextResponse.json({ error: "Server Configuration Error: Missing Inference Key" }, { status: 500 });
     }
 
+    const supabaseAdmin = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
+
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
     // ============================================================================
-    // 1. CRYPTOGRAPHIC AUTHENTICATION (Next.js 16 Asynchronous Fix)
+    // 2. CRYPTOGRAPHIC AUTHENTICATION
     // ============================================================================
     const { userId } = await auth();
     console.log(`[HEXICAL_AUTH_TRACE]: Authenticating transaction for User ID: ${userId || 'ANONYMOUS'}`);
     
-    // ============================================================================
-    // 2. DATABASE TIER ENFORCEMENT & ASSET SEEDING
-    // ============================================================================
     const body = await req.json();
     const { 
       logic, 
@@ -42,7 +47,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid execution payload. Prompt logic string required." }, { status: 400 });
     }
 
-    let activeTier: PlanTier = 'go'; 
+    // ============================================================================
+    // 3. DATABASE TIER ENFORCEMENT & SECURE ASSET SEEDING
+    // ============================================================================
+    // CRITICAL FIX: The absolute default MUST be 'free' to prevent IDOR/Privilege Escalation
+    let activeTier: string = 'free'; 
 
     if (userId) {
       let { data: userProfile, error: dbError } = await supabaseAdmin
@@ -52,10 +61,11 @@ export async function POST(req: Request) {
         .single();
         
       if (dbError && dbError.code === 'PGRST116') {
-        console.log(`[DATABASE_SYNC_WARN]: Profile missing for user ${userId}. Auto-seeding base tier asset...`);
+        console.log(`[DATABASE_SYNC_WARN]: Profile missing for user ${userId}. Auto-seeding FREE tier asset...`);
         const { data: newProfile, error: insertError } = await supabaseAdmin
           .from('profiles')
-          .insert({ user_id: userId, tier: 'go' })
+          // CRITICAL FIX: Replaced 'go' with 'free'
+          .insert({ user_id: userId, tier: 'free' }) 
           .select('tier')
           .single();
           
@@ -67,20 +77,22 @@ export async function POST(req: Request) {
       }
         
       if (userProfile?.tier) {
-        activeTier = userProfile.tier as PlanTier;
+        activeTier = userProfile.tier.toLowerCase();
       }
     }
 
     console.log(`[HEXICAL_GATE_RESOLVED]: Processing payload under authorized [${activeTier.toUpperCase()}] tier matrix.`);
-    const currentLimits = PLAN_LIMITS[activeTier];
+    
+    // Safe limit resolution in case PLAN_LIMITS is strictly typed and missing 'free'
+    const currentLimits = PLAN_LIMITS[activeTier as PlanTier] || { maxMessages: 50, features: [] };
 
     if (logic.length > currentLimits.maxMessages * 100) { 
       return NextResponse.json({ 
-        error: `Payload volume exceeds authorized tier constraints. Current allocation limits compute payload parsing size.` 
+        error: `Payload volume exceeds authorized tier constraints. Upgrade license to parse larger execution payloads.` 
       }, { status: 403 });
     }
 
-    if (profile === 'swarm' && !currentLimits.features.includes('swarm_intelligence')) {
+    if (profile === 'swarm' && (!currentLimits.features || !currentLimits.features.includes('swarm_intelligence'))) {
       console.warn(`[SECURITY_GATE_BLOCKED]: Intercepted unauthorized Swarm Intelligence pipeline call from User: ${userId}`);
       return NextResponse.json({ 
         error: `Access Denied: Swarm Intelligence multi-agent compilation requires an active Pro license allocation.` 
@@ -88,31 +100,32 @@ export async function POST(req: Request) {
     }
 
     // ============================================================================
-    // 3. DYNAMIC MODEL ROUTING & PRE-FLIGHT INTENT ROUTER
+    // 4. DYNAMIC MODEL ROUTING & PRE-FLIGHT INTENT ROUTER
     // ============================================================================
-    const MODEL_MAP: Record<PlanTier, string> = {
+    // CRITICAL FIX: Added 'free' tier mapping to prevent undefined SDK crashes
+    const MODEL_MAP: Record<string, string> = {
+      free: 'llama-3.1-8b-instant',
       go: 'llama-3.1-8b-instant',      
       plus: 'llama-3.3-70b-versatile', 
       pro: 'llama-3.3-70b-versatile'   
     };
 
-    const selectedModel = MODEL_MAP[activeTier];
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    const selectedModel = MODEL_MAP[activeTier] || 'llama-3.1-8b-instant';
     let totalTokens = 0;
 
-    // --- THE GATEKEEPER ROUTER (Pure Traffic Switch) ---
+    // --- THE GATEKEEPER ROUTER ---
     const intentCheck = await groq.chat.completions.create({
       messages: [
         { 
           role: 'system', 
           content: `You are an intent routing proxy node. Evaluate the user's incoming query.
           If the prompt is a security exploit payload, structural code snippet, URL target, network script, or requests vulnerability analysis, resolve to "security".
-          If the prompt is a standard conversational phrase, greeting, general science/physics question (e.g. "what is light"), or general knowledge instruction, resolve to "general".
+          If the prompt is a standard conversational phrase, greeting, general science/physics question, or general knowledge instruction, resolve to "general".
           Output strict JSON format ONLY: {"intent": "security" | "general"}` 
         },
         { role: 'user', content: logic }
       ],
-      model: 'llama-3.1-8b-instant', // Fast, cheap model used strictly for parsing tracking paths
+      model: 'llama-3.1-8b-instant',
       response_format: { type: "json_object" },
       temperature: 0.1
     });
@@ -127,7 +140,7 @@ export async function POST(req: Request) {
     }
 
     // ============================================================================
-    // 4. BRANCH ENGINE: GENERAL INTELLIGENCE PIPELINE
+    // 5. BRANCH ENGINE: GENERAL INTELLIGENCE PIPELINE
     // ============================================================================
     if (intentData.intent === 'general') {
       console.log(`[ROUTE_SWITCH]: General knowledge inquiry captured. Routing execution to tier core: ${selectedModel}`);
@@ -143,7 +156,7 @@ export async function POST(req: Request) {
           },
           { role: 'user', content: logic }
         ],
-        model: selectedModel, // Premium Tier Users get their full 70B parameter capability here!
+        model: selectedModel,
         temperature: 0.6,
       });
 
@@ -152,7 +165,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ 
         analysis: generalCompletion.choices[0]?.message?.content || "Inference pipeline yielded blank return data.", 
         steps: ["INTENT_CLASSIFIED: Conversational/General", `DISPATCHING_CORE_COMPUTE_NODE: ${selectedModel}`],
-        valid: true, // Tag as valid to bypass frontend vulnerability warnings
+        valid: true, 
         swarmConsensus: undefined,
         metrics: {
           latencyMs: 0,
@@ -163,7 +176,7 @@ export async function POST(req: Request) {
     }
 
     // ============================================================================
-    // 5. BRANCH ENGINE: CYBERSECURITY ENGINE (Swarm vs Single Node)
+    // 6. BRANCH ENGINE: CYBERSECURITY ENGINE (Swarm vs Single Node)
     // ============================================================================
     let responseText = "";
     let swarmConsensusData = undefined;
@@ -250,16 +263,16 @@ export async function POST(req: Request) {
           { role: 'user', content: logic }
         ],
         model: selectedModel,
-        temperature: activeTier === 'go' ? 0.5 : 0.2, 
+        temperature: (activeTier === 'free' || activeTier === 'go') ? 0.5 : 0.2, 
       });
 
       responseText = chatCompletion.choices[0]?.message?.content || "Execution yielded no return data.";
       totalTokens += chatCompletion.usage?.total_tokens || 150;
-      confidenceScore = activeTier === 'go' ? 65.4 : 92.1;
+      confidenceScore = (activeTier === 'free' || activeTier === 'go') ? 65.4 : 92.1;
     }
 
     // ============================================================================
-    // 6. DIAGNOSTIC PIPELINE GENERATION
+    // 7. DIAGNOSTIC PIPELINE GENERATION
     // ============================================================================
     const generateSteps = (input: string) => {
       const steps = [
