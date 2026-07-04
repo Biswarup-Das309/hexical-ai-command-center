@@ -446,11 +446,11 @@ export function HexicalConsole() {
           const client = await getAuthenticatedClient();
           const { data: profile, error } = await client
             .from('profiles')
-            .select('plan_tier')
+            .select('tier')
             .eq('user_id', user.id)
             .single();
-          if (!cancelled && !error && profile?.plan_tier) {
-            setCurrentTier(profile.plan_tier as PlanTier);
+          if (!cancelled && !error && profile?.tier) {
+            setCurrentTier(profile.tier as PlanTier);
           }
         } catch {
           // Fail closed: if we can't confirm entitlement, stay on 'go'.
