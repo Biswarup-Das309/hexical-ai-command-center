@@ -65,6 +65,9 @@ import {
 type ViewMode = 'chat' | 'recon' | 'payloads' | 'terminal' | 'graph' | 'cvss' | 'bounty' | 'ast';
 export type AccentTheme = 'cyan' | 'emerald' | 'rose' | 'violet' | 'amber';
 type EncodingType = 'base64' | 'url' | 'hex' | 'rot13' | 'unicode';
+type VerifyProfile = 'recon' | 'swarm' | 'exploit' | 'patch';
+type TargetArch = 'x64' | 'x86' | 'arm64';
+type Aggressiveness = 'low' | 'medium' | 'high';
 
 interface TraceSource { 
   name: string; 
@@ -90,7 +93,7 @@ interface ExtendedStreamMessage extends StreamMessage {
 
 interface SwarmEvaluation {
   redTeam: { confidence: number; logic: string; payloadSuggested: string };
-  blueTeam: { mitigation: string; blockedBy: string[]; riskLevel: 'LOW' | 'MED' | 'HIGH' | 'CRITICAL' };
+  blueTeam: { mitigation: string; blockedBy: string[]; riskLevel: 'LOW' | 'MED' | 'HIGH' | 'CRITICAL'; withstandMatrix: string };
   architect: { route: string; architecturalFlaw: string };
   finalConsensus: boolean;
 }
@@ -106,6 +109,16 @@ const DEFAULT_GUEST_NAME = 'Guest'
 const DEFAULT_GUEST_EMAIL = 'guest@hexical.ai'
 
 const PENDING_SESSION_ID = 'local_pending_session'
+const VERIFY_ENDPOINT = '/api/verify'
+const MAX_LOGIC_CHARS = 12000
+const POLL_INTERVAL_MS = 1500
+const MAX_POLL_ATTEMPTS = 80
+const PROFILE_TO_VERIFY_PROFILE: Record<string, VerifyProfile> = {
+  recon: 'recon',
+  swarm: 'swarm',
+  'bug-hunter': 'exploit',
+  defense: 'patch'
+}
 
 const createFreshChatState = (id: string) => ({
   id,
@@ -205,6 +218,51 @@ function sanitizeLocalPayload(text: string, isActive: boolean): string {
   return s;
 }
 
+function clampNumber(value: string, min: number, max: number, fallback: number): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+async function parseJsonResponse<T = any>(response: Response): Promise<T | null> {
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) return null;
+  return response.json().catch(() => null);
+}
+
+function getSafeClientError(status?: number): string {
+  if (status === 400) return 'Request rejected. Please check the selected profile and options.';
+  if (status === 401) return 'Session expired. Please sign in again.';
+  if (status === 402 || status === 403) return 'Your current plan cannot run this operation.';
+  if (status === 408) return 'The operation timed out. Try a smaller target or lower concurrency.';
+  if (status === 429) return 'Rate limit reached. Please wait a moment and retry.';
+  if (status && status >= 500) return 'The verification service is temporarily unavailable.';
+  return 'Pipeline sequence failed.';
+}
+
+function getSafeExceptionMessage(error: unknown): string {
+  if (error instanceof Error) {
+    if (error.message === 'AUTH_TOKEN_UNAVAILABLE') return 'Session token unavailable. Please sign in again.';
+    if (error.message === 'EMPTY_RESPONSE') return 'Verification service returned an empty response.';
+    if (error.message === 'INVALID_JOB_ID') return 'Verification queue returned an invalid job.';
+    if (error.message === 'VERIFY_JOB_ERROR') return 'Verification job failed on the server.';
+    if (error.message === 'POLL_TIMEOUT') return 'Verification timed out while waiting in the queue.';
+    const statusMatch = error.message.match(/^HTTP_(\d{3})$/);
+    if (statusMatch) return getSafeClientError(Number(statusMatch[1]));
+  }
+  return 'Pipeline sequence failed.';
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => {
+      window.clearTimeout(timeout);
+      reject(new DOMException('Request aborted', 'AbortError'));
+    }, { once: true });
+  });
+}
+
 const extractTargetsFromLogic = (text: string): string[] => {
   const ipRegex = /\b(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g;
   const domainRegex = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|org|net|io|gov|edu|ai|app|local)\b/gi;
@@ -289,8 +347,8 @@ export function HexicalConsole() {
   
   const [stealthMode, setStealthMode] = useState<boolean>(false)
   const [autoRedact, setAutoRedact] = useState<boolean>(true) 
-  const [targetArch, setTargetArch] = useState<string>('linux')
-  const [aggressiveness, setAggressiveness] = useState<string>('scan')
+  const [targetArch, setTargetArch] = useState<TargetArch>('x64')
+  const [aggressiveness, setAggressiveness] = useState<Aggressiveness>('low')
   const [bountyPlatform, setBountyPlatform] = useState<string>('hackerone')
   const [contextWindow, setContextWindow] = useState<string>('4096')
   const [maxConcurrency, setMaxConcurrency] = useState<string>('3')
@@ -300,7 +358,7 @@ export function HexicalConsole() {
   const abortControllerRef = useRef<AbortController | null>(null)
 
   const hasFeatureAccess = useCallback((requiredFeature: string) => {
-    return PLAN_LIMITS[currentTier].features.includes(requiredFeature);
+    return PLAN_LIMITS[currentTier].features.includes(requiredFeature as any);
   }, [currentTier]);
 
   const logToTerminal = useCallback((msg: string) => {
@@ -338,6 +396,10 @@ export function HexicalConsole() {
   const getAuthenticatedClient = useCallback(async () => {
     const token = await session?.getToken({ template: 'supabase' });
     return createSupabaseClient(token || undefined);
+  }, [session])
+
+  const getApiAuthToken = useCallback(async () => {
+    return session?.getToken() ?? undefined;
   }, [session])
   
   const handleNewChat = useCallback(() => {
@@ -589,7 +651,15 @@ export function HexicalConsole() {
   // SECURE TRANSACTION HANDLER
   // ============================================================================
   const handleSubmit = async (rawLogic: string) => {
-    if (busy || !rawLogic.trim()) return
+    const trimmedLogic = rawLogic.trim();
+    if (busy || !trimmedLogic) return
+
+    if (trimmedLogic.length > MAX_LOGIC_CHARS) {
+      toast.error('Payload too large.', {
+        description: `Keep verification requests under ${MAX_LOGIC_CHARS.toLocaleString()} characters.`
+      });
+      return;
+    }
 
     // NOTE: this guest-usage cap lives in client storage and can be cleared
     // or bypassed trivially (incognito, devtools, etc.) — it's a UX nicety,
@@ -600,24 +670,29 @@ export function HexicalConsole() {
         id: generateUniqueID(), role: 'hexical', text: `**LOCKOUT:** Guest Limit reached.`, 
         steps: ['GUEST_LIMIT_REACHED'], valid: false, route: 'unknown' as any, ts: generateTimestamp() 
       }
-      setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, { id: generateUniqueID(), role: 'user', text: rawLogic, ts: generateTimestamp() }, systemWarning] } : c))
+      setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, { id: generateUniqueID(), role: 'user', text: trimmedLogic, ts: generateTimestamp() }, systemWarning] } : c))
       openSignIn(); 
       return;
     }
 
-    const targets = extractTargetsFromLogic(rawLogic);
+    const currentChatContext = chats.find(c => c.id === activeId) || chats[0];
+    if (!currentChatContext) {
+      toast.error('Console is still initializing.', { description: 'Please try again in a moment.' });
+      return;
+    }
+
+    const targets = extractTargetsFromLogic(trimmedLogic);
     if (targets.length > 0) { 
       setExtractedTargets(prev => Array.from(new Set([...prev, ...targets])).slice(0, 8)); 
       logToTerminal(`[RECON] Extracted ${targets.length} valid entities from AST flow.`); 
     }
     
-    const safeLogic = sanitizeLocalPayload(rawLogic, autoRedact);
-    if (safeLogic !== rawLogic) {
+    const safeLogic = sanitizeLocalPayload(trimmedLogic, autoRedact);
+    if (safeLogic !== trimmedLogic) {
       logToTerminal(`[SEC] Zero-Knowledge Regex triggered. Secrets stripped prior to transit.`);
     }
 
     const userMsg: ExtendedStreamMessage = { id: generateUniqueID(), role: 'user', text: safeLogic, ts: generateTimestamp() }
-    const currentChatContext = chats.find(c => c.id === activeId) || chats[0];
     const isNewChat = currentChatContext.messages.length <= 1;
     const generatedTitle = isNewChat ? safeLogic.split(' ').slice(0, 4).join(' ') + '...' : currentChatContext.title;
     const updatedUserMessages = [...currentChatContext.messages, userMsg];
@@ -637,70 +712,97 @@ export function HexicalConsole() {
     
     const startTime = performance.now();
     
+    abortControllerRef.current?.abort();
     abortControllerRef.current = new AbortController();
+    const requestSignal = abortControllerRef.current.signal;
 
     try {
-      // SECURITY: authenticate explicitly with a bearer token instead of
-      // relying on ambient cookies. This keeps the endpoint stateless and
-      // immune to classic cookie-based CSRF, and lets the backend derive
-      // *who* is calling from a token it can verify itself.
-      const authToken = user ? await session?.getToken({ template: 'supabase' }) : undefined;
+      // SECURITY: send a Clerk session token when present and keep the
+      // request same-origin so cookie-based Clerk auth still works. The
+      // backend must derive identity from its verified auth context, never
+      // from a user id, email, or tier sent by this client.
+      const authToken = user ? await getApiAuthToken() : undefined;
+      if (user && !authToken) {
+        throw new Error('AUTH_TOKEN_UNAVAILABLE');
+      }
 
-      const res = await fetch('/api/verify', {
+      const boundedMaxConcurrency = clampNumber(maxConcurrency, 1, 10, 3);
+      const boundedContextWindow = clampNumber(contextWindow, 1024, 32768, 4096);
+      const verifyProfile = PROFILE_TO_VERIFY_PROFILE[activeProfileId] ?? 'recon';
+
+      const res = await fetch(VERIFY_ENDPOINT, {
         method: 'POST',
+        credentials: 'same-origin',
         headers: {
           'Content-Type': 'application/json',
           ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-          // A custom header forces a CORS preflight, so a plain cross-site
-          // form/fetch can't hit this endpoint silently. Pair this with an
-          // Origin check and CSRF verification on the server — this header
-          // alone doesn't replace that, it just closes the easy case.
           'X-Hexical-Client': 'web-console'
         },
-        signal: abortControllerRef.current.signal,
+        signal: requestSignal,
         body: JSON.stringify({
-          logic: safeLogic, profile: activeProfileId, workspace: activeWorkspaceId,
-          targetArch, autoRedact, aggressiveness, targetScope, extractedTargets,
-          bountyPlatform, maxConcurrency, contextWindow
-          // Intentionally NOT sending `tier` here. The server must look up
-          // the caller's plan from the authenticated user id — never from a
-          // field the client can edit in devtools before every request.
+          logic: safeLogic,
+          profile: verifyProfile,
+          workspace: activeWorkspaceId,
+          targetArch,
+          autoRedact,
+          aggressiveness,
+          targetScope: targetScope.trim().slice(0, 500),
+          extractedTargets: targets,
+          bountyPlatform,
+          maxConcurrency: boundedMaxConcurrency,
+          contextWindow: boundedContextWindow
         })
       });
       
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        if (res.status === 402 || res.status === 403) {
+        const errData = await parseJsonResponse<{ error?: string }>(res);
+        
+        // ADD 429 TO THIS CHECK:
+        if (res.status === 402 || res.status === 403 || res.status === 429) {
            logToTerminal(`[SYSTEM_HALT] Transaction rejected: ${res.status}`);
+           
+           // Custom message if it's a 429 Rate Limit
+           const errorMsg = getSafeClientError(res.status);
+
            const systemWarning: ExtendedStreamMessage = { 
              id: generateUniqueID(), role: 'hexical', 
-             text: `**SYSTEM HALT:** ${errData.error || 'Token allocation exhausted or feature locked.'}`, 
+             text: `**SYSTEM HALT:** ${errorMsg}`, 
              steps: ['LIMIT_REACHED'], valid: false, route: 'unknown' as any, ts: generateTimestamp() 
            }
            setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...updatedUserMessages, systemWarning] } : c));
-           setShowUpgradeModal(true);
+           
+           // Only show upgrade modal for 402/403, not a standard rate limit cooldown
+           if (res.status !== 429) setShowUpgradeModal(true);
            setBusy(false);
            return;
         }
-        throw new Error(errData.error || "Server connection severed.");
+        throw new Error(errData?.error || `HTTP_${res.status}`);
       }
       
-      const initData = await res.json();
+      const initData = await parseJsonResponse(res);
+      if (!initData) {
+        throw new Error('EMPTY_RESPONSE');
+      }
       let finalData = initData;
 
       if (initData.status === 'queued') {
         const jobId = initData.job_id;
+        if (typeof jobId !== 'string' || jobId.length < 8) {
+          throw new Error('INVALID_JOB_ID');
+        }
         logToTerminal(`[QUEUE] Assigned Job ID: ${jobId}. Position: ${initData.position}`);
         setLoadingPhase(`In Queue (Position: ${initData.position})...`);
 
         let isPolling = true;
-        while (isPolling) {
-          if (abortControllerRef.current?.signal.aborted) {
+        let attempts = 0;
+        while (isPolling && attempts < MAX_POLL_ATTEMPTS) {
+          attempts += 1;
+          if (requestSignal.aborted) {
             logToTerminal(`[SYSTEM] User aborted request.`); 
             setBusy(false); 
             return;
           }
-          await new Promise(resolve => setTimeout(resolve, 1500));
+          await sleep(POLL_INTERVAL_MS, requestSignal);
           
           try {
             // SECURITY: poll through our own authenticated Next.js API route
@@ -712,17 +814,26 @@ export function HexicalConsole() {
             // enumerates a jobId could read someone else's results (IDOR).
             const statusRes = await fetch(`/api/verify/status/${jobId}`, {
               headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-              signal: abortControllerRef.current.signal
+              credentials: 'same-origin',
+              signal: requestSignal
             });
-            const statusData = await statusRes.json();
+            if (!statusRes.ok) {
+              throw new Error(`POLL_HTTP_${statusRes.status}`);
+            }
+            const statusData = await parseJsonResponse(statusRes);
+            if (!statusData) {
+              throw new Error('POLL_EMPTY_RESPONSE');
+            }
 
             if (statusData.status === 'queued') { 
               setLoadingPhase(`In Queue (Position: ${statusData.position})...`); 
             } else if (statusData.status === 'processing') { 
               setLoadingPhase('Executing payload...'); 
-            } else if (statusData.status === 'completed' || statusData.status === 'error') {
+            } else if (statusData.status === 'completed') {
               finalData = statusData.data; 
               isPolling = false;
+            } else if (statusData.status === 'error') {
+              throw new Error('VERIFY_JOB_ERROR');
             } else if (statusData.status === 'not_found') { 
               throw new Error("Job lost in server queue."); 
             }
@@ -731,9 +842,22 @@ export function HexicalConsole() {
             logToTerminal(`[ERR] Polling error. Retrying...`); 
           }
         }
+        if (isPolling) {
+          throw new Error('POLL_TIMEOUT');
+        }
+      }
+      if (!finalData || typeof finalData !== 'object') {
+        throw new Error('EMPTY_RESPONSE');
       }
       
       const executionTimeMs = Math.round(performance.now() - startTime)
+      const analysisText = typeof finalData.analysis === 'string'
+        ? finalData.analysis
+        : 'Verification completed, but the server returned no analysis text.';
+      const responseSteps = Array.isArray(finalData.steps) && finalData.steps.every((step: unknown) => typeof step === 'string')
+        ? finalData.steps
+        : ['VERIFY_RESPONSE_RECEIVED'];
+      const responseValid = typeof finalData.valid === 'boolean' ? finalData.valid : false;
 
       // Only latencyMs is something we genuinely measured. Don't invent
       // plausible-looking token counts or confidence scores when the
@@ -757,13 +881,13 @@ export function HexicalConsole() {
       // misleading UI, not a real security capability.
       const swarmData: SwarmEvaluation | undefined = finalData.swarmConsensus
 
-      logToTerminal(`[RX] Received evaluated payload. Status: ${finalData.valid ? 'SUCCESS' : 'WARN'}. Computation Time: ${executionTimeMs}ms.`);
+      logToTerminal(`[RX] Received evaluated payload. Status: ${responseValid ? 'SUCCESS' : 'WARN'}. Computation Time: ${executionTimeMs}ms.`);
 
       const hexMsg: ExtendedStreamMessage = { 
-        id: generateUniqueID(), role: 'hexical', text: finalData.analysis, steps: finalData.steps, 
-        valid: finalData.valid, route: inferRoute(finalData.steps), ts: generateTimestamp(), 
-        sources: [{ name: 'Swarm Consensus DB', verified: true, type: 'heuristic' }], 
-        isVerifiedContent: finalData.valid, metrics: mockMetrics, swarmConsensus: swarmData, graphData: newGraph
+        id: generateUniqueID(), role: 'hexical', text: analysisText, steps: responseSteps, 
+        valid: responseValid, route: inferRoute(responseSteps), ts: generateTimestamp(), 
+        sources: [{ name: 'Hexical Verify API', verified: true, type: 'heuristic' }], 
+        isVerifiedContent: responseValid, metrics: mockMetrics, swarmConsensus: swarmData, graphData: newGraph
       }
 
       const updatedAIMessages = [...updatedUserMessages, hexMsg];
@@ -772,7 +896,7 @@ export function HexicalConsole() {
       
       if (user && !stealthMode) {
         const supabaseAuth = await getAuthenticatedClient();
-        await supabaseAuth.from('messages').insert({ id: hexMsg.id, conversation_id: activeId, user_id: user.id, content: finalData.analysis, role: 'hexical' });
+        await supabaseAuth.from('messages').insert({ id: hexMsg.id, conversation_id: activeId, user_id: user.id, content: analysisText, role: 'hexical' });
       }
       recordUsage()
     } catch (err: any) { 
@@ -780,14 +904,16 @@ export function HexicalConsole() {
          logToTerminal(`[SYSTEM] Execution aborted by operator.`);
          return;
       }
-      logToTerminal(`[ERR] Pipeline crash during remote execution: ${err.message}`); 
+      const safeErrorText = getSafeExceptionMessage(err);
+      logToTerminal(`[ERR] Pipeline crash during remote execution: ${safeErrorText}`); 
       const errorMsg: ExtendedStreamMessage = { 
-        id: generateUniqueID(), role: 'hexical', text: `**FATAL ERROR:** ${err.message || 'Pipeline sequence failed.'}`, 
+        id: generateUniqueID(), role: 'hexical', text: `**FATAL ERROR:** ${safeErrorText}`, 
         steps: ['SYSTEM_CRASH'], valid: false, route: 'unknown' as any, ts: generateTimestamp() 
       }
       setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...updatedUserMessages, errorMsg] } : c));
     } finally { 
-      setBusy(false) 
+      setBusy(false)
+      abortControllerRef.current = null
     }
   }
 
