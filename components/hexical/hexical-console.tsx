@@ -31,6 +31,35 @@ import {
 } from '@/components/hexical/tabs'
 
 // =============================================================================
+// SECURITY NOTES — read before shipping
+// =============================================================================
+// This pass hardens the FRONTEND half of this console. A frontend can shrink
+// its own attack surface (safer ID generation, explicit auth headers, no
+// fabricated data presented as real, defense-in-depth query filters) but it
+// can never make an application "fully secure" by itself — every fix here
+// assumes a correctly configured backend. Concretely, /api/verify and
+// anything behind it MUST, independently of whatever this client sends:
+//   1. Re-derive the caller's identity from the Authorization/session token,
+//      never trust a client-supplied user id, email, or plan/tier field.
+//   2. Look up the caller's plan itself and enforce feature gates + rate
+//      limits server-side. Everything gated in this file (hasFeatureAccess,
+//      the guest usage cap) is UX only and is trivially bypassable client-side.
+//   3. Enforce Supabase Row Level Security with matching USING and WITH CHECK
+//      policies (e.g. `user_id = auth.uid()`) on `conversations` and
+//      `messages`, so the explicit `.eq('user_id', ...)` filters added below
+//      are true defense in depth, not the only thing stopping cross-account
+//      access.
+//   4. Sanitize/escape any model output before it's stored or rendered as
+//      HTML/Markdown downstream (in DataStream et al.) to prevent stored XSS.
+//      The client-side redaction below is a best-effort convenience filter
+//      for accidental secret paste, not a substitute for that.
+//   5. Serve job-status polling from an authenticated, same-origin route and
+//      validate Origin/CSRF tokens on state-changing requests.
+// None of the above can be verified or fixed from this file alone — treat
+// this diff as raising the floor, not a guarantee of "zero exploitable flaws".
+// =============================================================================
+
+// =============================================================================
 // 1. EXTENDED TYPES & INTERFACES
 // =============================================================================
 type ViewMode = 'chat' | 'recon' | 'payloads' | 'terminal' | 'graph' | 'cvss' | 'bounty' | 'ast';
@@ -45,8 +74,10 @@ interface TraceSource {
 
 interface TraceMetrics { 
   latencyMs: number; 
-  tokensUsed: number; 
-  confidenceScore: number; 
+  // Optional: only render these when the backend actually reports them.
+  // A random placeholder number is worse than no number — it looks like data.
+  tokensUsed?: number; 
+  confidenceScore?: number; 
 }
 
 interface ExtendedStreamMessage extends StreamMessage {
@@ -131,15 +162,45 @@ function generateTimestamp(): string {
   return new Date().toLocaleTimeString('en-GB', { hour12: false, fractionalSecondDigits: 2 }) 
 }
 
-function generateUniqueID(): string { 
-  return crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15); 
+function generateUniqueID(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+
+  // Fallback for older browsers without crypto.randomUUID: still derive the
+  // id from crypto.getRandomValues rather than Math.random(), which is not
+  // cryptographically secure and is predictable enough to be brute-forced.
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
+  // Last resort only (non-browser env with no Web Crypto at all).
+  return `id_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
 }
 
+// NOTE: client-generated ids are fine for React `key`s and optimistic UI, but
+// they are NOT an access-control boundary. Don't treat a message/job id as a
+// secret token — the backend still needs auth + ownership checks on every
+// read, independent of whether the id "looks" hard to guess.
+
+// IMPORTANT: this is a best-effort convenience filter that catches obvious,
+// common secret shapes before they leave the browser. It is NOT a DLP
+// guarantee — regexes can't reliably catch every secret format, and a
+// determined or careless paste can still get through. The backend should
+// run its own scanning/redaction on anything it stores or logs; don't let
+// this function be the only thing standing between a pasted secret and a
+// database row.
 function sanitizeLocalPayload(text: string, isActive: boolean): string {
   if (!isActive) return text;
   let s = text.replace(/\b(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g, '[REDACTED_IPv4]');
   s = s.replace(/(eyJ[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,})/g, '[REDACTED_JWT]');
-  s = s.replace(/(?:api_key|access_token|secret_key|password)[=:\s]*(["']?)[a-zA-Z0-9_\-]{16,}\1/gi, '[REDACTED_SECRET]');
+  s = s.replace(/(?:api_key|access_token|secret_key|password|client_secret|private_key)[=:\s]*(["']?)[a-zA-Z0-9_\-\/+]{16,}\1/gi, '[REDACTED_SECRET]');
+  s = s.replace(/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED_AWS_KEY]');
+  s = s.replace(/\bxox[baprs]-[a-zA-Z0-9-]{10,}\b/g, '[REDACTED_SLACK_TOKEN]');
+  s = s.replace(/\bBearer\s+[a-zA-Z0-9_\-.]{20,}\b/g, 'Bearer [REDACTED_TOKEN]');
+  s = s.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]');
   s = s.replace(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|org|net|io|gov|edu|ai|app)\b/gi, '[REDACTED_DOMAIN]');
   return s;
 }
@@ -246,6 +307,10 @@ export function HexicalConsole() {
     setSystemLogs(prev => [...prev, msg])
   }, []);
 
+  // This is intentionally a simulated console — it never executes anything.
+  // If real command execution is ever wired in, it must run in an isolated,
+  // backend-controlled sandbox with a strict allow-list and output limits;
+  // never interpolate user input into a real shell reachable from the browser.
   const handleTerminalCommand = (cmd: string) => {
     logToTerminal(`$ ${cmd}`);
     const normalized = cmd.trim().toLowerCase();
@@ -322,7 +387,11 @@ export function HexicalConsole() {
         if (!client) throw new Error("Cryptographic token missing.");
         
         // 4. Actual Database Transaction
-        const { error } = await client.from('conversations').delete().eq('id', id);
+        // Defense in depth: scope the delete to this user explicitly, even
+        // though Row Level Security should already enforce it. A
+        // misconfigured RLS policy shouldn't be the only thing standing
+        // between a user and someone else's conversation.
+        const { error } = await client.from('conversations').delete().eq('id', id).eq('user_id', user.id);
         
         if (error) {
            throw error; // Toss to catch block for immediate rollback
@@ -354,13 +423,38 @@ export function HexicalConsole() {
   useEffect(() => { if (window.innerWidth >= 768) setIsSidebarOpen(true) }, [])
   
   useEffect(() => {
-    if (isLoaded) {
+    if (!isLoaded) return;
+    let cancelled = false;
+
+    const syncIdentity = async () => {
       if (user) {
         setUserName(user.fullName || user.primaryEmailAddress?.emailAddress?.split('@')[0] || 'User')
         setUserEmail(user.primaryEmailAddress?.emailAddress || 'no-email@hexical.ai')
         setUserAvatar(user.imageUrl || null)
         logToTerminal(`[AUTH] Cloud token derived. Sync engine online.`);
-        setCurrentTier('pro'); 
+
+        // SECURITY: a valid session proves *who* the user is, not *what
+        // they've paid for*. Previously this set 'pro' for any signed-in
+        // user, which meant simply having an account unlocked every gated
+        // tab client-side. Default to the free tier and only upgrade the UI
+        // after confirming the plan from a trusted source (a billing table
+        // or Clerk metadata your webhook writes). This value is for
+        // show/hide UI only — the backend must independently verify
+        // entitlement on every request regardless of what's set here.
+        setCurrentTier('go');
+        try {
+          const client = await getAuthenticatedClient();
+          const { data: profile, error } = await client
+            .from('profiles')
+            .select('plan_tier')
+            .eq('user_id', user.id)
+            .single();
+          if (!cancelled && !error && profile?.plan_tier) {
+            setCurrentTier(profile.plan_tier as PlanTier);
+          }
+        } catch {
+          // Fail closed: if we can't confirm entitlement, stay on 'go'.
+        }
       } else {
         setUserName(DEFAULT_GUEST_NAME); 
         setUserEmail(DEFAULT_GUEST_EMAIL); 
@@ -368,9 +462,12 @@ export function HexicalConsole() {
         setCurrentTier('go');
         logToTerminal(`[WARN] Ephemeral session. All telemetry and sync disabled.`);
       }
-      setIsAuthLoading(false)
-    }
-  }, [isLoaded, user, logToTerminal])
+      if (!cancelled) setIsAuthLoading(false)
+    };
+
+    syncIdentity();
+    return () => { cancelled = true; };
+  }, [isLoaded, user, logToTerminal, getAuthenticatedClient])
 
   useEffect(() => {
     if (!isMounted || isAuthLoading) return;
@@ -402,6 +499,7 @@ export function HexicalConsole() {
           .from('messages')
           .select('*')
           .in('conversation_id', convoIds)
+          .eq('user_id', user.id) // defense in depth alongside RLS
           .order('created_at', { ascending: true });
 
         formatted = convos.map(c => ({
@@ -480,12 +578,23 @@ export function HexicalConsole() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [activeTraceMessage])
 
+  // Cancel any in-flight request/poll loop if the console unmounts mid-request
+  // (route change, tab close, etc.) so we don't keep hitting the network or
+  // updating state after unmount.
+  useEffect(() => {
+    return () => { abortControllerRef.current?.abort(); };
+  }, [])
+
   // ============================================================================
   // SECURE TRANSACTION HANDLER
   // ============================================================================
   const handleSubmit = async (rawLogic: string) => {
     if (busy || !rawLogic.trim()) return
 
+    // NOTE: this guest-usage cap lives in client storage and can be cleared
+    // or bypassed trivially (incognito, devtools, etc.) — it's a UX nicety,
+    // not a security control. The backend must enforce its own limits
+    // (per-IP, per-fingerprint, or per-account) independently.
     if (!checkLimit()) {
       const systemWarning: ExtendedStreamMessage = { 
         id: generateUniqueID(), role: 'hexical', text: `**LOCKOUT:** Guest Limit reached.`, 
@@ -531,14 +640,31 @@ export function HexicalConsole() {
     abortControllerRef.current = new AbortController();
 
     try {
+      // SECURITY: authenticate explicitly with a bearer token instead of
+      // relying on ambient cookies. This keeps the endpoint stateless and
+      // immune to classic cookie-based CSRF, and lets the backend derive
+      // *who* is calling from a token it can verify itself.
+      const authToken = user ? await session?.getToken({ template: 'supabase' }) : undefined;
+
       const res = await fetch('/api/verify', {
-        method: 'POST', 
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          // A custom header forces a CORS preflight, so a plain cross-site
+          // form/fetch can't hit this endpoint silently. Pair this with an
+          // Origin check and CSRF verification on the server — this header
+          // alone doesn't replace that, it just closes the easy case.
+          'X-Hexical-Client': 'web-console'
+        },
         signal: abortControllerRef.current.signal,
-        body: JSON.stringify({ 
-          logic: safeLogic, profile: activeProfileId, workspace: activeWorkspaceId, 
+        body: JSON.stringify({
+          logic: safeLogic, profile: activeProfileId, workspace: activeWorkspaceId,
           targetArch, autoRedact, aggressiveness, targetScope, extractedTargets,
-          bountyPlatform, maxConcurrency, contextWindow, tier: currentTier
+          bountyPlatform, maxConcurrency, contextWindow
+          // Intentionally NOT sending `tier` here. The server must look up
+          // the caller's plan from the authenticated user id — never from a
+          // field the client can edit in devtools before every request.
         })
       });
       
@@ -577,7 +703,17 @@ export function HexicalConsole() {
           await new Promise(resolve => setTimeout(resolve, 1500));
           
           try {
-            const statusRes = await fetch(`http://localhost:8000/status/${jobId}`); 
+            // SECURITY: poll through our own authenticated Next.js API route
+            // instead of hitting the job runner directly. A raw client-side
+            // call to an internal service — and a hardcoded localhost URL is
+            // itself a dev leftover that won't resolve in production — skips
+            // auth, rate limiting, and CORS controls, and turns a guessable
+            // job id into a de-facto bearer token: anyone who learns or
+            // enumerates a jobId could read someone else's results (IDOR).
+            const statusRes = await fetch(`/api/verify/status/${jobId}`, {
+              headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+              signal: abortControllerRef.current.signal
+            });
             const statusData = await statusRes.json();
 
             if (statusData.status === 'queued') { 
@@ -590,25 +726,36 @@ export function HexicalConsole() {
             } else if (statusData.status === 'not_found') { 
               throw new Error("Job lost in server queue."); 
             }
-          } catch (pollErr) { 
+          } catch (pollErr: any) {
+            if (pollErr?.name === 'AbortError') { isPolling = false; return; }
             logToTerminal(`[ERR] Polling error. Retrying...`); 
           }
         }
       }
       
       const executionTimeMs = Math.round(performance.now() - startTime)
-      const mockMetrics: TraceMetrics = finalData.metrics || { 
-        latencyMs: executionTimeMs, tokensUsed: Math.floor(Math.random() * 1200) + 350, confidenceScore: finalData.valid ? 98.4 : 62.1 
+
+      // Only latencyMs is something we genuinely measured. Don't invent
+      // plausible-looking token counts or confidence scores when the
+      // backend doesn't supply them — a random number that *looks* real is
+      // more misleading than an honestly blank field.
+      const mockMetrics: TraceMetrics = {
+        latencyMs: finalData.metrics?.latencyMs ?? executionTimeMs,
+        tokensUsed: finalData.metrics?.tokensUsed,
+        confidenceScore: finalData.metrics?.confidenceScore
       }
-      const newGraph = parseAttackGraph(safeLogic); 
+
+      // Prefer a real graph from the backend; fall back to a lightweight
+      // local heuristic only as a placeholder preview, not an authoritative
+      // attack graph.
+      const newGraph = finalData.graphData ?? parseAttackGraph(safeLogic);
       setActiveGraph(newGraph);
 
-      const swarmData: SwarmEvaluation = {
-        redTeam: { confidence: 94.2, logic: "Found unauthenticated data exposure via API.", payloadSuggested: "curl -X GET /api/v1/config" },
-        blueTeam: { mitigation: "Implement strict RBAC on the config endpoint.", blockedBy: ["None"], riskLevel: "CRITICAL" },
-        architect: { route: "API Gateway", architecturalFlaw: "Bypass of reverse proxy auth middleware" },
-        finalConsensus: finalData.valid
-      }
+      // Only show a red/blue "swarm" evaluation if the backend actually ran
+      // one. The previous hardcoded object made the UI claim a multi-agent
+      // evaluation happened on every message, whether or not it did — that's
+      // misleading UI, not a real security capability.
+      const swarmData: SwarmEvaluation | undefined = finalData.swarmConsensus
 
       logToTerminal(`[RX] Received evaluated payload. Status: ${finalData.valid ? 'SUCCESS' : 'WARN'}. Computation Time: ${executionTimeMs}ms.`);
 
@@ -666,6 +813,10 @@ export function HexicalConsole() {
         void (async () => {
           try {
             const supabaseAuth = await getAuthenticatedClient()
+            // Requires an RLS policy with a WITH CHECK on `user_id = auth.uid()`
+            // for both insert and update — otherwise an upsert keyed on a
+            // guessed/leaked conversation id could let one user overwrite
+            // another user's title/pin state.
             await supabaseAuth.from('conversations').upsert({ 
               id: toggledChat.id, user_id: user.id, title: toggledChat.title, pinned: toggledChat.pinned 
             })
@@ -1057,12 +1208,12 @@ export function HexicalConsole() {
                   <div className="bg-black/30 border border-white/5 rounded-lg p-2 flex flex-col items-center justify-center text-center">
                     <Cpu size={14} className="text-zinc-500 mb-1" />
                     <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-sans">Tokens</span>
-                    <span className="text-white font-mono text-xs">{activeTraceMessage.metrics.tokensUsed}</span>
+                    <span className="text-white font-mono text-xs">{activeTraceMessage.metrics.tokensUsed ?? '—'}</span>
                   </div>
                   <div className="bg-black/30 border border-white/5 rounded-lg p-2 flex flex-col items-center justify-center text-center">
                     <ShieldCheck size={14} className="text-zinc-500 mb-1" />
                     <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-sans">Confidence</span>
-                    <span className={`${THEME_MAP[uiTheme].text} font-mono text-xs`}>{activeTraceMessage.metrics.confidenceScore}%</span>
+                    <span className={`${THEME_MAP[uiTheme].text} font-mono text-xs`}>{activeTraceMessage.metrics.confidenceScore != null ? `${activeTraceMessage.metrics.confidenceScore}%` : '—'}</span>
                   </div>
                 </div>
               )}

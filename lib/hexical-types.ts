@@ -1,106 +1,216 @@
-// ============================================================================
-// HEXICAL CORE TYPES & CONFIGURATION
-// ============================================================================
-
-// 1. EXPANDED ROLES (To support the Swarm Intelligence)
-export type MessageRole = 
-  | 'user' 
-  | 'hexical' 
-  | 'error' 
-  | 'architect' 
-  | 'red_team' 
-  | 'blue_team' 
+export type MessageRole =
+  | 'user'
+  | 'hexical'
+  | 'error'
+  | 'architect'
+  | 'red_team'
+  | 'blue_team'
   | 'forge_agent'
+  | 'system';
 
-// 2. EXPANDED ROUTES (To support the new backend features)
-export type RoutePath = 
-  | 'local' 
-  | 'global' 
-  | 'math' 
-  | 'swarm' 
-  | 'forge_api' 
-  | 'unknown'
+export type RoutePath =
+  | 'local'
+  | 'global'
+  | 'math'
+  | 'swarm'
+  | 'forge_api'
+  | 'unknown';
 
-// 3. TIER ARCHITECTURE (The Monetization Engine)
-export type PlanTier = 'go' | 'plus' | 'pro'
+export type PlanTier = 'free' | 'go' | 'plus' | 'pro';
+
+export type PlanFeature =
+  | 'basic_ast'
+  | 'core_heuristics'
+  | 'standard_support'
+  | 'interactive_topology'
+  | 'bounty_forge'
+  | 'swarm_intelligence'
+  | 'pdf_export';
+
+export type ExecutionProfile = 'recon' | 'swarm' | 'audit';
+export type TargetArch = 'x64' | 'x86' | 'arm64';
+export type Aggressiveness = 'low' | 'medium' | 'high';
+export type RiskLevel = 'LOW' | 'MED' | 'HIGH' | 'CRITICAL';
+export type ThreatLevel = 'low' | 'medium' | 'high' | 'critical';
+export type VerifyStatus = 'completed' | 'failed';
+export type RiskLevelSource =
+  | 'model_generated_unverified'
+  | 'deterministic_rule'
+  | 'none';
 
 export interface PlanConfiguration {
   priceId: string;
   name: string;
   maxMessages: number;
-  features: string[];
+  maxCharsPerRequest: number;
+  features: PlanFeature[];
 }
 
 export const PLAN_LIMITS: Record<PlanTier, PlanConfiguration> = {
+  free: {
+    priceId: '',
+    name: 'Free',
+    maxMessages: 25,
+    maxCharsPerRequest: 10_000,
+    features: ['basic_ast', 'core_heuristics'],
+  },
   go: {
     priceId: 'price_go_299',
     name: 'Go',
     maxMessages: 50,
+    maxCharsPerRequest: 15_000,
     features: ['basic_ast', 'core_heuristics', 'standard_support'],
   },
   plus: {
     priceId: 'price_plus_1999',
     name: 'Plus',
     maxMessages: 500,
+    maxCharsPerRequest: 12_000,
     features: ['basic_ast', 'core_heuristics', 'interactive_topology', 'bounty_forge'],
   },
   pro: {
     priceId: 'price_pro_9599',
     name: 'Pro',
     maxMessages: 9999,
-    features: ['basic_ast', 'core_heuristics', 'interactive_topology', 'bounty_forge', 'swarm_intelligence', 'pdf_export'],
-  }
-}
+    maxCharsPerRequest: 120_000,
+    features: [
+      'basic_ast',
+      'core_heuristics',
+      'interactive_topology',
+      'bounty_forge',
+      'swarm_intelligence',
+      'pdf_export',
+    ],
+  },
+};
 
-// 4. METADATA INJECTION (To handle advanced vulnerability data)
 export interface HexicalMetadata {
   cveReference?: string;
   cvssScore?: number;
-  threatLevel?: 'low' | 'medium' | 'high' | 'critical';
+  threatLevel?: ThreatLevel;
   astNodeCount?: number;
+  riskLevel?: RiskLevel;
+  riskLevelSource?: RiskLevelSource;
+  tokensUsed?: number;
+  confidenceScore?: number;
+  confidenceMeaning?: string;
+  rateLimitRemaining?: number;
+  latencyMs?: number;
 }
 
-// 5. UPGRADED MESSAGE STRUCTURE
+export interface VerifyMetrics {
+  latencyMs: number;
+  tokensUsed: number;
+  confidenceScore: number;
+  confidenceMeaning?: string;
+  rateLimitRemaining?: number;
+}
+
+export interface SwarmRedTeam {
+  confidence: number;
+  logic: string;
+  payloadSuggested: string;
+  vulnerabilityClasses?: string[];
+  attackPathSummary?: string;
+}
+
+export interface SwarmBlueTeam {
+  withstandMatrix: string;
+  blockedBy: string[];
+  riskLevel: RiskLevel;
+}
+
+export interface SwarmArchitect {
+  route: string;
+  architecturalFlaw: string;
+}
+
+export interface SwarmConsensus {
+  redTeam: SwarmRedTeam;
+  blueTeam: SwarmBlueTeam;
+  architect: SwarmArchitect;
+  finalConsensus: boolean;
+  consensusMeaning?: string;
+}
+
 export interface StreamMessage {
-  id: string
-  role: MessageRole
-  text: string
-  steps?: string[]
-  valid?: boolean
-  route?: RoutePath
-  metadata?: HexicalMetadata // New: Allows the UI to render CVSS badges on messages
-  ts: string
+  id: string;
+  role: MessageRole;
+  text: string;
+  steps?: string[];
+  route?: RoutePath;
+  status?: VerifyStatus;
+  riskLevel?: RiskLevel;
+  riskLevelSource?: RiskLevelSource;
+  findings?: string[];
+  recommendedActions?: string[];
+  swarmConsensus?: SwarmConsensus;
+  metrics?: VerifyMetrics;
+  metadata?: HexicalMetadata;
+  valid?: boolean;
+  ts: string;
 }
 
-// 6. UPGRADED VERIFY RESPONSE
+export interface VerifyRequest {
+  logic: string;
+  profile?: ExecutionProfile;
+  workspace?: string;
+  targetArch?: TargetArch;
+  autoRedact?: boolean;
+  aggressiveness?: Aggressiveness;
+  targetScope?: string;
+  extractedTargets?: string[];
+  bountyPlatform?: string;
+  requestNonce: string;
+  requestTimestampMs: number;
+}
+
 export interface VerifyResponse {
-  analysis: string
-  steps: string[]
-  valid: boolean
-  swarmConsensus?: boolean // New: For when the red_team and blue_team agree
-  metadata?: HexicalMetadata
+  analysis: string;
+  steps: string[];
+  status: VerifyStatus;
+  riskLevel?: RiskLevel;
+  riskLevelSource?: RiskLevelSource;
+  findings?: string[];
+  recommendedActions?: string[];
+  swarmConsensus?: SwarmConsensus;
+  metrics?: VerifyMetrics;
+  metadata?: HexicalMetadata;
+  valid?: boolean;
 }
 
-// 7. ENHANCED ROUTE INFERENCE
-/**
- * Infer which part of the engine handled the request from the routing steps.
- * Drives the telemetry highlight in the right sidebar.
- */
+export interface VerifyErrorResponse {
+  error: string;
+  message?: string;
+  details?: unknown;
+}
+
+export function createRequestNonce(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export function buildReplayFields(): Pick<VerifyRequest, 'requestNonce' | 'requestTimestampMs'> {
+  return {
+    requestNonce: createRequestNonce(),
+    requestTimestampMs: Date.now(),
+  };
+}
+
 export function inferRoute(steps: string[] = []): RoutePath {
-  const blob = steps.join(' ').toLowerCase()
-  
-  // High-priority professional routes
-  if (/swarm|red team|blue team|consensus|architect/.test(blob)) return 'swarm'
-  if (/forge|report|hackerone|bugcrowd|export/.test(blob)) return 'forge_api'
-  
-  // Standard routes
-  if (/groq|global|cloud|remote/.test(blob)) return 'global'
-  if (/math|calc|solver|equation|compute/.test(blob)) return 'math'
-  if (/local|k-?12|database|offline|cache/.test(blob)) return 'local'
-  
-  return 'unknown'
+  const blob = steps.join(' ').toLowerCase();
+
+  if (/swarm|red\s*team|blue\s*team|consensus|architect/.test(blob)) return 'swarm';
+  if (/forge|hackerone|bugcrowd|pdf|export/.test(blob)) return 'forge_api';
+  if (/openai|gpt|groq|anthropic|claude|cloud|remote|verification/.test(blob)) return 'global';
+  if (/math|calc|solver|equation|compute/.test(blob)) return 'math';
+  if (/local|database|offline|cache/.test(blob)) return 'local';
+
+  return 'unknown';
 }
 
-// 8. ENVIRONMENT-AWARE ENDPOINT
-// Never hardcode localhost in production. This checks for a deployed URL first.
-export const HEX_ENDPOINT = process.env.NEXT_PUBLIC_HEX_ENDPOINT || 'http://localhost:8000/verify'
+export const HEX_ENDPOINT =
+  process.env.NODE_ENV === 'production'
+    ? process.env.NEXT_PUBLIC_HEX_ENDPOINT || '/api/verify'
+    : process.env.NEXT_PUBLIC_HEX_ENDPOINT || 'http://localhost:8000/verify';

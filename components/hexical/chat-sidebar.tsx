@@ -1,21 +1,25 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { 
-  MessageSquare, MoreVertical, Trash2, Edit2, Pin, Settings, 
-  Plus, PanelLeftClose, PanelLeftOpen, Download, Zap, ShieldCheck 
+import {
+  Download,
+  Edit2,
+  MessageSquare,
+  MoreVertical,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Pin,
+  Plus,
+  Settings,
+  ShieldCheck,
+  Trash2,
+  Zap,
 } from 'lucide-react'
+import { SignInButton, UserButton, useAuth } from '@clerk/nextjs'
 
-// --- CLERK AUTHENTICATION IMPORTS ---
-import { UserButton, SignInButton, useAuth } from '@clerk/nextjs'
-
-// --- PROJECT SPECIFIC IMPORTS ---
+import type { PlanTier } from '@/lib/hexical-types'
 import { HexicalLogo } from './hexical-logo'
-
-// -----------------------------------------------------------------------------
-// INTERFACES
-// -----------------------------------------------------------------------------
 
 export interface ChatThread {
   id: string
@@ -29,147 +33,160 @@ interface ChatSidebarProps {
   isOpen: boolean
   userName: string
   userEmail: string
-  avatarUrl: string | null
-  currentTier?: 'go' | 'plus' | 'pro' | string | null // FIX: Added null safety
+  avatarUrl?: string | null
+  currentTier?: PlanTier | null
   onToggleOpen: () => void
   onSelect: (id: string) => void
   onNewChat: () => void
   onDeleteChat: (id: string) => void
   onRenameChat: (id: string, newTitle: string) => void
   onTogglePin: (id: string) => void
-  onSignOut?: () => void // FIX: Made optional since Clerk handles it natively
-  onOpenUpgrade: () => void 
+  onOpenUpgrade: () => void
 }
 
-// -----------------------------------------------------------------------------
-// MAIN COMPONENT: ChatSidebar
-// -----------------------------------------------------------------------------
+const TIER_LABELS: Record<PlanTier, string> = {
+  free: 'FREE',
+  go: 'GO',
+  plus: 'PLUS',
+  pro: 'PRO',
+}
 
-export function ChatSidebar({ 
-  chats, 
-  activeId, 
-  isOpen, 
-  userName, 
-  userEmail, 
-  avatarUrl,
-  currentTier, 
-  onToggleOpen, 
-  onSelect, 
-  onNewChat, 
-  onDeleteChat, 
-  onRenameChat, 
-  onTogglePin, 
-  onOpenUpgrade
+const CHAT_TITLE_MAX_LENGTH = 120
+
+function normalizeTier(currentTier: ChatSidebarProps['currentTier']): PlanTier {
+  if (
+    currentTier === 'free' ||
+    currentTier === 'go' ||
+    currentTier === 'plus' ||
+    currentTier === 'pro'
+  ) {
+    return currentTier
+  }
+
+  return 'free'
+}
+
+export function ChatSidebar({
+  chats,
+  activeId,
+  isOpen,
+  userName,
+  userEmail,
+  currentTier,
+  onToggleOpen,
+  onSelect,
+  onNewChat,
+  onDeleteChat,
+  onRenameChat,
+  onTogglePin,
+  onOpenUpgrade,
 }: ChatSidebarProps) {
-  
-  // --- AUTHENTICATION STATE ---
   const { isLoaded, userId } = useAuth()
 
-  // --- UI STATE MANAGEMENT ---
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
-  const menuRef = useRef<HTMLDivElement>(null)
 
-  // FIX: Secure the tier variable against null/undefined hydration crashes
-  const safeTier = (currentTier || 'go').toLowerCase();
+  const safeTier = normalizeTier(currentTier)
 
-  // --- MENU CLICK-OUTSIDE HANDLER ---
   useEffect(() => {
+    if (!menuOpenId) return
+
     const handleClickOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setMenuOpenId(null)
-      }
+      if (!(event.target instanceof Element)) return
+      if (event.target.closest('[data-chat-menu], [data-chat-menu-trigger]')) return
+      setMenuOpenId(null)
     }
+
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
+  }, [menuOpenId])
 
-  // --- CHAT RENAME LOGIC ---
+  const pinnedChats = useMemo(() => chats.filter((chat) => chat.pinned), [chats])
+  const recentChats = useMemo(() => chats.filter((chat) => !chat.pinned), [chats])
+
   const startRename = (id: string, currentTitle: string) => {
     setEditingId(id)
-    setEditValue(currentTitle)
+    setEditValue(currentTitle.slice(0, CHAT_TITLE_MAX_LENGTH))
     setMenuOpenId(null)
   }
 
   const submitRename = (id: string) => {
-    if (editValue.trim()) onRenameChat(id, editValue.trim())
+    const nextTitle = editValue.trim().slice(0, CHAT_TITLE_MAX_LENGTH)
+    if (nextTitle) onRenameChat(id, nextTitle)
     setEditingId(null)
+    setEditValue('')
   }
 
-  // --- FILTERING CHATS ---
-  const pinnedChats = chats.filter(c => c.pinned)
-  const recentChats = chats.filter(c => !c.pinned)
-
-  // --- SHARED PROPS FOR CHAT ITEMS ---
   const chatItemProps = {
-    menuOpenId,
-    setMenuOpenId,
-    menuRef,
+    activeId,
     editingId,
-    setEditingId,
     editValue,
-    setEditValue,
-    onSelect,
-    submitRename,
-    startRename,
-    onTogglePin,
+    menuOpenId,
     onDeleteChat,
-    activeId
+    onSelect,
+    onTogglePin,
+    setEditingId,
+    setEditValue,
+    setMenuOpenId,
+    startRename,
+    submitRename,
   }
-
-  // ---------------------------------------------------------------------------
-  // RENDER LOGIC
-  // ---------------------------------------------------------------------------
 
   return (
-    <div className="relative flex flex-col h-full w-full bg-[#0a0a0c] text-foreground transition-all duration-300 border-r border-white/5 shadow-[4px_0_24px_rgba(0,0,0,0.5)]">
-      
-      {/* 1. Sidebar Header Area */}
-      <div className="flex items-center p-4 gap-3 h-16">
-        <button 
-          onClick={onToggleOpen} 
-          className="p-2 hover:bg-white/10 rounded-xl transition-colors text-muted-foreground hover:text-cyan-400 flex-shrink-0"
+    <div className="relative flex h-full w-full flex-col border-r border-white/5 bg-[#0a0a0c] text-foreground shadow-[4px_0_24px_rgba(0,0,0,0.5)] transition-all duration-300">
+      <div className="flex h-16 items-center gap-3 p-4">
+        <button
+          type="button"
+          onClick={onToggleOpen}
+          aria-label={isOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+          className="flex-shrink-0 rounded-xl p-2 text-muted-foreground transition-colors hover:bg-white/10 hover:text-cyan-400"
         >
           {isOpen ? <PanelLeftClose size={20} /> : <PanelLeftOpen size={20} />}
         </button>
+
         {isOpen && (
-          <div className="flex items-center gap-2 animate-fade-in whitespace-nowrap overflow-hidden">
+          <div className="flex items-center gap-2 overflow-hidden whitespace-nowrap animate-fade-in">
             <HexicalLogo className="size-7 text-cyan-400 drop-shadow-[0_0_8px_rgba(34,211,238,0.5)]" />
             <span className="font-sans text-xl font-bold tracking-wide text-white">Hexical</span>
           </div>
         )}
       </div>
 
-      {/* 2. New Target Button Area */}
-      <div className="px-3 mb-6 mt-2">
-        <button 
-          onClick={onNewChat} 
-          className={`flex items-center gap-3 bg-white/[0.03] hover:bg-white/[0.08] border border-white/5 text-muted-foreground hover:text-cyan-400 transition-all rounded-xl ${isOpen ? 'px-4 py-3 w-full' : 'p-3 w-12 mx-auto justify-center'}`}
+      <div className="mb-6 mt-2 px-3">
+        <button
+          type="button"
+          onClick={onNewChat}
+          className={`flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.03] text-muted-foreground transition-all hover:bg-white/[0.08] hover:text-cyan-400 ${
+            isOpen ? 'w-full px-4 py-3' : 'mx-auto w-12 justify-center p-3'
+          }`}
         >
           <Plus size={20} className="flex-shrink-0" />
-          {isOpen && <span className="text-sm font-medium whitespace-nowrap">New Target</span>}
+          {isOpen && <span className="whitespace-nowrap text-sm font-medium">New Target</span>}
         </button>
       </div>
 
-      {/* 3. Chat History List */}
       {isOpen && (
-        <div className="flex-1 overflow-y-auto px-3 space-y-6 scrollbar-thin scrollbar-thumb-white/10">
+        <div className="flex-1 space-y-6 overflow-y-auto px-3 scrollbar-thin scrollbar-thumb-white/10">
           {pinnedChats.length > 0 && (
             <div>
-              <p className="px-4 mb-2 text-[10px] font-bold text-cyan-500/70 uppercase tracking-widest">Pinned Targets</p>
+              <p className="mb-2 px-4 text-[10px] font-bold uppercase tracking-widest text-cyan-500/70">
+                Pinned Targets
+              </p>
               <div className="space-y-[2px]">
-                {pinnedChats.map(chat => (
+                {pinnedChats.map((chat) => (
                   <ChatItem key={chat.id} chat={chat} {...chatItemProps} />
                 ))}
               </div>
             </div>
           )}
-          
+
           <div>
-            <p className="px-4 mb-2 text-[10px] font-bold text-muted-foreground/50 uppercase tracking-widest">Recents</p>
+            <p className="mb-2 px-4 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">
+              Recents
+            </p>
             <div className="space-y-[2px]">
-              {recentChats.map(chat => (
+              {recentChats.map((chat) => (
                 <ChatItem key={chat.id} chat={chat} {...chatItemProps} />
               ))}
             </div>
@@ -177,43 +194,52 @@ export function ChatSidebar({
         </div>
       )}
 
-      {/* 4. Monetization & User Area */}
-      <div className="p-3 mt-auto border-t border-white/5 flex flex-col gap-2 bg-[#0a0a0c]">
-        
-        {/* THE SMART TIER MODULE */}
-        <div className={`flex flex-col gap-2 p-2 rounded-xl border ${
-          safeTier === 'pro' ? 'border-amber-500/20 bg-amber-500/5' : 
-          safeTier === 'plus' ? 'border-fuchsia-500/20 bg-fuchsia-500/5' :
-          'border-cyan-500/10 bg-cyan-500/5'
-        }`}>
-          <div className={`flex items-center justify-between ${isOpen ? 'px-1' : 'hidden'}`}>
-            <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">System License</span>
-            <span className={`text-[9px] font-bold uppercase tracking-widest ${
-              safeTier === 'pro' ? 'text-amber-400' : 
-              safeTier === 'plus' ? 'text-fuchsia-400' : 
-              'text-cyan-400'
-            }`}>
-              {safeTier.toUpperCase()} (Active)
+      <div className="mt-auto flex flex-col gap-2 border-t border-white/5 bg-[#0a0a0c] p-3">
+        <div
+          className={`flex flex-col gap-2 rounded-xl border p-2 ${
+            safeTier === 'pro'
+              ? 'border-amber-500/20 bg-amber-500/5'
+              : safeTier === 'plus'
+                ? 'border-fuchsia-500/20 bg-fuchsia-500/5'
+                : 'border-cyan-500/10 bg-cyan-500/5'
+          }`}
+        >
+          <div className={`items-center justify-between ${isOpen ? 'flex px-1' : 'hidden'}`}>
+            <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">
+              System License
+            </span>
+            <span
+              className={`text-[9px] font-bold uppercase tracking-widest ${
+                safeTier === 'pro'
+                  ? 'text-amber-400'
+                  : safeTier === 'plus'
+                    ? 'text-fuchsia-400'
+                    : 'text-cyan-400'
+              }`}
+            >
+              {TIER_LABELS[safeTier]} Active
             </span>
           </div>
-          
-          {/* SMART BUTTON RENDERING */}
+
           {safeTier === 'pro' ? (
-            <Link 
+            <Link
               href="/dashboard/settings"
-              className={`flex items-center justify-center gap-2 rounded-lg bg-black/40 hover:bg-white/5 border border-white/5 hover:border-white/10 transition-all text-zinc-400 hover:text-zinc-300 ${isOpen ? 'w-full py-2 px-3' : 'p-2 w-10 mx-auto'}`}
+              className={`flex items-center justify-center gap-2 rounded-lg border border-white/5 bg-black/40 text-zinc-400 transition-all hover:border-white/10 hover:bg-white/5 hover:text-zinc-300 ${
+                isOpen ? 'w-full px-3 py-2' : 'mx-auto w-10 p-2'
+              }`}
             >
               <ShieldCheck size={14} className="flex-shrink-0" />
               {isOpen && <span className="text-xs font-bold tracking-wide">MANAGE LICENSE</span>}
             </Link>
           ) : (
-            <button 
+            <button
+              type="button"
               onClick={onOpenUpgrade}
-              className={`flex items-center justify-center gap-2 rounded-lg transition-all ${
-                safeTier === 'plus' 
-                ? 'bg-fuchsia-500/10 hover:bg-fuchsia-500/20 border-fuchsia-500/20 text-fuchsia-400' 
-                : 'bg-cyan-500/10 hover:bg-cyan-500/20 border-cyan-500/20 text-cyan-400'
-              } ${isOpen ? 'w-full py-2 px-3 border' : 'p-2 w-10 mx-auto border'}`}
+              className={`flex items-center justify-center gap-2 rounded-lg border transition-all ${
+                safeTier === 'plus'
+                  ? 'border-fuchsia-500/20 bg-fuchsia-500/10 text-fuchsia-400 hover:bg-fuchsia-500/20'
+                  : 'border-cyan-500/20 bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20'
+              } ${isOpen ? 'w-full px-3 py-2' : 'mx-auto w-10 p-2'}`}
             >
               <Zap size={14} className="flex-shrink-0" />
               {isOpen && <span className="text-xs font-bold tracking-wide">UPGRADE TO PRO</span>}
@@ -221,75 +247,74 @@ export function ChatSidebar({
           )}
         </div>
 
-        {/* SECURE ROUTING: Settings Link */}
-        <Link 
-          href="/dashboard/settings" 
-          className={`flex items-center gap-3 p-2.5 rounded-xl hover:bg-white/5 transition-colors text-muted-foreground hover:text-white group ${isOpen ? 'w-full' : 'justify-center w-12 mx-auto'}`}
+        <Link
+          href="/dashboard/settings"
+          className={`group flex items-center gap-3 rounded-xl p-2.5 text-muted-foreground transition-colors hover:bg-white/5 hover:text-white ${
+            isOpen ? 'w-full' : 'mx-auto w-12 justify-center'
+          }`}
         >
-          <Settings size={18} className="flex-shrink-0 group-hover:rotate-45 transition-transform duration-300" />
+          <Settings size={18} className="flex-shrink-0 transition-transform duration-300 group-hover:rotate-45" />
           {isOpen && <span className="text-sm font-medium">System Config</span>}
-          {isOpen && <span className="ml-auto text-[9px] text-zinc-600 bg-white/5 px-1.5 py-0.5 rounded border border-white/5 tracking-widest hidden md:inline">Cmd+,</span>}
-        </Link>
-        
-        {/* User Account / Login Toggle */}
-        <div className={`flex items-center rounded-xl transition-colors mt-1 ${isOpen ? 'w-full hover:bg-white/5 p-2' : 'justify-center w-12 mx-auto p-2 min-h-[48px]'}`}>
-          
-          {/* Skeleton Loader */}
-          {!isLoaded && (
-             <div className="flex items-center gap-3 w-full animate-pulse">
-                <div className="size-8 bg-white/10 rounded-md flex-shrink-0" />
-                {isOpen && (
-                  <div className="flex flex-col gap-1.5 flex-1 w-full">
-                    <div className="h-3.5 bg-white/10 rounded w-2/3" />
-                    <div className="h-2.5 bg-white/5 rounded w-1/2" />
-                  </div>
-                )}
-             </div>
+          {isOpen && (
+            <span className="ml-auto hidden rounded border border-white/5 bg-white/5 px-1.5 py-0.5 text-[9px] tracking-widest text-zinc-600 md:inline">
+              Cmd+,
+            </span>
           )}
+        </Link>
 
-          {/* SIGNED IN */}
-          {isLoaded && userId && (
-            <div className="flex items-center gap-3 w-full">
-              <div className="flex-shrink-0 flex items-center justify-center">
-                <UserButton afterSignOutUrl="/" appearance={{ elements: { avatarBox: "size-8 rounded-md" } }} />
-              </div>
+        <div
+          className={`mt-1 flex items-center rounded-xl transition-colors ${
+            isOpen ? 'w-full p-2 hover:bg-white/5' : 'mx-auto min-h-[48px] w-12 justify-center p-2'
+          }`}
+        >
+          {!isLoaded && (
+            <div className="flex w-full animate-pulse items-center gap-3">
+              <div className="size-8 flex-shrink-0 rounded-md bg-white/10" />
               {isOpen && (
-                <div className="flex flex-col overflow-hidden text-left flex-1">
-                  <span className="text-sm font-semibold text-foreground truncate w-full">{userName}</span>
-                  <span className="text-xs text-muted-foreground truncate w-full">{userEmail}</span>
+                <div className="flex w-full flex-1 flex-col gap-1.5">
+                  <div className="h-3.5 w-2/3 rounded bg-white/10" />
+                  <div className="h-2.5 w-1/2 rounded bg-white/5" />
                 </div>
               )}
             </div>
           )}
 
-          {/* SIGNED OUT */}
+          {isLoaded && userId && (
+            <div className="flex w-full items-center gap-3">
+              <div className="flex flex-shrink-0 items-center justify-center">
+                <UserButton afterSignOutUrl="/" appearance={{ elements: { avatarBox: 'size-8 rounded-md' } }} />
+              </div>
+              {isOpen && (
+                <div className="flex flex-1 flex-col overflow-hidden text-left">
+                  <span className="w-full truncate text-sm font-semibold text-foreground">{userName}</span>
+                  <span className="w-full truncate text-xs text-muted-foreground">{userEmail}</span>
+                </div>
+              )}
+            </div>
+          )}
+
           {isLoaded && !userId && (
             <SignInButton mode="modal">
-               <button className="flex items-center gap-3 w-full text-sm font-medium text-cyan-400">
-                 {isOpen && <span>Authenticate Identity</span>}
-               </button>
+              <button type="button" className="flex w-full items-center justify-center gap-3 text-sm font-medium text-cyan-400">
+                <ShieldCheck size={18} className="flex-shrink-0" />
+                {isOpen && <span>Authenticate Identity</span>}
+              </button>
             </SignInButton>
           )}
-          
         </div>
       </div>
     </div>
   )
 }
 
-// -----------------------------------------------------------------------------
-// SUB-COMPONENT: ChatItem 
-// -----------------------------------------------------------------------------
-
 interface ChatItemProps {
   chat: ChatThread
   menuOpenId: string | null
   setMenuOpenId: (id: string | null) => void
-  menuRef: React.RefObject<HTMLDivElement>
   editingId: string | null
   setEditingId: (id: string | null) => void
   editValue: string
-  setEditValue: (val: string) => void
+  setEditValue: (value: string) => void
   onSelect: (id: string) => void
   submitRename: (id: string) => void
   startRename: (id: string, title: string) => void
@@ -298,49 +323,146 @@ interface ChatItemProps {
   activeId: string
 }
 
-function ChatItem({ 
-  chat, menuOpenId, setMenuOpenId, menuRef, editingId, setEditingId, 
-  editValue, setEditValue, onSelect, submitRename, startRename, 
-  onTogglePin, onDeleteChat, activeId 
+function ChatItem({
+  chat,
+  menuOpenId,
+  setMenuOpenId,
+  editingId,
+  setEditingId,
+  editValue,
+  setEditValue,
+  onSelect,
+  submitRename,
+  startRename,
+  onTogglePin,
+  onDeleteChat,
+  activeId,
 }: ChatItemProps) {
   const isActive = activeId === chat.id
-  
+  const isEditing = editingId === chat.id
+  const isMenuOpen = menuOpenId === chat.id
+
   return (
-    <div className="relative group flex items-center w-full">
-      {editingId === chat.id ? (
-        <input 
-          autoFocus 
-          value={editValue} 
-          onChange={(e) => setEditValue(e.target.value)} 
-          onBlur={() => submitRename(chat.id)} 
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') submitRename(chat.id)
-            if (e.key === 'Escape') setEditingId(null) 
-          }} 
-          className="flex-1 bg-black/40 border border-cyan-500/50 text-sm px-3 py-2 rounded-lg outline-none text-cyan-400 w-full font-sans shadow-[0_0_10px_rgba(34,211,238,0.1)]" 
+    <div className="group relative flex w-full items-center">
+      {isEditing ? (
+        <input
+          autoFocus
+          value={editValue}
+          maxLength={CHAT_TITLE_MAX_LENGTH}
+          onChange={(event) => setEditValue(event.target.value.slice(0, CHAT_TITLE_MAX_LENGTH))}
+          onBlur={() => {
+            if (!editValue.trim()) {
+              setEditingId(null)
+              setEditValue('')
+              return
+            }
+
+            submitRename(chat.id)
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') submitRename(chat.id)
+            if (event.key === 'Escape') {
+              setEditingId(null)
+              setEditValue('')
+            }
+          }}
+          className="w-full flex-1 rounded-lg border border-cyan-500/50 bg-black/40 px-3 py-2 font-sans text-sm text-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.1)] outline-none"
         />
       ) : (
-        <button onClick={() => onSelect(chat.id)} className={`flex-1 flex items-center gap-3 p-2.5 rounded-lg text-sm truncate transition-colors font-sans ${isActive ? 'bg-white/10 text-white font-medium border border-white/5' : 'text-muted-foreground hover:bg-white/5 border border-transparent'}`}>
+        <button
+          type="button"
+          aria-current={isActive ? 'page' : undefined}
+          onClick={() => onSelect(chat.id)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              onSelect(chat.id)
+            }
+          }}
+          className={`flex flex-1 items-center gap-3 truncate rounded-lg border p-2.5 font-sans text-sm transition-colors ${
+            isActive
+              ? 'border-white/5 bg-white/10 font-medium text-white'
+              : 'border-transparent text-muted-foreground hover:bg-white/5'
+          }`}
+        >
           <MessageSquare size={16} className={`flex-shrink-0 ${isActive ? 'text-cyan-400' : ''}`} />
           <span className="truncate">{chat.title}</span>
         </button>
       )}
-      
-      {!editingId && (
-        <button onClick={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === chat.id ? null : chat.id) }} className={`absolute right-1 p-1.5 rounded-md hover:bg-white/20 text-muted-foreground transition-all ${menuOpenId === chat.id ? 'opacity-100 bg-white/10' : 'opacity-0 group-hover:opacity-100'}`}>
+
+      {!isEditing && (
+        <button
+          type="button"
+          data-chat-menu-trigger
+          aria-label={`Open options for ${chat.title}`}
+          onClick={(event) => {
+            event.stopPropagation()
+            setMenuOpenId(isMenuOpen ? null : chat.id)
+          }}
+          className={`absolute right-1 rounded-md p-1.5 text-muted-foreground transition-all hover:bg-white/20 ${
+            isMenuOpen ? 'bg-white/10 opacity-100' : 'opacity-0 group-hover:opacity-100'
+          }`}
+        >
           <MoreVertical size={16} />
         </button>
       )}
-      
-      {menuOpenId === chat.id && (
-        <div ref={menuRef} className="absolute right-2 top-10 w-48 bg-[#111116] border border-white/10 shadow-2xl rounded-xl py-1.5 z-[999] animate-fade-in font-sans">
-          <button onClick={(e) => { e.stopPropagation(); setMenuOpenId(null) }} className="w-full text-left px-4 py-2 text-xs text-foreground/80 hover:text-white hover:bg-white/10 flex items-center gap-2 transition-colors"><Download size={14} /> Export Trace Log</button>
-          <button onClick={(e) => { e.stopPropagation(); onTogglePin(chat.id); setMenuOpenId(null) }} className="w-full text-left px-4 py-2 text-xs text-foreground/80 hover:text-white hover:bg-white/10 flex items-center gap-2 transition-colors"><Pin size={14} /> {chat.pinned ? 'Unpin Target' : 'Pin Target'}</button>
-          <button onClick={(e) => { e.stopPropagation(); startRename(chat.id, chat.title) }} className="w-full text-left px-4 py-2 text-xs text-foreground/80 hover:text-white hover:bg-white/10 flex items-center gap-2 transition-colors"><Edit2 size={14} /> Rename</button>
-          
-          <div className="h-px bg-white/5 my-1 mx-2" />
-          
-          <button onClick={(e) => { e.stopPropagation(); onDeleteChat(chat.id); setMenuOpenId(null) }} className="w-full text-left px-4 py-2 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 flex items-center gap-2 transition-colors"><Trash2 size={14} /> Delete Thread</button>
+
+      {isMenuOpen && (
+        <div
+          data-chat-menu
+          tabIndex={-1}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setMenuOpenId(null)
+          }}
+          className="absolute right-2 top-10 z-[999] w-48 rounded-xl border border-white/10 bg-[#111116] py-1.5 font-sans shadow-2xl animate-fade-in"
+        >
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              setMenuOpenId(null)
+            }}
+            className="flex w-full items-center gap-2 px-4 py-2 text-left text-xs text-foreground/80 transition-colors hover:bg-white/10 hover:text-white"
+          >
+            <Download size={14} /> Export Trace Log
+          </button>
+
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              onTogglePin(chat.id)
+              setMenuOpenId(null)
+            }}
+            className="flex w-full items-center gap-2 px-4 py-2 text-left text-xs text-foreground/80 transition-colors hover:bg-white/10 hover:text-white"
+          >
+            <Pin size={14} /> {chat.pinned ? 'Unpin Target' : 'Pin Target'}
+          </button>
+
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              startRename(chat.id, chat.title)
+            }}
+            className="flex w-full items-center gap-2 px-4 py-2 text-left text-xs text-foreground/80 transition-colors hover:bg-white/10 hover:text-white"
+          >
+            <Edit2 size={14} /> Rename
+          </button>
+
+          <div className="mx-2 my-1 h-px bg-white/5" />
+
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              onDeleteChat(chat.id)
+              setMenuOpenId(null)
+            }}
+            className="flex w-full items-center gap-2 px-4 py-2 text-left text-xs text-rose-400 transition-colors hover:bg-rose-500/10 hover:text-rose-300"
+          >
+            <Trash2 size={14} /> Delete Thread
+          </button>
         </div>
       )}
     </div>
