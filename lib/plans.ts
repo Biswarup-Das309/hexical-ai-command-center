@@ -34,7 +34,16 @@ export type PlanLimitConfig = {
   priceId: string
   pricePaise: number
   monthlyTokenBudget: number
+  /**
+   * Message allowance for a rolling window, NOT a calendar month.
+   * A user's window starts on their first message and lasts
+   * `messageWindowHours`; once it elapses, the next message starts a
+   * fresh window with a full `maxMessages` allowance again.
+   * Must stay in sync with MESSAGE_QUOTA_LIMITS / MESSAGE_QUOTA_WINDOW_SECS
+   * in app/api/verify/route.ts, which is what actually enforces this.
+   */
   maxMessages: number
+  messageWindowHours: number
   maxCharsPerRequest: number
   requestsPerMinute: number
   capabilities: readonly PlanCapability[]
@@ -60,7 +69,8 @@ export const PLAN_LIMITS: Record<PlanTier, PlanLimitConfig> = {
     priceId: '',
     pricePaise: 0,
     monthlyTokenBudget: 2_000_000,
-    maxMessages: 25,
+    maxMessages: 12,
+    messageWindowHours: 5,
     maxCharsPerRequest: 10_000,
     requestsPerMinute: 20,
     capabilities: ['basic_ast', 'core_heuristics'],
@@ -68,8 +78,9 @@ export const PLAN_LIMITS: Record<PlanTier, PlanLimitConfig> = {
   go: {
     priceId: 'price_go_299',
     pricePaise: 299 * 100,
-    monthlyTokenBudget: 8_000_000,
-    maxMessages: 50,
+    monthlyTokenBudget: 50_000_000,
+    maxMessages: 35,
+    messageWindowHours: 5,
     maxCharsPerRequest: 15_000,
     requestsPerMinute: 60,
     capabilities: ['basic_ast', 'core_heuristics', 'standard_support'],
@@ -77,8 +88,9 @@ export const PLAN_LIMITS: Record<PlanTier, PlanLimitConfig> = {
   plus: {
     priceId: 'price_plus_1999',
     pricePaise: 1_999 * 100,
-    monthlyTokenBudget: 35_000_000,
-    maxMessages: 500,
+    monthlyTokenBudget: 250_000_000,
+    maxMessages: 150,
+    messageWindowHours: 5,
     maxCharsPerRequest: 60_000,
     requestsPerMinute: 120,
     capabilities: ['basic_ast', 'core_heuristics', 'interactive_topology', 'bounty_forge'],
@@ -86,8 +98,9 @@ export const PLAN_LIMITS: Record<PlanTier, PlanLimitConfig> = {
   pro: {
     priceId: 'price_pro_9599',
     pricePaise: 9_599 * 100,
-    monthlyTokenBudget: 120_000_000, // 120M tokens
-    maxMessages: 9999,
+    monthlyTokenBudget: 1_000_000_000, // 1B tokens
+    maxMessages: 500,
+    messageWindowHours: 5,
     maxCharsPerRequest: 120_000,
     requestsPerMinute: 300,
     capabilities: [
@@ -122,6 +135,11 @@ function requestSizeText(tier: PlanTier): string {
 
 function rateLimitText(tier: PlanTier): string {
   return `${formatInteger(PLAN_LIMITS[tier].requestsPerMinute)} requests per minute`
+}
+
+export function messageQuotaText(tier: PlanTier): string {
+  const { maxMessages, messageWindowHours } = PLAN_LIMITS[tier]
+  return `${formatInteger(maxMessages)} messages every ${messageWindowHours}h`
 }
 
 export const PLAN_CATALOG: Record<PlanTier, PlanDisplayConfig> = {

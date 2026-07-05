@@ -40,6 +40,14 @@ interface RateLimitResult {
   retryAfter: number;
 }
 
+interface MessageQuotaResult {
+  allowed: boolean;
+  used: number;
+  remaining: number;
+  limit: number;
+  resetSeconds: number;
+}
+
 interface TokenReservation {
   allowed: boolean;
   reservedTokens: number;
@@ -98,6 +106,9 @@ interface ResponseMetrics {
   providerRetryCount: number;
   requestSizeChars: number;
   swarmUsed: boolean;
+  messageQuotaLimit: number;
+  messageQuotaRemaining: number;
+  messageQuotaResetSeconds: number;
 }
 
 interface ExecutionResponse {
@@ -187,6 +198,7 @@ const REQUEST_MAX_AGE_MS = 30_000;
 const MAX_BODY_BYTES = 150_000;
 const OUTPUT_MAX_CHARS = 8_000;
 const DAILY_SWARM_LIMIT = 10;
+const SWARM_MAX_MODEL_CALLS_PER_REQUEST = 3;
 const CACHE_TTL_SECS = 60 * 60 * 24;
 const CACHE_MAX_PROMPT_CHARS = 4_000;
 const HEAVY_QUEUE_THRESHOLD_CHARS = 80_000;
@@ -219,12 +231,11 @@ const MARGIN_CHAR_LIMITS: Record<Tier, number> = {
 };
 
 const MONTHLY_TOKEN_BUDGETS: Record<Tier, number> = {
-  free: 2_000_000,
-  go: 50_000_000,
-  plus: 250_000_000,
-  pro: 1_000_000_000,
+  free: 1_000_000,     // was 2M
+  go: 8_000_000,      // was 50M
+  plus: 40_000_000,    // was 250M
+  pro: 120_000_000,   // was 1B
 };
-
 const PLAN_MONTHLY_PRICE_PAISE: Record<Tier, number> = {
   free: 0,
   go: 299 * 100,
@@ -237,6 +248,29 @@ const RATE_LIMITS: Record<Tier, { windowSecs: number; maxReq: number }> = {
   go: { windowSecs: 60, maxReq: 60 },
   plus: { windowSecs: 60, maxReq: 120 },
   pro: { windowSecs: 60, maxReq: 300 },
+};
+
+// Message quota: a rolling window, not a calendar day/month. The first message
+// in a window starts a 5-hour timer (via Redis TTL); every message sent inside
+// that window counts against the limit; once the TTL expires the counter (and
+// the window) resets on the user's very next message. This sits between the
+// per-minute burst limiter (RATE_LIMITS, above) and the monthly token budget
+// (MONTHLY_TOKEN_BUDGETS, below) as a mid-range abuse/cost guard.
+//
+// NOTE: this supersedes the old "maxMessages" numbers in lib/hexical-types.ts
+// (25 / 50 / 500 / 9999), which were unused for enforcement and, taken
+// literally as a 5-hour allotment, would be far too generous (9999 messages
+// every 5 hours is effectively unlimited). These values are sized instead
+// against real usage: a free/trial user rarely needs more than a couple of
+// messages an hour, while Pro users doing sustained recon/audit work can
+// reasonably send a message every ~40 seconds for the full window.
+const MESSAGE_QUOTA_WINDOW_SECS = 5 * 60 * 60; // 5 hours
+
+const MESSAGE_QUOTA_LIMITS: Record<Tier, number> = {
+  free: 12,
+  go: 35,
+  plus: 100,   // was 150
+  pro: 180,    // was 500 (VERY IMPORTANT FIX)
 };
 
 const MODEL_PRICING_USD_PER_MILLION: Record<Provider, { input: number; output: number }> = {
@@ -569,6 +603,50 @@ async function checkRateLimit(
   };
 }
 
+/**
+ * Rolling 5-hour message quota, independent of the per-minute burst limiter
+ * and the monthly token budget. Uses the same "increment + set TTL on first
+ * hit" pattern as the daily spend/swarm counters elsewhere in this file: the
+ * key is only created (and its 5-hour expiry set) on the first message, so
+ * each user's window starts on their own first message rather than being
+ * aligned to a fixed clock bucket. If the increment pushes usage past the
+ * limit, it's rolled back so the stored count never exceeds the limit.
+ */
+async function checkMessageQuota(
+  redis: Redis,
+  userId: string,
+  tier: Tier,
+): Promise<MessageQuotaResult> {
+  const limit = MESSAGE_QUOTA_LIMITS[tier];
+  const key = `msgquota:${userId}:${tier}`;
+  const used = await redis.incr(key);
+
+  if (used === 1) {
+    void redis.expire(key, MESSAGE_QUOTA_WINDOW_SECS);
+  }
+
+  if (used > limit) {
+    void redis.decr(key);
+    const ttl = await redis.ttl(key);
+    return {
+      allowed: false,
+      used: limit,
+      remaining: 0,
+      limit,
+      resetSeconds: ttl > 0 ? ttl : MESSAGE_QUOTA_WINDOW_SECS,
+    };
+  }
+
+  const ttl = await redis.ttl(key);
+  return {
+    allowed: true,
+    used,
+    remaining: Math.max(0, limit - used),
+    limit,
+    resetSeconds: ttl > 0 ? ttl : MESSAGE_QUOTA_WINDOW_SECS,
+  };
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -648,14 +726,18 @@ async function reserveMonthlyTokens(
 ): Promise<TokenReservation> {
   const limitTokens = MONTHLY_TOKEN_BUDGETS[tier];
   const key = `budget:tokens:${userId}:${tier}:${monthKeyPart()}`;
-  const reservedTokens = Math.max(1, estimatedTokens);
+  const safetyBuffer = 1.3;
+const reservedTokens = Math.max(
+  1,
+  Math.ceil(estimatedTokens * safetyBuffer),
+);
   const usedTokens = await redis.incrby(key, reservedTokens);
 
   if (usedTokens === reservedTokens) {
     void redis.expire(key, secondsUntilNextMonth());
   }
 
-  if (usedTokens > limitTokens) {
+  if (usedTokens >= limitTokens) {
     await redis.decrby(key, reservedTokens);
     const currentUsed = Math.max(0, usedTokens - reservedTokens);
     return {
@@ -1859,6 +1941,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       );
     }
 
+    const messageQuota = await checkMessageQuota(redis, userId, activeTier);
+    if (!messageQuota.allowed) {
+      const resetMinutes = Math.max(1, Math.ceil(messageQuota.resetSeconds / 60));
+      return NextResponse.json(
+        {
+          error: 'Message quota exceeded.',
+          message: `Tier [${activeTier.toUpperCase()}] allows ${messageQuota.limit} messages per 5-hour window. Resets in ${resetMinutes} minute(s).`,
+        },
+        {
+          status: 429,
+          headers: jsonHeaders({
+            'Retry-After': String(messageQuota.resetSeconds),
+            'X-MessageQuota-Remaining': '0',
+            'X-MessageQuota-Reset': String(messageQuota.resetSeconds),
+          }),
+        },
+      );
+    }
+
     if (FEATURE_FLAGS.swarmEnabled && activeTier === 'pro' && payload.profile === 'swarm') {
       const swarmKey = `swarm_limit:${userId}:${dayKeyPart()}`;
       const used = await redis.incr(swarmKey);
@@ -1927,6 +2028,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           providerRetryCount: 0,
           requestSizeChars: payload.logic.length,
           swarmUsed: false,
+          messageQuotaLimit: messageQuota.limit,
+          messageQuotaRemaining: messageQuota.remaining,
+          messageQuotaResetSeconds: messageQuota.resetSeconds,
         };
 
         await logUsage(supabase, {
@@ -1964,6 +2068,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           {
             headers: jsonHeaders({
               'X-RateLimit-Remaining': String(rl.remaining),
+              'X-MessageQuota-Remaining': String(messageQuota.remaining),
               'X-Cache': 'HIT',
             }),
           },
@@ -2087,6 +2192,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         providerRetryCount: result.providerRetryCount,
         requestSizeChars: payload.logic.length,
         swarmUsed: result.mode === 'swarm',
+        messageQuotaLimit: messageQuota.limit,
+        messageQuotaRemaining: messageQuota.remaining,
+        messageQuotaResetSeconds: messageQuota.resetSeconds,
       },
     };
 
@@ -2124,6 +2232,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       headers: jsonHeaders({
         'X-RateLimit-Remaining': String(rl.remaining),
         'X-TokenBudget-Remaining': String(monthlyTokenRemaining),
+        'X-MessageQuota-Remaining': String(messageQuota.remaining),
         'X-Cache': 'MISS',
       }),
     });
