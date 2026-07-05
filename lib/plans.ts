@@ -69,7 +69,7 @@ export const PLAN_LIMITS: Record<PlanTier, PlanLimitConfig> = {
     priceId: '',
     pricePaise: 0,
     monthlyTokenBudget: 2_000_000,
-    maxMessages: 12,
+    maxMessages: 20,
     messageWindowHours: 5,
     maxCharsPerRequest: 10_000,
     requestsPerMinute: 20,
@@ -78,7 +78,7 @@ export const PLAN_LIMITS: Record<PlanTier, PlanLimitConfig> = {
   go: {
     priceId: 'price_go_299',
     pricePaise: 299 * 100,
-    monthlyTokenBudget: 50_000_000,
+    monthlyTokenBudget: 20_000_000,
     maxMessages: 35,
     messageWindowHours: 5,
     maxCharsPerRequest: 15_000,
@@ -88,8 +88,8 @@ export const PLAN_LIMITS: Record<PlanTier, PlanLimitConfig> = {
   plus: {
     priceId: 'price_plus_1999',
     pricePaise: 1_999 * 100,
-    monthlyTokenBudget: 250_000_000,
-    maxMessages: 150,
+    monthlyTokenBudget: 80_000_000,
+    maxMessages: 100,
     messageWindowHours: 5,
     maxCharsPerRequest: 60_000,
     requestsPerMinute: 120,
@@ -97,8 +97,8 @@ export const PLAN_LIMITS: Record<PlanTier, PlanLimitConfig> = {
   },
   pro: {
     priceId: 'price_pro_9599',
-    pricePaise: 9_599 * 100,
-    monthlyTokenBudget: 1_000_000_000, // 1B tokens
+    pricePaise: 4999 * 100,
+    monthlyTokenBudget: 200_000_000, // 1B tokens
     maxMessages: 500,
     messageWindowHours: 5,
     maxCharsPerRequest: 120_000,
@@ -172,7 +172,7 @@ export const PLAN_CATALOG: Record<PlanTier, PlanDisplayConfig> = {
     tier: 'plus',
     name: 'Plus',
     checkoutName: 'Plus',
-    priceLabel: `${RUPEE}1,999`,
+    priceLabel: `${RUPEE}999`,
     badge: 'Hunter',
     description: 'Premium analysis for larger inputs, audits, and bounty workflows.',
     features: [
@@ -187,7 +187,7 @@ export const PLAN_CATALOG: Record<PlanTier, PlanDisplayConfig> = {
     tier: 'pro',
     name: 'Pro',
     checkoutName: 'Pro',
-    priceLabel: `${RUPEE}9,599`,
+    priceLabel: `${RUPEE}4,999`,
     badge: 'Architect',
     description: 'Highest limits with Claude deep analysis and Pro multi-agent review.',
     includesLabel: 'Includes Plus, and:',

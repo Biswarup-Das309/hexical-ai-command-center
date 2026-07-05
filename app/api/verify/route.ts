@@ -267,8 +267,8 @@ const RATE_LIMITS: Record<Tier, { windowSecs: number; maxReq: number }> = {
 const MESSAGE_QUOTA_WINDOW_SECS = 5 * 60 * 60; // 5 hours
 
 const MESSAGE_QUOTA_LIMITS: Record<Tier, number> = {
-  free: 12,
-  go: 35,
+  free: 20,
+  go: 35,     // was 35
   plus: 100,   // was 150
   pro: 180,    // was 500 (VERY IMPORTANT FIX)
 };

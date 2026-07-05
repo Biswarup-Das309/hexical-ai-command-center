@@ -50,28 +50,28 @@ export const PLAN_LIMITS: Record<PlanTier, PlanConfiguration> = {
   free: {
     priceId: '',
     name: 'Free',
-    maxMessages: 25,
+    maxMessages: 20,
     maxCharsPerRequest: 10_000,
     features: ['basic_ast', 'core_heuristics'],
   },
   go: {
     priceId: 'price_go_299',
     name: 'Go',
-    maxMessages: 50,
+    maxMessages: 35,
     maxCharsPerRequest: 15_000,
     features: ['basic_ast', 'core_heuristics', 'standard_support'],
   },
   plus: {
     priceId: 'price_plus_1999',
     name: 'Plus',
-    maxMessages: 500,
+    maxMessages: 100 ,
     maxCharsPerRequest: 12_000,
     features: ['basic_ast', 'core_heuristics', 'interactive_topology', 'bounty_forge'],
   },
   pro: {
     priceId: 'price_pro_9599',
     name: 'Pro',
-    maxMessages: 9999,
+    maxMessages: 300,
     maxCharsPerRequest: 120_000,
     features: [
       'basic_ast',
