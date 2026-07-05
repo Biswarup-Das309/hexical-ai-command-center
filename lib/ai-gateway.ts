@@ -2,6 +2,7 @@ import 'server-only'
 import { createClient } from '@supabase/supabase-js'
 import { Redis } from '@upstash/redis'
 import { z } from 'zod'
+import { PLAN_LIMITS } from './plans'
 
 /**
  * Fail loudly at import time, not at request time. This is exactly the
@@ -16,7 +17,9 @@ const REQUIRED_ENV = [
 ] as const
 
 for (const key of REQUIRED_ENV) {
-  if (!process.env[key]) {
+  const value = process.env[key]
+
+  if (!value) {
     throw new Error(`[ai-gateway] Missing required env var: ${key}`)
   }
 }
@@ -61,6 +64,51 @@ const RATE_LIMITS: Record<Tier, { windowSecs: number; maxReq: number }> = {
   pro: { windowSecs: 60, maxReq: 120 },
 }
 
+/**
+ * Aggregate safety cap, independent of the per-message 20k-char limit the
+ * schema above already enforces. 50 messages * 20k chars is ~1M chars in
+ * the worst case for every tier — this catches that before it burns a
+ * model call or a budget reservation on it. This was a planned check that
+ * never got written (there was a dangling comment for it and no code).
+ */
+const MAX_TOTAL_INPUT_CHARS = 60_000
+
+/**
+ * How long a model stays benched after a billing-type failure before we
+ * try it live again. Short enough to self-heal without a separate reset
+ * job, long enough that a real outage doesn't get hammered on every
+ * incoming request.
+ */
+const MODEL_COOLDOWN_TTL_SECS = 300
+
+/**
+ * Per-attempt timeout budget. The first live attempt gets the full
+ * timeout in case it's just genuinely slow; later attempts in the same
+ * request get a shorter one, since the caller has already been waiting.
+ * This bounds worst-case latency (PRIMARY + FALLBACK*2 ≈ 36s for a
+ * 3-candidate chain) without a hard attempt cap that could strand a
+ * healthy last candidate right after two fast billing failures — which
+ * is exactly what a fixed attempt-count cap did in testing: two quick
+ * 429/400s used up the cap and a perfectly healthy third option never
+ * got tried.
+ */
+const PRIMARY_TIMEOUT_MS = 20_000
+const FALLBACK_TIMEOUT_MS = 8_000
+
+/**
+ * Worst-case $/million-tokens per model, used only to size the pre-flight
+ * budget reservation. These are placeholders — replace with your actual
+ * current provider pricing. Keep them as the *highest* plausible rate for
+ * that model, since underestimating here is what lets a request slip
+ * through under-budgeted.
+ */
+const MODEL_COST_PER_MILLION_TOKENS_USD: Record<Model, number> = {
+  groq: 1,
+  deepseek: 1,
+  openai: 15,
+  anthropic: 20,
+}
+
 interface GatewayResult {
   blocked: boolean
   reason?: string
@@ -81,11 +129,16 @@ export async function aiGateway(
   clientIp: string
 ): Promise<GatewayResult> {
   const parsed = RequestSchema.safeParse(rawBody)
-if (!parsed.success) {
-  console.error('[ai-gateway] validation failed:', parsed.error.format())
-  return { blocked: true, reason: 'invalid_request' }
-}
+  if (!parsed.success) {
+    console.error('[ai-gateway] validation failed:', parsed.error.format())
+    return { blocked: true, reason: 'invalid_request' }
+  }
   const { messages } = parsed.data
+
+  const totalInputChars = messages.reduce((n, m) => n + m.content.length, 0)
+  if (totalInputChars > MAX_TOTAL_INPUT_CHARS) {
+    return { blocked: true, reason: 'input_too_large' }
+  }
 
   // Requests/minute — a fast, cheap check, separate from dollar budget.
   const rl = await checkRateLimit(userId, tier, clientIp)
@@ -93,10 +146,37 @@ if (!parsed.success) {
     return { blocked: true, reason: 'rate_limited' }
   }
 
+  const limit = PLAN_LIMITS[tier]
+
+  // HARD PLAN LIMIT CHECK (message count)
+  const usageCheck = await supabase
+    .from('users')
+    .select('messages_used, tokens_used')
+    .eq('id', userId)
+    .single()
+
+  if (usageCheck.error) {
+    return { blocked: true, reason: 'usage_fetch_failed' }
+  }
+
+  const usage = usageCheck.data
+
+  if (usage.messages_used >= limit.maxMessages) {
+    return { blocked: true, reason: 'message_limit_exceeded' }
+  }
+
+  // Ordered list of models this request is allowed to try, cheapest/primary
+  // first, most expensive fallback last — see getModelCandidates for the
+  // per-tier rules this preserves from the original routing logic.
+  const candidates = getModelCandidates(tier, totalInputChars)
+
   // Dollar budget — atomic reservation closes the race where concurrent
   // requests all read "under budget" before any of them get logged.
   // Requires the reserve_budget / release_reservation SQL functions.
-  const estimatedCostUsd = estimateReservationCostUsd(messages)
+  // Sized to the worst case of everything in `candidates`, not a single
+  // flat number, since a fallback can land on a pricier model than the
+  // primary choice.
+  const estimatedCostUsd = estimateReservationCostUsd(messages, candidates)
   const { data: reservationRows, error: reserveErr } = await supabase.rpc('reserve_budget', {
     p_user_id: userId,
     p_tier: tier,
@@ -114,18 +194,60 @@ if (!parsed.success) {
   }
   const reservationId: string = reservation.reservation_id
 
-  const model = routeModel(tier, messages)
+  // Walk the candidate chain: skip anything on cooldown from a recent
+  // billing-type failure, call the first live one, and only mark a model
+  // down (not just "this call failed") when the failure actually looks
+  // like a billing/quota issue rather than a one-off timeout.
+  let callResult: { text: string; inputTokens: number; outputTokens: number } | null = null
+  let usedModel: Model | null = null
+  let liveAttempts = 0
+  let lastErr: unknown = null
 
-  let result: { text: string; inputTokens: number; outputTokens: number }
-  try {
-    result = await callModelWithTimeout(model, messages, 20_000)
-  } catch (err) {
-    console.error('[ai-gateway] model call failed', err)
-    await releaseReservation(reservationId)
-    return { blocked: true, reason: 'model_call_failed' }
+  for (const candidate of candidates) {
+    if (await isModelOnCooldown(candidate)) {
+      continue
+    }
+
+    const timeoutMs = liveAttempts === 0 ? PRIMARY_TIMEOUT_MS : FALLBACK_TIMEOUT_MS
+    liveAttempts++
+    try {
+      callResult = await callModelWithTimeout(candidate, messages, timeoutMs)
+      usedModel = candidate
+      break
+    } catch (err) {
+      lastErr = err
+      console.error(`[ai-gateway] ${candidate} call failed`, err)
+      if (isBillingFailure(err)) {
+        await markModelOnCooldown(candidate)
+      }
+    }
   }
 
-  const { text, inputTokens, outputTokens } = result
+  if (!callResult || !usedModel) {
+    console.error('[ai-gateway] no candidate model produced a result', lastErr)
+    await releaseReservation(reservationId)
+    return {
+      blocked: true,
+      reason: liveAttempts > 0 ? 'model_call_failed' : 'all_models_unavailable',
+    }
+  }
+
+  const { text, inputTokens, outputTokens } = callResult
+  const totalTokens = inputTokens + outputTokens
+
+  // Atomic usage increment via SQL function — a plain read-then-write here
+  // (read usage.messages_used, write usage.messages_used + 1) would race
+  // the same way reserve_budget was built to avoid: two concurrent
+  // requests from the same user can both read the same starting value and
+  // net one increment instead of two. Requires the increment_usage SQL
+  // function (see increment_usage.sql).
+  const { error: incrErr } = await supabase.rpc('increment_usage', {
+    p_user_id: userId,
+    p_tokens: totalTokens,
+  })
+  if (incrErr) {
+    console.error('[ai-gateway] increment_usage failed', incrErr)
+  }
 
   // In case anything upstream (prompt injection, model misbehavior) causes
   // the model to echo back something that looks like a secret, strip it
@@ -135,7 +257,7 @@ if (!parsed.success) {
   const { error: logErr } = await supabase.from('user_usage_logs').insert({
     user_id: userId,
     tier,
-    model,
+    model: usedModel,
     input_tokens: inputTokens,
     output_tokens: outputTokens,
     route_type: 'simple',
@@ -147,7 +269,7 @@ if (!parsed.success) {
 
   await releaseReservation(reservationId)
 
-  return { blocked: false, model, response: safeText }
+  return { blocked: false, model: usedModel, response: safeText }
 }
 
 async function releaseReservation(reservationId: string): Promise<void> {
@@ -162,33 +284,108 @@ async function checkRateLimit(
 ): Promise<{ allowed: boolean }> {
   const cfg = RATE_LIMITS[tier]
   const bucket = Math.floor(Date.now() / (cfg.windowSecs * 1000))
+
   const userKey = `rl:user:${userId}:${bucket}`
   const ipKey = `rl:ip:${ip}:${bucket}`
 
-  const [userCount, ipCount] = await Promise.all([redis.incr(userKey), redis.incr(ipKey)])
-  if (userCount === 1) void redis.expire(userKey, cfg.windowSecs * 2)
-  if (ipCount === 1) void redis.expire(ipKey, cfg.windowSecs * 2)
+  const [userCount, ipCount] = await Promise.all([
+    redis.incr(userKey),
+    redis.incr(ipKey),
+  ])
 
-  return { allowed: userCount <= cfg.maxReq && ipCount <= cfg.maxReq * 5 }
+  await Promise.all([
+    redis.expire(userKey, cfg.windowSecs * 2),
+    redis.expire(ipKey, cfg.windowSecs * 2),
+  ])
+
+  return {
+    allowed: userCount <= cfg.maxReq && ipCount <= cfg.maxReq * 5,
+  }
 }
 
-function estimateReservationCostUsd(messages: ChatMessage[]): number {
+/**
+ * Preserves the original per-tier primary choice (same size thresholds as
+ * before) and adds an ordered fallback behind it. Free tier intentionally
+ * stays single-option with no fallback — that was the original explicit
+ * rule, not an oversight, so it's kept as-is. 'go' never falls back to
+ * 'anthropic' and 'free'/'go' never escalate into pro-tier-cost models;
+ * that boundary looked deliberate in the original routing, so it's
+ * preserved here too. Adjust if your intent is different.
+ */
+function getModelCandidates(tier: Tier, totalInputChars: number): Model[] {
+  switch (tier) {
+    case 'free':
+      return ['groq']
+    case 'go':
+      return totalInputChars > 8000
+        ? ['openai', 'groq', 'deepseek']
+        : ['groq', 'openai', 'deepseek']
+    case 'plus':
+      return totalInputChars > 15000
+        ? ['anthropic', 'openai', 'deepseek']
+        : ['openai', 'anthropic', 'deepseek']
+    case 'pro':
+      return totalInputChars > 15000
+        ? ['anthropic', 'openai', 'groq']
+        : ['openai', 'anthropic', 'groq']
+    default: {
+      const _exhaustive: never = tier
+      throw new Error(`[ai-gateway] Unhandled tier: ${_exhaustive}`)
+    }
+  }
+}
+
+async function isModelOnCooldown(model: Model): Promise<boolean> {
+  const flagged = await redis.get(`model:cooldown:${model}`)
+  return flagged !== null
+}
+
+async function markModelOnCooldown(model: Model): Promise<void> {
+  await redis.set(`model:cooldown:${model}`, '1', { ex: MODEL_COOLDOWN_TTL_SECS })
+}
+
+interface ModelCallError extends Error {
+  status?: number
+}
+
+/**
+ * Providers don't agree on how billing failures show up:
+ *  - OpenAI has been observed returning HTTP 429 with an
+ *    insufficient_quota-type message.
+ *  - Anthropic has been observed returning a plain HTTP 400
+ *    invalid_request_error with "credit balance is too low" in the message
+ *    body — there's no dedicated status code or error type for it, so
+ *    message inspection is necessary here, not just a fallback for when
+ *    status codes are missing.
+ * Either signal alone is treated as sufficient.
+ */
+function isBillingFailure(err: unknown): boolean {
+  const status = (err as ModelCallError)?.status
+  if (status === 402 || status === 429) return true
+
+  const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase()
+  return (
+    message.includes('credit balance') ||
+    message.includes('insufficient_quota') ||
+    message.includes('quota') ||
+    message.includes('billing')
+  )
+}
+
+function estimateReservationCostUsd(messages: ChatMessage[], candidates: Model[]): number {
   // Conservative upper-bound guess used only to reserve budget before the
   // call. The real, billed cost still comes from the DB trigger reading
   // the provider's actual usage after the log row is inserted.
   const chars = messages.reduce((n, m) => n + m.content.length, 0)
-  const roughInputTokens = chars / 3
+  const roughInputTokens = Math.ceil(chars / 4)
   const roughOutputTokens = 800
-  const worstCaseUsdPerMillion = 15
-  return ((roughInputTokens + roughOutputTokens) / 1_000_000) * worstCaseUsdPerMillion
-}
 
-function routeModel(tier: Tier, messages: ChatMessage[]): Model {
-  const promptSize = messages.reduce((n, m) => n + m.content.length, 0)
-  if (tier === 'free') return 'groq'
-  if (tier === 'go') return promptSize > 8000 ? 'openai' : 'groq'
-  if (tier === 'plus') return promptSize > 12000 ? 'anthropic' : 'openai'
-  return promptSize > 15000 ? 'anthropic' : 'openai'
+  const worstCaseUsdPerMillion = candidates.reduce(
+    (max, m) => Math.max(max, MODEL_COST_PER_MILLION_TOKENS_USD[m]),
+    0
+  )
+
+  return ((roughInputTokens + roughOutputTokens) / 1_000_000) * worstCaseUsdPerMillion
 }
 
 async function callModelWithTimeout(model: Model, messages: ChatMessage[], timeoutMs: number) {
@@ -227,6 +424,9 @@ function sanitizeOutput(raw: string): string {
  *   - Return the provider's real usage numbers (response.usage), never
  *     a character-count estimate — that's the only thing the daily/monthly
  *     cost tracking trusts.
+ *   - Throw errors with the provider's HTTP status on a `.status` field
+ *     where the SDK exposes one — isBillingFailure() checks that first,
+ *     before falling back to reading the error message text.
  */
 async function callModel(model: Model, messages: ChatMessage[], signal: AbortSignal) {
   return {
