@@ -6,8 +6,8 @@ import { createClient } from '@supabase/supabase-js';
 // Price configuration in Paisa (1 INR = 100 Paisa)
 const TIER_PRICE_MAP: Record<string, number> = {
   go: 299 * 100,     // ₹299
-  plus: 1999 * 100,  // ₹1,999
-  pro: 9599 * 100,   // ₹9,599
+  plus: 999 * 100,  // ₹999
+  pro: 4999 * 100,   // ₹4,999
 };
 
 export async function POST(req: Request) {

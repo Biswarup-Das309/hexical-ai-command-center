@@ -86,8 +86,8 @@ export const PLAN_LIMITS: Record<PlanTier, PlanLimitConfig> = {
     capabilities: ['basic_ast', 'core_heuristics', 'standard_support'],
   },
   plus: {
-    priceId: 'price_plus_1999',
-    pricePaise: 1_999 * 100,
+    priceId: 'price_plus_999',
+    pricePaise: 999 * 100,
     monthlyTokenBudget: 80_000_000,
     maxMessages: 100,
     messageWindowHours: 5,
@@ -96,7 +96,7 @@ export const PLAN_LIMITS: Record<PlanTier, PlanLimitConfig> = {
     capabilities: ['basic_ast', 'core_heuristics', 'interactive_topology', 'bounty_forge'],
   },
   pro: {
-    priceId: 'price_pro_9599',
+    priceId: 'price_pro_4999',
     pricePaise: 4999 * 100,
     monthlyTokenBudget: 200_000_000, // 1B tokens
     maxMessages: 500,

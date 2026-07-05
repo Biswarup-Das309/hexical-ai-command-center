@@ -62,14 +62,14 @@ export const PLAN_LIMITS: Record<PlanTier, PlanConfiguration> = {
     features: ['basic_ast', 'core_heuristics', 'standard_support'],
   },
   plus: {
-    priceId: 'price_plus_1999',
+    priceId: 'price_plus_999',
     name: 'Plus',
     maxMessages: 100 ,
     maxCharsPerRequest: 12_000,
     features: ['basic_ast', 'core_heuristics', 'interactive_topology', 'bounty_forge'],
   },
   pro: {
-    priceId: 'price_pro_9599',
+    priceId: 'price_pro_4999',
     name: 'Pro',
     maxMessages: 300,
     maxCharsPerRequest: 120_000,
