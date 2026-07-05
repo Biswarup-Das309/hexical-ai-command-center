@@ -356,7 +356,7 @@ export function HexicalConsole() {
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const headerMenuRef = useRef<HTMLDivElement | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
-
+const hasHydratedRef = useRef<string | null>(null)
   const hasFeatureAccess = useCallback((requiredFeature: string) => {
     return PLAN_LIMITS[currentTier].features.includes(requiredFeature as any);
   }, [currentTier]);
@@ -532,9 +532,15 @@ export function HexicalConsole() {
   }, [isLoaded, user, logToTerminal, getAuthenticatedClient])
 
   useEffect(() => {
-    if (!isMounted || isAuthLoading) return;
-    
-    const initializeChats = async () => {
+  if (!isMounted || isAuthLoading) return;
+
+  const currentUserId = user?.id || 'guest_session';
+  if (hasHydratedRef.current === currentUserId) {
+    return; // already hydrated this identity — don't steal focus
+  }
+  hasHydratedRef.current = currentUserId;
+  
+  const initializeChats = async () => {
       if (!user) { 
         const fresh = createFreshChatState(generateUniqueID());
         setChats([fresh]); 
@@ -551,6 +557,7 @@ export function HexicalConsole() {
 
       if (convoErr) { 
         logToTerminal(`[DB_ERR] Failed to load sessions.`); 
+        hasHydratedRef.current = null; // release lock so a later attempt can retry
         return; 
       }
 
