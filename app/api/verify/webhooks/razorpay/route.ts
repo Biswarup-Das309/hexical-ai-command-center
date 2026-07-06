@@ -57,13 +57,6 @@ export async function POST(req: Request) {
     }
 
     // 3. Safe JSON parse — only after the signature is trusted.
-    // Note: the whole handler is already wrapped in try/catch, so a throw
-    // here wouldn't crash the process — it'd just fall through to the
-    // generic 500 below. The reason to handle it explicitly isn't crash
-    // safety, it's correctness of the response code and clean logs: a
-    // malformed body is a 400 (client/gateway problem), not a 500
-    // (our server broke), and you don't want it paging on-call as
-    // "CRITICAL" next to actual infra failures.
     let event: any;
     try {
       event = JSON.parse(bodyText);
@@ -94,8 +87,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ status: 'ignored', reason: 'malformed_payload' }, { status: 200 });
     }
 
-    // 4. Tier validation — rejects non-strings, unknown tiers, and
-    // prototype-chain keys (toString, constructor, __proto__, ...)
+    // 4. Tier validation
     const targetTier = normalizeTier(requestedTier);
     if (!targetTier) {
       console.warn(`[WEBHOOK_WARNING]: Invalid tier "${String(requestedTier)}" for payment ${paymentId}`);
@@ -113,29 +105,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ status: 'ignored', reason: 'price_mismatch' }, { status: 200 });
     }
 
-    // 6. Atomic idempotency + asset injection.
-    //
-    // The previous version did `insert transaction` then, in a SEPARATE
-    // round trip, `update profiles`. If the process died (or Supabase
-    // hiccuped) between those two calls, a Razorpay retry would hit the
-    // unique-violation branch, return "already_processed", and the user
-    // would never receive their tier/tokens — a silent revenue-collected-
-    // but-nothing-delivered bug. It also used `.update()`, which no-ops
-    // silently if the profile row doesn't exist yet (e.g. a brand-new
-    // user whose profile-sync webhook hasn't landed before they pay).
-    //
-    // Both writes now happen inside one Postgres function so they commit
-    // or roll back together, with a row lock so two concurrent webhooks
-    // (e.g. a Razorpay retry racing the original delivery) can't both
-    // read the same current_period_end and stomp on each other's
-    // extension. See supabase/process_payment_webhook.sql.
+    // 6. Atomic idempotency + asset injection via single RPC call.
+    // The RPC function inside Supabase will handle the tier, tokens, AND the 30-day expiration.
     const { data: rpcResult, error: rpcError } = await supabaseAdmin.rpc('process_payment_webhook', {
       p_payment_id: paymentId,
       p_user_id: clerkUserId,
       p_order_id: orderId ?? null,
       p_tier: targetTier,
       p_tokens: tokenBudget,
-      p_period_days: 30,
+      p_period_days: 30, // <--- This tells the database to calculate the expiration!
     });
 
     if (rpcError) {
@@ -150,6 +128,7 @@ export async function POST(req: Request) {
 
     console.log(`[WEBHOOK_SUCCESS]: User ${clerkUserId} upgraded to ${targetTier}. ${tokenBudget} tokens injected.`);
     return NextResponse.json({ status: 'ok' });
+    
   } catch (err: any) {
     console.error('[WEBHOOK_CRITICAL_ERROR]:', err);
     return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 });
