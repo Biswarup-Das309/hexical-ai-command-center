@@ -7,7 +7,7 @@ export async function POST(request: Request) {
   const { userId } = auth()
 
   if (!userId) {
-    return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 })
   }
 
   let body: { provider?: string; key?: string }
