@@ -127,7 +127,7 @@ const DataStreamMessage = memo(
 
             {stepCount > 0 && (
               <div className="mt-4 text-[10px] uppercase tracking-widest text-primary/50 border-t border-border/30 pt-2 inline-block">
-                [ENGINE PROCESSED: {stepCount} STAGES]
+                Structured analysis complete
               </div>
             )}
           </div>

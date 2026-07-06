@@ -127,7 +127,7 @@ const createFreshChatState = (id: string) => ({
   messages: [{ 
     id: 'init', 
     role: 'hexical', 
-    text: 'HEXICAL KERNEL ONLINE. SECURE PROTOCOLS ENGAGED. AWAITING TARGET VECTORS.', 
+    text: 'Reasoning system activated. SECURE PROTOCOLS ENGAGED. AWAITING TARGET VECTORS.', 
     ts: '00:00', 
     steps: [], 
     valid: true 
