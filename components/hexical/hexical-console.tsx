@@ -5,7 +5,7 @@ import {
   Loader2, Eye, Crosshair, ChevronDown, Activity, X, Command, AlertTriangle, 
   TerminalSquare, LayoutDashboard, Zap, SearchCode, GitMerge, Shield, 
   Hash, Code, FileText, CheckCircle, Timer, Cpu, ShieldCheck, FileJson, Workflow,
-  Network, Lock
+  Network, Lock, Download
 } from 'lucide-react'
 import { toast } from 'sonner' 
 
@@ -365,6 +365,23 @@ const hasHydratedRef = useRef<string | null>(null)
     setSystemLogs(prev => [...prev, msg])
   }, []);
 
+  // PDF export of the current trace/diagnostics panel is a paid-tier feature.
+  // Gated the same way as every other premium surface in this file: check
+  // hasFeatureAccess client-side for UX only. The actual report generation
+  // (if this becomes a real server-rendered PDF rather than a print-to-PDF
+  // export) MUST re-check entitlement server-side before returning the file.
+  const handleExportPdf = useCallback(() => {
+    if (!hasFeatureAccess('pdf_export')) {
+      toast.error('PDF Export locked.', {
+        description: 'Upgrade to a Plus or Pro workspace to export diagnostic reports as PDF.'
+      });
+      setShowUpgradeModal(true);
+      return;
+    }
+    logToTerminal(`[EXPORT] Generating PDF report for current trace...`);
+    window.print();
+  }, [hasFeatureAccess, logToTerminal]);
+
   // This is intentionally a simulated console — it never executes anything.
   // If real command execution is ever wired in, it must run in an isolated,
   // backend-controlled sandbox with a strict allow-list and output limits;
@@ -699,7 +716,10 @@ const hasHydratedRef = useRef<string | null>(null)
       logToTerminal(`[SEC] Zero-Knowledge Regex triggered. Secrets stripped prior to transit.`);
     }
 
-    const userMsg: ExtendedStreamMessage = { id: generateUniqueID(), role: 'user', text: safeLogic, ts: generateTimestamp() }
+    const userMsg: ExtendedStreamMessage = { 
+      id: generateUniqueID(), role: 'user', text: safeLogic, ts: generateTimestamp(),
+      steps: [], valid: true, route: 'user_input' as any
+    }
     const isNewChat = currentChatContext.messages.length <= 1;
     const generatedTitle = isNewChat ? safeLogic.split(' ').slice(0, 4).join(' ') + '...' : currentChatContext.title;
     const updatedUserMessages = [...currentChatContext.messages, userMsg];
@@ -1056,12 +1076,14 @@ const hasHydratedRef = useRef<string | null>(null)
                   {hasFeatureAccess('core_heuristics') ? <Zap size={14}/> : <Lock size={12} className="text-zinc-600" />} Payloads
                 </button>
                 <button onClick={() => setViewMode('bounty')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'bounty' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}>
-                  {hasFeatureAccess('bounty_forge') ? <FileText size={14}/> : <Lock size={12} className="text-zinc-600" />} Forge
+                  <FileText size={14}/> Forge
                 </button>
                 
                 <button onClick={() => setViewMode('ast')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'ast' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Code size={14}/> AST</button>
                 <button onClick={() => setViewMode('cvss')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'cvss' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Hash size={14}/> CVSS</button>
-                <button onClick={() => setViewMode('terminal')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'terminal' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><TerminalSquare size={14}/> TTY</button>
+                <button onClick={() => setViewMode('terminal')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'terminal' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}>
+                  {hasFeatureAccess('advanced_terminal') ? <TerminalSquare size={14}/> : <Lock size={12} className="text-zinc-600" />} TTY
+                </button>
               </div>
 
               {extractedTargets.length > 0 && viewMode === 'chat' && (
@@ -1176,14 +1198,20 @@ const hasHydratedRef = useRef<string | null>(null)
 
             {viewMode === 'bounty' && (
               <div className="p-4 md:p-6 h-full relative">
-                {!hasFeatureAccess('bounty_forge') && <LockedFeatureOverlay featureName="Bug Bounty Forge Integration" />}
-                <div className={!hasFeatureAccess('bounty_forge') ? 'blur-md pointer-events-none' : ''}><BugBountyForge theme={uiTheme} targets={extractedTargets} /></div>
+                <BugBountyForge theme={uiTheme} targets={extractedTargets} />
               </div>
             )}
 
             {viewMode === 'cvss' && <div className="p-4 md:p-6 h-full"><CVSSCalculator theme={uiTheme} /></div>}
             {viewMode === 'ast' && <div className="p-4 md:p-6 h-full"><ASTVisualizer theme={uiTheme} codePayload={lastUserPayload} /></div>}
-            {viewMode === 'terminal' && <div className="p-4 md:p-6 h-full"><div className="mx-auto h-full max-w-5xl"><AdvancedTerminal logs={systemLogs} theme={uiTheme} onCommand={handleTerminalCommand} /></div></div>}
+            {viewMode === 'terminal' && (
+              <div className="p-4 md:p-6 h-full relative">
+                {!hasFeatureAccess('advanced_terminal') && <LockedFeatureOverlay featureName="Advanced TTY Sandbox" />}
+                <div className={`mx-auto h-full max-w-5xl ${!hasFeatureAccess('advanced_terminal') ? 'blur-md pointer-events-none' : ''}`}>
+                  <AdvancedTerminal logs={systemLogs} theme={uiTheme} onCommand={handleTerminalCommand} />
+                </div>
+              </div>
+            )}
 
             {viewMode === 'chat' && (
               <div className="flex-1 flex flex-col justify-end px-2 md:px-6 py-6 max-w-3xl mx-auto w-full">
@@ -1264,12 +1292,21 @@ const hasHydratedRef = useRef<string | null>(null)
                 <SearchCode className={`size-4 ${THEME_MAP[uiTheme].text}`} />
                 <span className="text-xs uppercase font-bold tracking-widest text-foreground">Advanced Diagnostics</span>
               </div>
-              <button 
-                onClick={() => setShowTracePanel(false)} 
-                className="p-1 hover:bg-white/10 rounded-md text-muted-foreground hover:text-white transition-colors"
-              >
-                <X size={16} />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={handleExportPdf}
+                  title={hasFeatureAccess('pdf_export') ? 'Export as PDF' : 'Export as PDF (Paid workspaces only)'}
+                  className="p-1 hover:bg-white/10 rounded-md text-muted-foreground hover:text-white transition-colors"
+                >
+                  {hasFeatureAccess('pdf_export') ? <Download size={16} /> : <Lock size={16} className="text-zinc-600" />}
+                </button>
+                <button 
+                  onClick={() => setShowTracePanel(false)} 
+                  className="p-1 hover:bg-white/10 rounded-md text-muted-foreground hover:text-white transition-colors"
+                >
+                  <X size={16} />
+                </button>
+              </div>
             </div>
             
             <div className="flex-1 overflow-y-auto p-5 space-y-6 text-xs scrollbar-thin scrollbar-thumb-white/10">
