@@ -25,7 +25,8 @@ export type PlanFeature =
   | 'interactive_topology'
   | 'bounty_forge'
   | 'swarm_intelligence'
-  | 'pdf_export';
+  | 'pdf_export'
+  | 'advanced_terminal';
 
 export type ExecutionProfile = 'recon' | 'swarm' | 'audit';
 export type TargetArch = 'x64' | 'x86' | 'arm64';
@@ -66,7 +67,7 @@ export const PLAN_LIMITS: Record<PlanTier, PlanConfiguration> = {
     name: 'Plus',
     maxMessages: 100 ,
     maxCharsPerRequest: 12_000,
-    features: ['basic_ast', 'core_heuristics', 'interactive_topology', 'bounty_forge'],
+    features: ['basic_ast', 'core_heuristics', 'interactive_topology', 'bounty_forge', 'advanced_terminal'],
   },
   pro: {
     priceId: 'price_pro_4999',
@@ -80,6 +81,7 @@ export const PLAN_LIMITS: Record<PlanTier, PlanConfiguration> = {
       'bounty_forge',
       'swarm_intelligence',
       'pdf_export',
+      'advanced_terminal',
     ],
   },
 };
