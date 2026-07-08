@@ -1,12 +1,17 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
-@import 'shadcn/tailwind.css';
+/*
+  NOTE: removed `@import 'shadcn/tailwind.css'` — that path isn't a real
+  publishable package from shadcn/ui (their components are copy-paste, not
+  an importable stylesheet). If you generated a local shadcn base file,
+  point this at its actual path, e.g. `@import './shadcn-base.css';`
+*/
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-heading: var(--font-sans);
   --font-sans: var(--font-geist-sans), 'Geist Fallback';
+  --font-heading: var(--font-sans);
   --font-mono: var(--font-jetbrains-mono), var(--font-geist-mono), monospace;
 
   --color-background: var(--background);
@@ -94,7 +99,17 @@
     background: oklch(0.82 0.16 195 / 35%);
     color: oklch(0.98 0 0);
   }
-  /* slim HUD scrollbars */
+
+  /* Global on-brand keyboard focus — every interactive element gets this
+     for free, instead of depending on each component remembering to add
+     ring classes (mouse users see nothing; keyboard users get the HUD ring) */
+  :focus-visible {
+    outline: 2px solid oklch(0.82 0.16 195 / 70%);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  /* slim HUD scrollbars — WebKit */
   ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
@@ -108,6 +123,12 @@
   }
   ::-webkit-scrollbar-thumb:hover {
     background: oklch(0.82 0.16 195 / 40%);
+  }
+
+  /* slim HUD scrollbars — Firefox */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: oklch(0.82 0.16 195 / 22%) transparent;
   }
 }
 
@@ -146,7 +167,12 @@
     background-size: 44px 44px;
   }
 
-  /* moving scanline overlay */
+  /* moving scanline overlay — self-contained: just add this one class,
+     no need to separately remember position/overflow on the parent */
+  .scanlines {
+    position: relative;
+    overflow: hidden;
+  }
   .scanlines::after {
     content: '';
     position: absolute;
@@ -190,6 +216,7 @@
 }
 .animate-sweep {
   animation: sweep 2.4s linear infinite;
+  will-change: transform;
 }
 
 @keyframes scan-y {
@@ -202,6 +229,7 @@
 }
 .animate-scan-y {
   animation: scan-y 6s linear infinite;
+  will-change: transform;
 }
 
 @keyframes flicker {
@@ -260,6 +288,7 @@
 }
 .animate-glitch {
   animation: glitch-shift 0.7s steps(2, end) infinite;
+  will-change: transform, clip-path;
 }
 
 @keyframes wave-bar {
@@ -300,4 +329,20 @@
 }
 .animate-caret {
   animation: blink-caret 1s step-end infinite;
+}
+
+/* Respect the OS-level motion preference — all HUD animations become
+   instant end-states instead of forcing motion on people who've asked
+   their system not to. Applied last so it overrides everything above. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-node,
+  .animate-sweep,
+  .animate-scan-y,
+  .animate-flicker,
+  .animate-glitch,
+  .animate-wave,
+  .animate-rise,
+  .animate-caret {
+    animation: none;
+  }
 }

@@ -17,6 +17,7 @@
     "@supabase/supabase-js": "^2.110.0",
     "@upstash/redis": "^1.38.0",
     "@vercel/analytics": "1.6.1",
+    "@vercel/speed-insights": "^2.0.0",
     "@xyflow/react": "^12.11.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -49,5 +50,10 @@
     "overrides": {
       "hono": "4.12.25"
     }
+  },
+  "allowScripts": {
+    "@clerk/shared@4.22.0": true,
+    "@clerk/shared@3.47.7": true,
+    "sharp@0.34.5": true
   }
 }
