@@ -380,3 +380,119 @@ export interface ScanResponse {
   metrics: ScanPerformanceMetrics;
   cryptographicSignature: string; // Server-side SHA256 validation token
 }
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ RESTORED MODULE: PRICING LOGIC, CONSTANTS, & ROUTING UTILITIES
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+
+export type PlanTier = 'free' | 'go' | 'plus' | 'pro' | 'enterprise';
+
+export type PlanFeature =
+  | 'basic_ast'
+  | 'core_heuristics'
+  | 'standard_support'
+  | 'interactive_topology'
+  | 'bounty_forge'
+  | 'swarm_intelligence'
+  | 'scan_history'
+  | 'ast_diffing'
+  | 'pdf_export'
+  | 'advanced_terminal'
+  | 'custom_llm_routing'
+  | 'private_vpc_deploy'
+  | 'soc2_compliance_logs'
+  | 'unlimited_concurrent_agents';
+
+export interface PlanConfiguration {
+  priceId: string;
+  name: string;
+  maxMessagesPerMonth: number;
+  maxMessagesPerDay: number;
+  maxCharsPerRequest: number;
+  maxConcurrentJobs: number;
+  features: PlanFeature[];
+}
+
+export const PLAN_LIMITS: Record<PlanTier, PlanConfiguration> = {
+  free: {
+    priceId: '',
+    name: 'Free Workspace',
+    maxMessagesPerMonth: 600,
+    maxMessagesPerDay: 20,
+    maxCharsPerRequest: 10_000,
+    maxConcurrentJobs: 1,
+    features: ['basic_ast', 'core_heuristics'],
+  },
+  go: {
+    priceId: 'price_go_299',
+    name: 'Hexical Go',
+    maxMessagesPerMonth: 1050,
+    maxMessagesPerDay: 35,
+    maxCharsPerRequest: 15_000,
+    maxConcurrentJobs: 2,
+    features: ['basic_ast', 'core_heuristics', 'standard_support'],
+  },
+  plus: {
+    priceId: 'price_plus_999',
+    name: 'Hexical Plus',
+    maxMessagesPerMonth: 3000,
+    maxMessagesPerDay: 100,
+    maxCharsPerRequest: 32_000,
+    maxConcurrentJobs: 4,
+    features: ['basic_ast', 'core_heuristics', 'interactive_topology', 'bounty_forge', 'advanced_terminal'],
+  },
+  pro: {
+    priceId: 'price_pro_4999',
+    name: 'Hexical Pro Developer',
+    maxMessagesPerMonth: 9000,
+    maxMessagesPerDay: 300,
+    maxCharsPerRequest: 120_000,
+    maxConcurrentJobs: 8,
+    features: [
+      'basic_ast',
+      'core_heuristics',
+      'interactive_topology',
+      'bounty_forge',
+      'swarm_intelligence',
+      'scan_history',
+      'ast_diffing',
+      'pdf_export',
+      'advanced_terminal',
+    ],
+  },
+  enterprise: {
+    priceId: 'price_enterprise_custom',
+    name: 'Hexical Enterprise Node',
+    maxMessagesPerMonth: 999_999,
+    maxMessagesPerDay: 999_999,
+    maxCharsPerRequest: 500_000,
+    maxConcurrentJobs: 64,
+    features: [
+      'basic_ast',
+      'core_heuristics',
+      'interactive_topology',
+      'bounty_forge',
+      'swarm_intelligence',
+      'scan_history',
+      'ast_diffing',
+      'pdf_export',
+      'advanced_terminal',
+      'custom_llm_routing',
+      'private_vpc_deploy',
+      'soc2_compliance_logs',
+      'unlimited_concurrent_agents',
+    ],
+  },
+};
+
+export function inferRoute(steps: readonly string[] = []): RoutePath {
+  const blob = steps.join(' ').toLowerCase();
+
+  if (/swarm|red\s*team|blue\s*team|consensus|architect/.test(blob)) return 'swarm';
+  if (/forge|hackerone|bugcrowd|pdf|export/.test(blob)) return 'forge_api';
+  if (/openai|gpt|groq|anthropic|claude|cloud|remote|verification/.test(blob)) return 'global';
+  if (/math|calc|solver|equation|compute/.test(blob)) return 'math';
+  if (/local|database|offline|cache/.test(blob)) return 'local';
+  if (/cluster|edge|mesh|gateway/.test(blob)) return 'cluster_edge';
+
+  return 'unknown';
+}
