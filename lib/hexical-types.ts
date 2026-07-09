@@ -1,266 +1,382 @@
-export type MessageRole =
-  | 'user'
-  | 'hexical'
-  | 'error'
-  | 'architect'
-  | 'red_team'
-  | 'blue_team'
-  | 'forge_agent'
-  | 'system';
+/**
+ * ╔══════════════════════════════════════════════════════════════════════════════════════════════════════╗
+ * ║                                     HEXICAL SECURITY OPERATING SYSTEM                                ║
+ * ║                                    CORE TYPE DEFINITION MATRIX (v3.0)                                ║
+ * ║                                 ULTIMATE ENTERPRISE & COMPILER-HARDENED                              ║
+ * ╚══════════════════════════════════════════════════════════════════════════════════════════════════════╝
+ */
 
-export type RoutePath =
-  | 'local'
-  | 'global'
-  | 'math'
-  | 'swarm'
-  | 'forge_api'
-  | 'unknown';
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ NOMINAL TYPE BRANDING
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+export type UserId = string & { readonly __brand: unique symbol };
+export type WorkspaceId = string & { readonly __brand: unique symbol };
+export type ProjectId = string & { readonly __brand: unique symbol };
+export type ScanId = string & { readonly __brand: unique symbol };
+export type AgentId = string & { readonly __brand: unique symbol };
+export type SessionId = string & { readonly __brand: unique symbol };
+export type MessageId = string & { readonly __brand: unique symbol };
+export type FindingId = string & { readonly __brand: unique symbol };
+export type EventId = string & { readonly __brand: unique symbol };
+export type PluginId = string & { readonly __brand: unique symbol };
 
-export type PlanTier = 'free' | 'go' | 'plus' | 'pro';
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ MODULE 1: CORE RUNTIME CONSTANTS & ENUMS
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+export const MessageRole = {
+  USER: 'user',
+  HEXICAL: 'hexical',
+  ERROR: 'error',
+  SYSTEM: 'system',
+  TELEMETRY: 'telemetry',
+  KERNEL: 'kernel',
+  SANDBOX: 'sandbox',
+} as const;
+export type MessageRoleType = typeof MessageRole[keyof typeof MessageRole];
 
-export type PlanFeature =
-  | 'basic_ast'
-  | 'core_heuristics'
-  | 'standard_support'
-  | 'interactive_topology'
-  | 'bounty_forge'
-  | 'swarm_intelligence'
-  | 'scan_history'      // Automated historical snapshot persistence
-  | 'ast_diffing'       // Multi-run structural AST delta matching
-  | 'pdf_export'
-  | 'advanced_terminal';
+export const AgentRole = {
+  PLANNER: 'planner',
+  COORDINATOR: 'coordinator',
+  CODE_REVIEWER: 'code_reviewer',
+  AST_ANALYZER: 'ast_analyzer',
+  RED_TEAM_EXPLOIT: 'red_team_exploit',
+  BLUE_TEAM_DEFENSE: 'blue_team_defense',
+  ARCHITECT: 'architect',
+  PATCH_GENERATOR: 'patch_generator',
+  MEMORY_AGENT: 'memory_agent',
+  CONSENSUS_ENGINE: 'consensus_engine',
+  FORGE_AGENT: 'forge_agent',
+} as const;
+export type AgentRoleType = typeof AgentRole[keyof typeof AgentRole];
 
-export type ExecutionProfile = 'recon' | 'swarm' | 'audit';
-export type TargetArch = 'x64' | 'x86' | 'arm64';
-export type Aggressiveness = 'low' | 'medium' | 'high';
-export type RiskLevel = 'LOW' | 'MED' | 'HIGH' | 'CRITICAL';
-export type ThreatLevel = 'low' | 'medium' | 'high' | 'critical';
-export type VerifyStatus = 'completed' | 'failed';
-export type RiskLevelSource =
-  | 'model_generated_unverified'
-  | 'deterministic_rule'
-  | 'none';
+export const RiskLevel = {
+  LOW: 'LOW',
+  MED: 'MED',
+  HIGH: 'HIGH',
+  CRITICAL: 'CRITICAL',
+  MAX_EXPLOITABLE: 'MAX_EXPLOITABLE',
+} as const;
+export type RiskLevelType = typeof RiskLevel[keyof typeof RiskLevel];
 
-export interface PlanConfiguration {
-  priceId: string;
-  name: string;
-  maxMessages: number;
-  maxCharsPerRequest: number;
-  features: PlanFeature[];
+export const VerifyStatus = {
+  QUEUED: 'queued',
+  PROCESSING: 'processing',
+  COMPLETED: 'completed',
+  FAILED: 'failed',
+  TIMEOUT: 'timeout',
+  HALTED: 'halted',
+} as const;
+export type VerifyStatusType = typeof VerifyStatus[keyof typeof VerifyStatus];
+
+export type ThreatLevel = 'low' | 'medium' | 'high' | 'critical' | 'apocalyptic';
+export type ExecutionProfile = 'recon' | 'swarm' | 'audit' | 'deep_fuzz' | 'passive_recon';
+export type TargetArch = 'x64' | 'x86' | 'arm64' | 'wasm' | 'mips' | 'riscv';
+
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ MODULE 2: AI MODEL & PROVIDER METADATA
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+export type ModelProvider = 'openai' | 'anthropic' | 'groq' | 'google' | 'local_ollama' | 'custom_vpc';
+
+export interface ModelConfiguration {
+  provider: ModelProvider;
+  modelId: string;
+  temperature: number;
+  contextWindow: number;
+  topP?: number;
+  frequencyPenalty?: number;
 }
 
-export const PLAN_LIMITS: Record<PlanTier, PlanConfiguration> = {
-  free: {
-    priceId: '',
-    name: 'Free',
-    maxMessages: 20,
-    maxCharsPerRequest: 10_000,
-    features: ['basic_ast', 'core_heuristics'],
-  },
-  go: {
-    priceId: 'price_go_299',
-    name: 'Go',
-    maxMessages: 35,
-    maxCharsPerRequest: 15_000,
-    features: ['basic_ast', 'core_heuristics', 'standard_support'],
-  },
-  plus: {
-    priceId: 'price_plus_999',
-    name: 'Plus',
-    maxMessages: 100,
-    maxCharsPerRequest: 12_000,
-    features: ['basic_ast', 'core_heuristics', 'interactive_topology', 'bounty_forge', 'advanced_terminal'],
-  },
-  pro: {
-    priceId: 'price_pro_4999',
-    name: 'Pro',
-    maxMessages: 300,
-    maxCharsPerRequest: 120_000,
-    features: [
-      'basic_ast',
-      'core_heuristics',
-      'interactive_topology',
-      'bounty_forge',
-      'swarm_intelligence',
-      'scan_history',
-      'ast_diffing',
-      'pdf_export',
-      'advanced_terminal',
-    ],
-  },
-};
-
-export interface HexicalMetadata {
-  cveReference?: string;
-  cvssScore?: number;
-  threatLevel?: ThreatLevel;
-  astNodeCount?: number;
-  riskLevel?: RiskLevel;
-  riskLevelSource?: RiskLevelSource;
-  tokensUsed?: number;
-  confidenceScore?: number;
-  confidenceMeaning?: string;
-  rateLimitRemaining?: number;
-  latencyMs?: number;
-}
-
-export interface VerifyMetrics {
-  latencyMs: number;
-  tokensUsed: number;
-  confidenceScore: number;
-  confidenceMeaning?: string;
-  rateLimitRemaining?: number;
-}
-
-export interface SwarmRedTeam {
-  confidence: number;
-  logic: string;
-  payloadSuggested: string;
-  vulnerabilityClasses?: string[];
-  attackPathSummary?: string;
-}
-
-export interface SwarmBlueTeam {
-  withstandMatrix: string;
-  blockedBy: string[];
-  riskLevel: RiskLevel;
-}
-
-export interface SwarmArchitect {
-  route: string;
-  architecturalFlaw: string;
-}
-
-export interface SwarmConsensus {
-  redTeam: SwarmRedTeam;
-  blueTeam: SwarmBlueTeam;
-  architect: SwarmArchitect;
-  finalConsensus: boolean;
-  consensusMeaning?: string;
-}
-
-export interface StreamMessage {
-  id: string;
-  role: MessageRole;
-  text: string;
-  steps?: string[];
-  route?: RoutePath;
-  status?: VerifyStatus;
-  riskLevel?: RiskLevel;
-  riskLevelSource?: RiskLevelSource;
-  findings?: string[];
-  recommendedActions?: string[];
-  swarmConsensus?: SwarmConsensus;
-  metrics?: VerifyMetrics;
-  metadata?: HexicalMetadata;
-  valid?: boolean;
-  ts: string;
-}
-
-export interface VerifyRequest {
-  logic: string;
-  profile?: ExecutionProfile;
-  workspace?: string;
-  targetArch?: TargetArch;
-  autoRedact?: boolean;
-  aggressiveness?: Aggressiveness;
-  targetScope?: string;
-  extractedTargets?: string[];
-  bountyPlatform?: string;
-  requestNonce: string;
-  requestTimestampMs: number;
-}
-
-export interface VerifyResponse {
-  analysis: string;
-  steps: string[];
-  status: VerifyStatus;
-  riskLevel?: RiskLevel;
-  riskLevelSource?: RiskLevelSource;
-  findings?: string[];
-  recommendedActions?: string[];
-  swarmConsensus?: SwarmConsensus;
-  metrics?: VerifyMetrics;
-  metadata?: HexicalMetadata;
-  previousScanId?: string;     // Reference identity for comparative diff operations
-  astDiff?: ASTDiffResult;       // Computed delta payload populated across workspace scans
-  valid?: boolean;
-}
-
-export interface VerifyErrorResponse {
-  error: string;
-  message?: string;
-  details?: unknown;
-}
-
-// Persistence Layer Data Specifications
-export interface ScanRecord {
-  id: string;
-  userId: string;
-  projectId: string;
-  projectName: string;
-  createdAt: string;
+export interface EngineVersions {
   engineVersion: string;
-  request: VerifyRequest;
-  response: VerifyResponse;
-  astHash: string;
-  riskLevel?: RiskLevel;
+  rulesVersion: string;
+  signaturesVersion: string;
+  modelVersion: string;
+  knowledgeBaseVersion: string;
 }
 
-// AST Diff Engine Node Topology Representation
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ MODULE 3: PLUGIN & ENGINE EXTENSIBILITY
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+export interface EnginePlugin {
+  pluginId: PluginId;
+  name: string;
+  version: string;
+  author: string;
+  capabilities: ('ast_parser' | 'fuzzer' | 'secret_scanner' | 'custom_llm_router')[];
+  isEnabled: boolean;
+}
+
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ MODULE 4: SWARM ORCHESTRATION & EXECUTION GRAPHS
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+export interface SwarmTask {
+  taskId: string;
+  assignedAgent: AgentRoleType;
+  instruction: string;
+  contextRefs: string[];
+  status: VerifyStatusType;
+}
+
+export interface DebateRound {
+  roundNumber: number;
+  proposingAgentId: AgentId;
+  proposingAgentRole: AgentRoleType;
+  argument: string;
+  evidenceASTNodeIds: string[];
+  concessionMade: boolean;
+  timestampMs: number;
+}
+
+export interface ConsensusVote {
+  agentId: AgentId;
+  role: AgentRoleType;
+  vote: 'VULNERABLE' | 'SECURE' | 'ABSTAIN' | 'NEEDS_MORE_DATA';
+  rationale: string;
+}
+
+export interface SwarmExecution {
+  coordinatorId: AgentId;
+  tasks: SwarmTask[];
+  debateRounds: DebateRound[];
+  votes: ConsensusVote[];
+  finalConsensusReached: boolean;
+  consensusMeaning: string;
+  executionGraphRef: string; // ID referencing the DAG of agent executions
+}
+
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ MODULE 5: AST ENGINE & CODE CONTEXT
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+export interface ASTContext {
+  language: string;
+  parserVersion: string;
+  syntaxTreeHash: string;
+  semanticGraphRef?: string;
+  symbolTableRef?: string;
+  callGraphRef?: string;
+}
+
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ MODULE 6: STRUCTURED VULNERABILITY FINDINGS (OWASP / MITRE)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+export interface CVSSv3_1 {
+  vectorString: string;
+  baseScore: number;
+  exploitabilityScore: number;
+}
+
+export interface Finding {
+  id: FindingId;
+  title: string;
+  description: string;
+  cweId: number;
+  cweName: string;
+  owaspCategory?: string;
+  mitreAttackMapping?: string[]; // e.g., ["T1190", "T1059"]
+  likelihood: 'LOW' | 'MEDIUM' | 'HIGH';
+  exploitMaturity: 'UNPROVEN' | 'PROOF_OF_CONCEPT' | 'WEAPONIZED' | 'ACTIVE_CAMPAIGN';
+  affectedFiles: string[];
+  affectedASTNodes: string[];
+  reproductionSteps: string[];
+  remediationPayload: string;
+  fixConfidence: number; // 0-100%
+  references: string[];
+  cvss: CVSSv3_1;
+  risk: RiskLevelType;
+  isFalsePositive: boolean;
+}
+
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ MODULE 7: AST DIFFING & STRUCTURAL DELTAS (RESTORED)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+export type DiffOperationType = 'INSERT' | 'DELETE' | 'UPDATE' | 'MOVE';
+
 export interface ASTDiffNode {
   path: string;
   nodeType: string;
-  before?: unknown;
-  after?: unknown;
+  operation: DiffOperationType;
+  beforeSnapshot?: unknown;
+  afterSnapshot?: unknown;
 }
 
-// Structural Delta payload for client-side HUD execution highlights
 export interface ASTDiffResult {
-  previousScanId: string;
-  currentScanId: string;
+  previousScanId: ScanId;
+  currentScanId: ScanId;
   addedNodes: ASTDiffNode[];
   removedNodes: ASTDiffNode[];
   modifiedNodes: ASTDiffNode[];
+  structuralDeltaCount: number;
   riskChanged: boolean;
   findingsChanged: boolean;
   hasChanges: boolean;
 }
 
-// Multi-tenant Workspace/Repository Management Model
-export interface ProjectWorkspace {
-  id: string;
-  name: string;
-  latestScanId?: string;
-  totalScans: number;
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ MODULE 8: RISK TIMELINE & THREAT TRAJECTORY (RESTORED)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+export interface RiskTimelineEvent {
+  eventId: EventId;
+  scanIdRef: ScanId;
+  timestamp: string;
+  deltaType: 'vulnerability_introduced' | 'vulnerability_patched' | 'risk_escalation' | 'policy_override';
+  findingIdRef?: FindingId;
+  previousRiskState: RiskLevelType;
+  newRiskState: RiskLevelType;
+  actorUserId?: UserId;
 }
 
-export function createRequestNonce(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ MODULE 9: PERFORMANCE, TELEMETRY, & CACHING
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+export interface CacheEntryMetadata {
+  cacheKey: string;
+  strategyUsed: 'exact_ast_match' | 'fuzzy_structural_match';
+  hitCount: number;
+  expiresAt: string;
 }
 
-export function buildReplayFields(): Pick<VerifyRequest, 'requestNonce' | 'requestTimestampMs'> {
-  return {
-    requestNonce: createRequestNonce(),
-    requestTimestampMs: Date.now(),
+export interface ScanPerformanceMetrics {
+  durationMs: number;
+  cpuUsagePct: number;
+  ramUsageMb: number;
+  agentExecutionTimesMs: Partial<Record<AgentRoleType, number>>; // TS Reviewer fix applied
+  promptTokens: number;
+  completionTokens: number;
+  computeCostUsd: number;
+  cacheStatistics: {
+    cacheHitRate: number; // 0.0 - 1.0
+    queriesBypassed: number;
+    entriesRef: CacheEntryMetadata[];
   };
 }
 
-export function inferRoute(steps: string[] = []): RoutePath {
-  const blob = steps.join(' ').toLowerCase();
-
-  if (/swarm|red\s*team|blue\s*team|consensus|architect/.test(blob)) return 'swarm';
-  if (/forge|hackerone|bugcrowd|pdf|export/.test(blob)) return 'forge_api';
-  if (/openai|gpt|groq|anthropic|claude|cloud|remote|verification/.test(blob)) return 'global';
-  if (/math|calc|solver|equation|compute/.test(blob)) return 'math';
-  if (/local|database|offline|cache/.test(blob)) return 'local';
-
-  return 'unknown';
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ MODULE 10: MULTI-TENANT WORKSPACES & PROJECTS
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+export interface Workspace {
+  id: WorkspaceId;
+  name: string;
+  ownerId: UserId;
+  settings: Record<string, unknown>;
 }
 
-export const HEX_ENDPOINT =
-  process.env.NODE_ENV === 'production'
-    ? process.env.NEXT_PUBLIC_HEX_ENDPOINT || '/api/verify'
-    : process.env.NEXT_PUBLIC_HEX_ENDPOINT || 'http://localhost:8000/verify';
+export interface Project {
+  id: ProjectId;
+  workspaceId: WorkspaceId;
+  name: string;
+  repositoryUrl?: string;
+  totalScansExecuted: number;
+  latestScanId?: ScanId;
+}
+
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ MODULE 11: IMMUTABLE AUDIT LOGGING
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+export type AuditSeverity = 'INFO' | 'WARNING' | 'CRITICAL' | 'SECURITY_ALERT';
+
+export interface AuditActor {
+  actorId: UserId | 'SYSTEM' | 'HEXICAL_AGENT';
+  ipAddress?: string;
+  userAgent?: string;
+}
+
+export interface AuditEvent {
+  readonly id: EventId;
+  readonly timestamp: string;
+  readonly actor: AuditActor;
+  readonly action: string; // e.g., "WORKSPACE_CREATED", "SCAN_OVERRIDE", "SECRET_VIEWED"
+  readonly resourceId?: string;
+  readonly severity: AuditSeverity;
+  readonly metadata: Readonly<Record<string, unknown>>;
+}
+
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ MODULE 12: HISTORICAL SCAN PERSISTENCE
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+export interface ScanRecord {
+  id: ScanId;
+  projectId: ProjectId;
+  userId: UserId;
+  createdAt: string;
+  executionProfileUsed: ExecutionProfile;
+  activePlugins: PluginId[];
+  modelConfigUsed: ModelConfiguration;
+  astContext: ASTContext;
+  scanSizeBytes: number;
+  filesScannedCount: number;
+  skippedFilesCount: number;
+  findingsList: Finding[];
+  overallRisk: RiskLevelType;
+  swarmExecutionData?: SwarmExecution;
+  performance: ScanPerformanceMetrics;
+}
+
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ MODULE 13: CONVERSATION & STREAMING CHAT SYSTEM
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+export interface StreamChunkPayload {
+  sequenceId: number;
+  deltaText: string;
+  isControlToken: boolean;
+  activeAgentRole?: AgentRoleType;
+}
+
+export interface ChatMessage {
+  id: MessageId;
+  sessionId: SessionId;
+  role: MessageRoleType;
+  text: string;
+  rawChunks?: StreamChunkPayload[];
+  metadata?: {
+    tokensUsed: number;
+    latencyMs: number;
+    findingsReferenced?: FindingId[];
+  };
+  timestamp: string;
+}
+
+export interface Conversation {
+  sessionId: SessionId;
+  projectId: ProjectId;
+  messages: ChatMessage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
+//  ║ MODULE 14: CENTRALIZED API CONTRACTS
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════
+export interface PaginatedResult<T> {
+  data: T[];
+  totalCount: number;
+  pageSize: number;
+  pageNumber: number;
+  hasNextPage: boolean;
+}
+
+export interface ApiError {
+  error: string;
+  message: string;
+  diagnosticCode: string;
+  serverTimestampMs: number;
+  details?: unknown;
+}
+
+export interface ScanRequest {
+  projectId: ProjectId;
+  logicPayload: string; // Source code, base64, or Git ref
+  profile: ExecutionProfile;
+  aggressiveness: 'low' | 'medium' | 'high';
+  targetArch?: TargetArch;
+  bypassCache?: boolean;
+}
+
+export interface ScanResponse {
+  scanId: ScanId;
+  status: VerifyStatusType;
+  riskLevel: RiskLevelType;
+  findings: Finding[];
+  astDiff?: ASTDiffResult;
+  metrics: ScanPerformanceMetrics;
+  cryptographicSignature: string; // Server-side SHA256 validation token
+}
