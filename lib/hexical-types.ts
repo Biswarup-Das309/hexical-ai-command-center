@@ -25,6 +25,8 @@ export type PlanFeature =
   | 'interactive_topology'
   | 'bounty_forge'
   | 'swarm_intelligence'
+  | 'scan_history'      // Automated historical snapshot persistence
+  | 'ast_diffing'       // Multi-run structural AST delta matching
   | 'pdf_export'
   | 'advanced_terminal';
 
@@ -65,7 +67,7 @@ export const PLAN_LIMITS: Record<PlanTier, PlanConfiguration> = {
   plus: {
     priceId: 'price_plus_999',
     name: 'Plus',
-    maxMessages: 100 ,
+    maxMessages: 100,
     maxCharsPerRequest: 12_000,
     features: ['basic_ast', 'core_heuristics', 'interactive_topology', 'bounty_forge', 'advanced_terminal'],
   },
@@ -80,6 +82,8 @@ export const PLAN_LIMITS: Record<PlanTier, PlanConfiguration> = {
       'interactive_topology',
       'bounty_forge',
       'swarm_intelligence',
+      'scan_history',
+      'ast_diffing',
       'pdf_export',
       'advanced_terminal',
     ],
@@ -178,6 +182,8 @@ export interface VerifyResponse {
   swarmConsensus?: SwarmConsensus;
   metrics?: VerifyMetrics;
   metadata?: HexicalMetadata;
+  previousScanId?: string;     // Reference identity for comparative diff operations
+  astDiff?: ASTDiffResult;       // Computed delta payload populated across workspace scans
   valid?: boolean;
 }
 
@@ -185,6 +191,48 @@ export interface VerifyErrorResponse {
   error: string;
   message?: string;
   details?: unknown;
+}
+
+// Persistence Layer Data Specifications
+export interface ScanRecord {
+  id: string;
+  userId: string;
+  projectId: string;
+  projectName: string;
+  createdAt: string;
+  engineVersion: string;
+  request: VerifyRequest;
+  response: VerifyResponse;
+  astHash: string;
+  riskLevel?: RiskLevel;
+}
+
+// AST Diff Engine Node Topology Representation
+export interface ASTDiffNode {
+  path: string;
+  nodeType: string;
+  before?: unknown;
+  after?: unknown;
+}
+
+// Structural Delta payload for client-side HUD execution highlights
+export interface ASTDiffResult {
+  previousScanId: string;
+  currentScanId: string;
+  addedNodes: ASTDiffNode[];
+  removedNodes: ASTDiffNode[];
+  modifiedNodes: ASTDiffNode[];
+  riskChanged: boolean;
+  findingsChanged: boolean;
+  hasChanges: boolean;
+}
+
+// Multi-tenant Workspace/Repository Management Model
+export interface ProjectWorkspace {
+  id: string;
+  name: string;
+  latestScanId?: string;
+  totalScans: number;
 }
 
 export function createRequestNonce(): string {
