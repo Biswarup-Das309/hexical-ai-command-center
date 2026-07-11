@@ -5,6 +5,7 @@ import Link from 'next/link'
 import {
   Download,
   Edit2,
+  LogOut,
   MessageSquare,
   MoreVertical,
   PanelLeftClose,
@@ -41,6 +42,7 @@ interface ChatSidebarProps {
   onDeleteChat: (id: string) => void
   onRenameChat: (id: string, newTitle: string) => void
   onTogglePin: (id: string) => void
+  onSignOut?: () => void
   onOpenUpgrade: () => void
 }
 
@@ -54,15 +56,9 @@ const TIER_LABELS: Record<PlanTier, string> = {
 const CHAT_TITLE_MAX_LENGTH = 120
 
 function normalizeTier(currentTier: ChatSidebarProps['currentTier']): PlanTier {
-  if (
-    currentTier === 'free' ||
-    currentTier === 'go' ||
-    currentTier === 'plus' ||
-    currentTier === 'pro'
-  ) {
+  if (currentTier === 'free' || currentTier === 'go' || currentTier === 'plus' || currentTier === 'pro') {
     return currentTier
   }
-
   return 'free'
 }
 
@@ -79,6 +75,7 @@ export function ChatSidebar({
   onDeleteChat,
   onRenameChat,
   onTogglePin,
+  onSignOut,
   onOpenUpgrade,
 }: ChatSidebarProps) {
   const { isLoaded, userId } = useAuth()
@@ -140,14 +137,14 @@ export function ChatSidebar({
           type="button"
           onClick={onToggleOpen}
           aria-label={isOpen ? 'Collapse sidebar' : 'Expand sidebar'}
-          className="flex-shrink-0 rounded-xl p-2 text-muted-foreground transition-colors hover:bg-white/10 hover:text-cyan-400"
+          className="flex-shrink-0 rounded-xl p-2 text-muted-foreground transition-colors hover:bg-white/10 hover:text-[var(--accent-text)]"
         >
           {isOpen ? <PanelLeftClose size={20} /> : <PanelLeftOpen size={20} />}
         </button>
 
         {isOpen && (
           <div className="flex items-center gap-2 overflow-hidden whitespace-nowrap animate-fade-in">
-            <HexicalLogo className="size-7 text-cyan-400 drop-shadow-[0_0_8px_rgba(34,211,238,0.5)]" />
+            <HexicalLogo className="size-7 text-[var(--accent-text)] drop-shadow-[0_0_8px_var(--accent-border)]" />
             <span className="font-sans text-xl font-bold tracking-wide text-white">Hexical</span>
           </div>
         )}
@@ -157,7 +154,7 @@ export function ChatSidebar({
         <button
           type="button"
           onClick={onNewChat}
-          className={`flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.03] text-muted-foreground transition-all hover:bg-white/[0.08] hover:text-cyan-400 ${
+          className={`flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.03] text-muted-foreground transition-all hover:bg-white/[0.08] hover:text-[var(--accent-text)] ${
             isOpen ? 'w-full px-4 py-3' : 'mx-auto w-12 justify-center p-3'
           }`}
         >
@@ -170,7 +167,7 @@ export function ChatSidebar({
         <div className="flex-1 space-y-6 overflow-y-auto px-3 scrollbar-thin scrollbar-thumb-white/10">
           {pinnedChats.length > 0 && (
             <div>
-              <p className="mb-2 px-4 text-[10px] font-bold uppercase tracking-widest text-cyan-500/70">
+              <p className="mb-2 px-4 text-[10px] font-bold uppercase tracking-widest text-[var(--accent-text)]/70">
                 Pinned Targets
               </p>
               <div className="space-y-[2px]">
@@ -205,16 +202,10 @@ export function ChatSidebar({
           }`}
         >
           <div className={`items-center justify-between ${isOpen ? 'flex px-1' : 'hidden'}`}>
-            <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">
-              System License
-            </span>
+            <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">System License</span>
             <span
               className={`text-[9px] font-bold uppercase tracking-widest ${
-                safeTier === 'pro'
-                  ? 'text-amber-400'
-                  : safeTier === 'plus'
-                    ? 'text-fuchsia-400'
-                    : 'text-cyan-400'
+                safeTier === 'pro' ? 'text-amber-400' : safeTier === 'plus' ? 'text-fuchsia-400' : 'text-cyan-400'
               }`}
             >
               {TIER_LABELS[safeTier]} Active
@@ -263,7 +254,7 @@ export function ChatSidebar({
         </Link>
 
         <div
-          className={`mt-1 flex items-center rounded-xl transition-colors ${
+          className={`group/identity mt-1 flex items-center rounded-xl transition-colors ${
             isOpen ? 'w-full p-2 hover:bg-white/5' : 'mx-auto min-h-[48px] w-12 justify-center p-2'
           }`}
         >
@@ -285,9 +276,22 @@ export function ChatSidebar({
                 <UserButton afterSignOutUrl="/" appearance={{ elements: { avatarBox: 'size-8 rounded-md' } }} />
               </div>
               {isOpen && (
-                <div className="flex flex-1 flex-col overflow-hidden text-left">
-                  <span className="w-full truncate text-sm font-semibold text-foreground">{userName}</span>
-                  <span className="w-full truncate text-xs text-muted-foreground">{userEmail}</span>
+                <div className="flex flex-1 items-center overflow-hidden text-left">
+                  <div className="flex flex-1 flex-col overflow-hidden">
+                    <span className="w-full truncate text-sm font-semibold text-foreground">{userName}</span>
+                    <span className="w-full truncate text-xs text-muted-foreground">{userEmail}</span>
+                  </div>
+                  {onSignOut && (
+                    <button
+                      type="button"
+                      onClick={onSignOut}
+                      title="Sign out"
+                      aria-label="Sign out"
+                      className="ml-2 flex-shrink-0 rounded-lg p-1.5 text-muted-foreground opacity-0 transition-all hover:bg-white/10 hover:text-rose-400 group-hover/identity:opacity-100"
+                    >
+                      <LogOut size={14} />
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -295,7 +299,7 @@ export function ChatSidebar({
 
           {isLoaded && !userId && (
             <SignInButton mode="modal">
-              <button type="button" className="flex w-full items-center justify-center gap-3 text-sm font-medium text-cyan-400">
+              <button type="button" className="flex w-full items-center justify-center gap-3 text-sm font-medium text-[var(--accent-text)]">
                 <ShieldCheck size={18} className="flex-shrink-0" />
                 {isOpen && <span>Authenticate Identity</span>}
               </button>
@@ -356,7 +360,6 @@ function ChatItem({
               setEditValue('')
               return
             }
-
             submitRename(chat.id)
           }}
           onKeyDown={(event) => {
@@ -366,7 +369,7 @@ function ChatItem({
               setEditValue('')
             }
           }}
-          className="w-full flex-1 rounded-lg border border-cyan-500/50 bg-black/40 px-3 py-2 font-sans text-sm text-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.1)] outline-none"
+          className="w-full flex-1 rounded-lg border border-[var(--accent-border)] bg-black/40 px-3 py-2 font-sans text-sm text-[var(--accent-text)] shadow-[0_0_10px_var(--accent-border)] outline-none"
         />
       ) : (
         <button
@@ -385,7 +388,7 @@ function ChatItem({
               : 'border-transparent text-muted-foreground hover:bg-white/5'
           }`}
         >
-          <MessageSquare size={16} className={`flex-shrink-0 ${isActive ? 'text-cyan-400' : ''}`} />
+          <MessageSquare size={16} className={`flex-shrink-0 ${isActive ? 'text-[var(--accent-text)]' : ''}`} />
           <span className="truncate">{chat.title}</span>
         </button>
       )}

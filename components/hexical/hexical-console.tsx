@@ -101,7 +101,12 @@ interface SwarmEvaluation {
 interface GraphNode { id: string; label: string; type: 'entry' | 'vuln' | 'pivot' | 'impact'; x: number; y: number; }
 interface GraphEdge { source: string; target: string; label: string; }
 interface AttackGraph { nodes: GraphNode[]; edges: GraphEdge[]; }
-
+interface ChatState {
+  id: string;
+  title: string;
+  pinned: boolean;
+  messages: ExtendedStreamMessage[];
+}
 // =============================================================================
 // 2. CONSTANTS, DICTIONARIES & CONFIGURATIONS
 // =============================================================================
@@ -120,7 +125,7 @@ const PROFILE_TO_VERIFY_PROFILE: Record<string, VerifyProfile> = {
   defense: 'patch'
 }
 
-const createFreshChatState = (id: string) => ({
+const createFreshChatState = (id: string): ChatState => ({
   id,
   title: 'New Context',
   pinned: false,
@@ -130,7 +135,8 @@ const createFreshChatState = (id: string) => ({
     text: 'Reasoning system activated. SECURE PROTOCOLS ENGAGED. AWAITING TARGET VECTORS.', 
     ts: '00:00', 
     steps: [], 
-    valid: true 
+    valid: true,
+    route: 'system' as any // Fulfills the required route property
   }]
 })
 
@@ -309,7 +315,7 @@ export function HexicalConsole() {
   const { signOut, openSignIn } = useClerk() 
   const { checkLimit, recordUsage } = useGuestLimit()
 
-  const [chats, setChats] = useState<any[]>([])
+  const [chats, setChats] = useState<ChatState[]>([])
   const [activeId, setActiveId] = useState<string>('')
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false)
   const [busy, setBusy] = useState<boolean>(false)
@@ -578,7 +584,7 @@ const hasHydratedRef = useRef<string | null>(null)
         return; 
       }
 
-      let formatted: any[] = [];
+      let formatted: ChatState[] = [];
       if (convos && convos.length > 0) {
         const convoIds = convos.map(c => c.id);
         const { data: msgs } = await supabaseAuth
@@ -598,7 +604,8 @@ const hasHydratedRef = useRef<string | null>(null)
               text: m.content, 
               ts: new Date(m.created_at).toLocaleTimeString('en-GB', { hour12: false, fractionalSecondDigits: 2 }),
               steps: m.role === 'hexical' ? ['REHYDRATED_STATE'] : [], 
-              valid: true
+              valid: true,
+              route: 'system' as any // ADDED THIS TO SATISFY TYPESCRIPT
           })) : []
         }));
 
@@ -694,7 +701,7 @@ const hasHydratedRef = useRef<string | null>(null)
         id: generateUniqueID(), role: 'hexical', text: `**LOCKOUT:** Guest Limit reached.`, 
         steps: ['GUEST_LIMIT_REACHED'], valid: false, route: 'unknown' as any, ts: generateTimestamp() 
       }
-      setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, { id: generateUniqueID(), role: 'user', text: trimmedLogic, ts: generateTimestamp() }, systemWarning] } : c))
+      setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, { id: generateUniqueID(), role: 'user', text: trimmedLogic, ts: generateTimestamp(), steps: [], valid: true, route: 'user_input' as any }, systemWarning] } : c))
       openSignIn(); 
       return;
     }
