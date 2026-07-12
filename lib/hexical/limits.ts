@@ -1,7 +1,7 @@
 /**
  * @file lib/hexical/limits.ts
  *
- * Two different problems, two different tools:
+ * Three different problems, three different tools:
  *  - "How many requests / messages in a window" -> @upstash/ratelimit. Its
  *    sliding-window counters are atomic server-side (a single Lua script
  *    inside Upstash), which fixes the race the old hand-rolled
@@ -10,6 +10,14 @@
  *    number afterwards" -> not a rate limiter's job (it has no concept of
  *    giving tokens back). Implemented here as two small atomic Lua scripts
  *    run directly against Redis.
+ *  - "Reserve real provider $ cost against a monthly ceiling, then true up
+ *    afterwards" -> same reserve/reconcile Lua pattern as tokens, but keyed
+ *    on paise instead of token count. Exists because a flat token count
+ *    can't tell a cheap input token apart from an output token that costs
+ *    5-17x more depending on provider (see MODEL_PRICING_USD_PER_MILLION in
+ *    types.ts) — so MONTHLY_TOKEN_BUDGETS alone can't be sized safely
+ *    against a price in rupees. MONTHLY_TOKEN_BUDGETS stays in place as a
+ *    loose backstop; MONTHLY_COST_BUDGET_PAISE is the real margin defense.
  */
 
 import type { Redis } from '@upstash/redis';
@@ -21,13 +29,14 @@ import {
   MESSAGE_QUOTA_LIMITS,
   MESSAGE_QUOTA_WINDOW_SECS,
   MONTHLY_TOKEN_BUDGETS,
+  MONTHLY_COST_BUDGET_PAISE,
   DAILY_SWARM_LIMIT,
   CIRCUIT_BREAKER_TTL_SECS,
   CIRCUIT_FAILURE_THRESHOLD,
   FEATURE_FLAGS,
   getDailyBudgetPaise,
 } from './types';
-import type { RateLimitResult, MessageQuotaResult, TokenReservation, DailySpendState } from './types';
+import type { RateLimitResult, MessageQuotaResult, TokenReservation, CostReservation, DailySpendState } from './types';
 import { asNumber, dayKeyPart, monthKeyPart, secondsUntilNextMonth, secondsUntilTomorrow } from './util';
 
 // ---------------------------------------------------------------------------
@@ -121,13 +130,15 @@ export async function consumeNonce(redis: Redis, userId: string, nonce: string, 
 }
 
 // ---------------------------------------------------------------------------
-// Atomic ledgers (Lua) — monthly token budget + daily spend guard
+// Atomic ledgers (Lua) — monthly token budget + monthly cost budget + daily spend guard
 // ---------------------------------------------------------------------------
 
 /** Reserve `amount` against `key`, capped at `cap`. Sets a TTL only the first
  *  time the key is created. Returns [ok(0|1), newTotal, remaining]. Runs as a
  *  single Lua script so concurrent requests can never together push the
- *  ledger past `cap`, unlike a plain "INCR then undo if over" pattern. */
+ *  ledger past `cap`, unlike a plain "INCR then undo if over" pattern.
+ *  Shared by both the token ledger and the cost ledger below — the only
+ *  difference between them is which unit (tokens vs paise) gets passed in. */
 const RESERVE_SCRIPT = `
 local current = tonumber(redis.call('GET', KEYS[1]) or '0')
 local amount = tonumber(ARGV[1])
@@ -143,7 +154,8 @@ return {1, updated, cap - updated}
 `;
 
 /** Adjust `key` by `delta` (may be negative), clamped so it never drops
- *  below zero. Returns the new value. */
+ *  below zero. Returns the new value. Shared by both ledgers, same reason
+ *  as RESERVE_SCRIPT above. */
 const RECONCILE_SCRIPT = `
 local delta = tonumber(ARGV[1])
 local updated = redis.call('INCRBY', KEYS[1], delta)
@@ -165,6 +177,8 @@ async function reconcileAtomic(redis: Redis, key: string, delta: number): Promis
   const result = await redis.eval(RECONCILE_SCRIPT, [key], [String(delta)]);
   return asNumber(result);
 }
+
+// --- token ledger ------------------------------------------------------
 
 function monthlyBudgetKey(userId: string, tier: Tier): string {
   return `budget:tokens:${userId}:${tier}:${monthKeyPart()}`;
@@ -213,6 +227,64 @@ export async function reconcileMonthlyTokens(
   const usedTokens = await reconcileAtomic(redis, key, delta);
   return Math.max(0, MONTHLY_TOKEN_BUDGETS[tier] - usedTokens);
 }
+
+// --- cost ledger ---------------------------------------------------------
+// Same reserve-then-reconcile shape as the token ledger above, but keyed on
+// paise against MONTHLY_COST_BUDGET_PAISE instead of tokens against
+// MONTHLY_TOKEN_BUDGETS. Caller computes the paise amount (via
+// estimateCostPaise in lib/hexical/cache.ts, using the request's provider +
+// tokensIn/tokensOut) and passes it in — this module doesn't know about
+// provider pricing, it just runs the same atomic ledger on a different unit.
+
+function monthlyCostKey(userId: string, tier: Tier): string {
+  return `budget:cost:${userId}:${tier}:${monthKeyPart()}`;
+}
+
+export async function readMonthlyCostUsage(redis: Redis, userId: string, tier: Tier): Promise<number> {
+  return asNumber(await redis.get<number | string>(monthlyCostKey(userId, tier)));
+}
+
+export async function reserveMonthlyCost(redis: Redis, userId: string, tier: Tier, estimatedPaise: number): Promise<CostReservation> {
+  const limitPaise = MONTHLY_COST_BUDGET_PAISE[tier];
+  const safetyBuffer = 1.3;
+  const reservedPaise = Math.max(1, Math.ceil(estimatedPaise * safetyBuffer));
+  const key = monthlyCostKey(userId, tier);
+
+  const [ok, updated, remaining] = await reserveAtomic(redis, key, reservedPaise, limitPaise, secondsUntilNextMonth());
+
+  if (ok === 0) {
+    return {
+      allowed: false,
+      reservedPaise: 0,
+      usedPaise: updated,
+      remainingPaise: Math.max(0, remaining),
+      limitPaise,
+    };
+  }
+
+  return {
+    allowed: true,
+    reservedPaise,
+    usedPaise: updated,
+    remainingPaise: Math.max(0, remaining),
+    limitPaise,
+  };
+}
+
+export async function reconcileMonthlyCost(
+  redis: Redis,
+  userId: string,
+  tier: Tier,
+  reservedPaise: number,
+  actualPaise: number,
+): Promise<number> {
+  const key = monthlyCostKey(userId, tier);
+  const delta = actualPaise - reservedPaise;
+  const usedPaise = await reconcileAtomic(redis, key, delta);
+  return Math.max(0, MONTHLY_COST_BUDGET_PAISE[tier] - usedPaise);
+}
+
+// --- daily spend guard (company-wide circuit breaker, not per-user) ------
 
 export async function readDailySpend(redis: Redis): Promise<DailySpendState> {
   const budgetPaise = getDailyBudgetPaise();

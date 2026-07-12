@@ -112,6 +112,17 @@ export interface TokenReservation {
   limitTokens: number;
 }
 
+/** Mirrors TokenReservation but tracks real provider $ cost (in paise)
+ *  instead of raw token count. See MONTHLY_COST_BUDGET_PAISE below for why
+ *  this exists alongside MONTHLY_TOKEN_BUDGETS rather than replacing it. */
+export interface CostReservation {
+  allowed: boolean;
+  reservedPaise: number;
+  usedPaise: number;
+  remainingPaise: number;
+  limitPaise: number;
+}
+
 export interface DailySpendState {
   budgetPaise: number;
   usedPaise: number;
@@ -218,8 +229,35 @@ export const MONTHLY_TOKEN_BUDGETS: Record<Tier, number> = {
 export const PLAN_MONTHLY_PRICE_PAISE: Record<Tier, number> = {
   free: 0,
   go: 299 * 100,
-  plus: 1_999 * 100,
-  pro: 9_599 * 100,
+  plus: 999 * 100,
+  pro: 4_999 * 100,
+};
+
+/**
+ * Hard ceiling on actual provider $ cost per user per tier per month, in
+ * paise. This is the real margin defense — MONTHLY_TOKEN_BUDGETS above is
+ * kept as a loose backstop, but a flat token count can't tell a cheap input
+ * token apart from an output token that costs 5-17x more depending on
+ * provider (see MODEL_PRICING_USD_PER_MILLION), so it can't be sized safely
+ * against a price in rupees on its own. This can, because it's enforced
+ * against real per-request cost via reserveMonthlyCost/reconcileMonthlyCost
+ * in limits.ts, using the same atomic reserve-then-reconcile Lua pattern
+ * already used for MONTHLY_TOKEN_BUDGETS.
+ *
+ * Targets (confirm/adjust if pricing or margin targets change):
+ *   free: ~₹25/mo  — trial abuse cap, not margin-derived (price is ₹0)
+ *   go:   ~₹85/mo  — ≥70% margin at ₹299/mo
+ *   plus: ~₹390/mo — ≥60% margin at ₹999/mo
+ *   pro:  ~₹1,950/mo — ≥60% margin at ₹4,999/mo
+ * Each is set below the exact breakeven line to leave headroom for
+ * USD/INR drift and non-LLM overhead (Redis, hosting) that this ledger
+ * doesn't account for.
+ */
+export const MONTHLY_COST_BUDGET_PAISE: Record<Tier, number> = {
+  free: 2_500,
+  go: 8_500,
+  plus: 39_000,
+  pro: 195_000,
 };
 
 export const RATE_LIMITS: Record<Tier, { windowSecs: number; maxReq: number }> = {

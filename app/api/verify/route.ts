@@ -10,6 +10,12 @@
  *  - Monthly token budget kept as a custom ledger (reserve now, true up
  *    after real usage is known) but made atomic via Lua scripts, since a
  *    request-rate limiter has no notion of giving tokens back.
+ *  - Monthly *cost* budget added alongside the token ledger: reserved and
+ *    reconciled the same way, in paise, against MONTHLY_COST_BUDGET_PAISE.
+ *    The token ledger alone can't protect margin, because it can't tell a
+ *    cheap input token apart from an output token that costs 5-17x more
+ *    depending on provider — a request is only actually let through if
+ *    *both* the token reservation and the cost reservation succeed.
  *  - exploit / swarm profiles now require a verified, unexpired,
  *    target-matched authorization scope (lib/hexical/authorization.ts)
  *    instead of relying only on a system-prompt instruction.
@@ -58,6 +64,8 @@ import {
   reserveMonthlyTokens,
   reconcileMonthlyTokens,
   readMonthlyTokenUsage,
+  reserveMonthlyCost,
+  reconcileMonthlyCost,
 } from '@/lib/hexical/limits';
 import { verifyAuthorization } from '@/lib/hexical/authorization';
 import { buildPromptPayload, buildSafeSystemContext, buildIsolatedUserMessage, buildSingleSystemPrompt } from '@/lib/hexical/security';
@@ -261,13 +269,30 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const providerCallsReserved = route.mode === 'swarm' ? 3 : route.reason === 'adaptive-pro-confidence-gate' ? 4 : 1;
   const inputTokenEstimate = estimateRequestTokens(buildSingleSystemPrompt(systemCtx, route.provider, payload.profile), userMsg);
-  const estimatedTokens = inputTokenEstimate * providerCallsReserved + route.maxOutputTokens * providerCallsReserved;
+  const estimatedInputTokens = inputTokenEstimate * providerCallsReserved;
+  const estimatedOutputTokens = route.maxOutputTokens * providerCallsReserved;
+  const estimatedTokens = estimatedInputTokens + estimatedOutputTokens;
 
   const reservation = await reserveMonthlyTokens(redis, userId, activeTier, estimatedTokens);
   if (!reservation.allowed) {
     return NextResponse.json(
       { error: 'Monthly quota exceeded.', message: `Tier [${activeTier.toUpperCase()}] monthly token budget is exhausted.` },
       { status: 429, headers: jsonHeaders({ 'X-TokenBudget-Remaining': String(reservation.remainingTokens) }) },
+    );
+  }
+
+  // Cost reservation runs alongside the token reservation above — a request
+  // only proceeds if *both* succeed. This is what actually protects margin:
+  // the token budget is blind to the 5-17x price gap between input and
+  // output tokens across providers, this isn't.
+  const estimatedPaise = estimateCostPaise(route.provider, estimatedInputTokens, estimatedOutputTokens);
+  const costReservation = await reserveMonthlyCost(redis, userId, activeTier, estimatedPaise);
+  if (!costReservation.allowed) {
+    // nothing was spent — hand back the token reservation we just took
+    await reconcileMonthlyTokens(redis, userId, activeTier, reservation.reservedTokens, 0);
+    return NextResponse.json(
+      { error: 'Monthly cost budget exceeded.', message: `Tier [${activeTier.toUpperCase()}] monthly spend ceiling reached.` },
+      { status: 429, headers: jsonHeaders({ 'X-CostBudget-Remaining': String(costReservation.remainingPaise) }) },
     );
   }
 
@@ -296,6 +321,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         activeTier,
         userId,
         reservedTokens: reservation.reservedTokens,
+        reservedCostPaise: costReservation.reservedPaise,
         rl,
         messageQuota,
         authScopeId: authDecision.scopeId,
@@ -323,6 +349,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     });
   } catch (err) {
     await reconcileMonthlyTokens(redis, userId, activeTier, reservation.reservedTokens, 0);
+    await reconcileMonthlyCost(redis, userId, activeTier, costReservation.reservedPaise, 0);
 
     if (err instanceof SwarmParseError) {
       log.error('swarm_parse_failure', { error: err.message });
@@ -339,6 +366,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   const totalTokens = result.tokensIn + result.tokensOut;
   const monthlyTokenRemaining = await reconcileMonthlyTokens(redis, userId, activeTier, reservation.reservedTokens, totalTokens);
   const costPaise = estimateCostPaise(result.provider, result.tokensIn, result.tokensOut);
+  const monthlyCostRemaining = await reconcileMonthlyCost(redis, userId, activeTier, costReservation.reservedPaise, costPaise);
   const dailyAfterSpend = await recordDailySpend(redis, costPaise);
   const revenuePaise = allocatedRevenuePaise(activeTier, totalTokens);
   const profitPaise = revenuePaise - costPaise;
@@ -409,6 +437,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     headers: jsonHeaders({
       'X-RateLimit-Remaining': String(rl.remaining),
       'X-TokenBudget-Remaining': String(monthlyTokenRemaining),
+      'X-CostBudget-Remaining': String(monthlyCostRemaining),
       'X-MessageQuota-Remaining': String(messageQuota.remaining),
       'X-Cache': 'MISS',
     }),
@@ -509,6 +538,7 @@ function streamSingleResponse(args: {
   activeTier: Tier;
   userId: string;
   reservedTokens: number;
+  reservedCostPaise: number;
   rl: { remaining: number };
   messageQuota: { limit: number; remaining: number; resetSeconds: number };
   authScopeId: string | null;
@@ -516,7 +546,7 @@ function streamSingleResponse(args: {
   execSteps: string[];
   cacheKey: string;
 }): NextResponse {
-  const { redis, supabase, provider, modelId, systemPrompt, userMessage, route, payload, activeTier, userId, reservedTokens } = args;
+  const { redis, supabase, provider, modelId, systemPrompt, userMessage, route, payload, activeTier, userId, reservedTokens, reservedCostPaise } = args;
 
   const run = streamProvider({
     provider,
@@ -553,6 +583,7 @@ function streamSingleResponse(args: {
       const totalTokens = usage.inputTokens + usage.outputTokens;
       await reconcileMonthlyTokens(redis, userId, activeTier, reservedTokens, totalTokens);
       const costPaise = estimateCostPaise(provider, usage.inputTokens, usage.outputTokens);
+      await reconcileMonthlyCost(redis, userId, activeTier, reservedCostPaise, costPaise);
       await recordDailySpend(redis, costPaise);
       await markProviderSuccess(redis, provider);
 
@@ -620,6 +651,7 @@ function streamSingleResponse(args: {
       // Best-effort: give back the full reservation so a failed stream
       // doesn't silently eat into the user's monthly budget.
       await reconcileMonthlyTokens(redis, userId, activeTier, reservedTokens, 0);
+      await reconcileMonthlyCost(redis, userId, activeTier, reservedCostPaise, 0);
     }
   });
 
