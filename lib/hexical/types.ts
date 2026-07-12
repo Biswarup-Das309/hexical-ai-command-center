@@ -34,7 +34,7 @@ export const ChatTurnSchema = z.object({
 export type ChatTurn = z.infer<typeof ChatTurnSchema>;
 
 export const ExecutionPayloadSchema = z.object({
-  logic: z.string().min(1).max(120_000),
+  logic: z.string().min(1).max(500_000), // Bumped to 500k to allow Pro payloads
   profile: z.enum(['recon', 'swarm', 'audit', 'exploit', 'patch']).default('recon'),
   workspace: z
     .string()
@@ -208,16 +208,34 @@ export interface UsageEvent {
 export const PLAN_FEATURES: Record<Tier, readonly string[]> = {
   free: ['core_heuristics'],
   go: ['core_heuristics'],
-  plus: ['core_heuristics'],
-  pro: ['core_heuristics', 'swarm_intelligence'],
+  plus: ['core_heuristics', 'interactive_topology', 'pdf_export'],
+  pro: ['core_heuristics', 'interactive_topology', 'pdf_export', 'swarm_intelligence', 'advanced_terminal'],
 };
 
 export const MARGIN_CHAR_LIMITS: Record<Tier, number> = {
   free: 10_000,
   go: 15_000,
   plus: 60_000,
-  pro: 120_000,
+  pro: 500_000, // Massive allocation unlocked for Pro tier
 };
+
+// --- ADDED FOR FRONTEND COMPATIBILITY ---
+export interface PlanLimitConfig {
+  capabilities: readonly string[];
+  maxCharsPerRequest: number;
+}
+
+// Bridges the backend data structures directly to the frontend's expectations
+export const PLAN_LIMITS: Record<Tier, PlanLimitConfig> = {
+  free: { capabilities: PLAN_FEATURES.free, maxCharsPerRequest: MARGIN_CHAR_LIMITS.free },
+  go: { capabilities: PLAN_FEATURES.go, maxCharsPerRequest: MARGIN_CHAR_LIMITS.go },
+  plus: { capabilities: PLAN_FEATURES.plus, maxCharsPerRequest: MARGIN_CHAR_LIMITS.plus },
+  pro: { capabilities: PLAN_FEATURES.pro, maxCharsPerRequest: MARGIN_CHAR_LIMITS.pro },
+};
+
+// Aliases PlanTier to Tier so frontend imports don't crash
+export type PlanTier = Tier;
+// ----------------------------------------
 
 export const MONTHLY_TOKEN_BUDGETS: Record<Tier, number> = {
   free: 1_000_000,

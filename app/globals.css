@@ -1,3 +1,10 @@
+/*
+  HUD Design System — dark-only cockpit surface.
+  Signal triad: cyan (primary / info), emerald (nominal), amber (caution),
+  destructive (critical). Glass panels stay soft-radius; corner frames and
+  scanlines stay hard-edged — that tension is the point.
+*/
+
 @import 'tailwindcss';
 @import 'tw-animate-css';
 /*
@@ -37,12 +44,34 @@
   /* HUD signal palette */
   --color-cyan: var(--cyan);
   --color-emerald: var(--emerald);
+  --color-amber: var(--amber);
+  --color-amber-foreground: var(--amber-foreground);
   --color-grid: var(--grid);
 
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) * 1.4);
+
+  /* status glow shadows — shared by border-glow-* utilities and free to
+     use directly as shadow-glow-cyan / shadow-glow-emerald / etc. */
+  --shadow-glow-cyan:
+    0 0 0 1px oklch(0.82 0.16 195 / 35%), 0 0 22px oklch(0.82 0.16 195 / 28%),
+    inset 0 0 18px oklch(0.82 0.16 195 / 8%);
+  --shadow-glow-emerald:
+    0 0 0 1px oklch(0.78 0.18 160 / 35%), 0 0 22px oklch(0.78 0.18 160 / 28%),
+    inset 0 0 18px oklch(0.78 0.18 160 / 8%);
+  --shadow-glow-amber:
+    0 0 0 1px oklch(0.83 0.16 80 / 35%), 0 0 22px oklch(0.83 0.16 80 / 28%),
+    inset 0 0 18px oklch(0.83 0.16 80 / 8%);
+  --shadow-glow-destructive:
+    0 0 0 1px oklch(0.63 0.24 25 / 35%), 0 0 22px oklch(0.63 0.24 25 / 28%),
+    inset 0 0 18px oklch(0.63 0.24 25 / 8%);
+
+  /* motion + type tokens, reused below so every easing/tracking value has
+     one source of truth instead of repeated magic numbers */
+  --ease-hud-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --tracking-hud: 0.14em;
 }
 
 :root {
@@ -79,6 +108,8 @@
   /* signal tokens */
   --cyan: oklch(0.82 0.16 195);
   --emerald: oklch(0.78 0.18 160);
+  --amber: oklch(0.83 0.16 80);
+  --amber-foreground: oklch(0.08 0.02 80);
   --grid: oklch(0.82 0.16 195 / 6%);
 
   --radius: 0.5rem;
@@ -133,7 +164,7 @@
 }
 
 @layer utilities {
-  /* frosted glass panel */
+  /* frosted glass panel — base tier, for cards inline with content */
   .glass {
     background: linear-gradient(
       180deg,
@@ -145,18 +176,40 @@
     border: 1px solid var(--border);
   }
 
+  /* frosted glass panel — elevated tier, for anything that floats above
+     the page: modals, popovers, command palettes. Darker, sharper edge,
+     stronger shadow so it visibly outranks a base .glass card beneath it */
+  .glass-elevated {
+    background: linear-gradient(180deg, oklch(0.18 0.016 220 / 82%), var(--popover));
+    backdrop-filter: blur(20px) saturate(150%);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    border: 1px solid oklch(0.82 0.16 195 / 22%);
+    box-shadow:
+      0 24px 60px -12px oklch(0.02 0 0 / 60%),
+      var(--shadow-glow-cyan);
+  }
+
   .text-glow-cyan {
     text-shadow: 0 0 12px oklch(0.82 0.16 195 / 55%);
   }
   .text-glow-emerald {
     text-shadow: 0 0 12px oklch(0.78 0.18 160 / 55%);
   }
+  .text-glow-amber {
+    text-shadow: 0 0 12px oklch(0.83 0.16 80 / 55%);
+  }
 
   .border-glow-cyan {
-    box-shadow:
-      0 0 0 1px oklch(0.82 0.16 195 / 35%),
-      0 0 22px oklch(0.82 0.16 195 / 28%),
-      inset 0 0 18px oklch(0.82 0.16 195 / 8%);
+    box-shadow: var(--shadow-glow-cyan);
+  }
+  .border-glow-emerald {
+    box-shadow: var(--shadow-glow-emerald);
+  }
+  .border-glow-amber {
+    box-shadow: var(--shadow-glow-amber);
+  }
+  .border-glow-destructive {
+    box-shadow: var(--shadow-glow-destructive);
   }
 
   /* HUD grid backdrop */
@@ -186,6 +239,128 @@
       transparent 3px
     );
     mix-blend-mode: screen;
+  }
+
+  /* corner-bracket frame — the signature HUD flourish. Self-contained like
+     .scanlines: drawn entirely on ::before so it never fights whatever
+     background the element already has (pair freely with .glass) */
+  .hud-frame {
+    position: relative;
+  }
+  .hud-frame::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.85;
+    background:
+      linear-gradient(var(--cyan), var(--cyan)) top left / 14px 2px no-repeat,
+      linear-gradient(var(--cyan), var(--cyan)) top left / 2px 14px no-repeat,
+      linear-gradient(var(--cyan), var(--cyan)) top right / 14px 2px no-repeat,
+      linear-gradient(var(--cyan), var(--cyan)) top right / 2px 14px no-repeat,
+      linear-gradient(var(--cyan), var(--cyan)) bottom left / 14px 2px no-repeat,
+      linear-gradient(var(--cyan), var(--cyan)) bottom left / 2px 14px no-repeat,
+      linear-gradient(var(--cyan), var(--cyan)) bottom right / 14px 2px no-repeat,
+      linear-gradient(var(--cyan), var(--cyan)) bottom right / 2px 14px no-repeat;
+  }
+
+  /* subtle analog grain — self-contained like .scanlines. Breaks up flat
+     gradients so glass panels read like an instrument surface, not a div */
+  .noise {
+    position: relative;
+    isolation: isolate;
+  }
+  .noise::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.05;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* instrument label — tracked, uppercase, mono. For field labels the way
+     a cockpit or telemetry panel names a readout */
+  .hud-label {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: var(--tracking-hud);
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+  }
+
+  /* telemetry figures — pair with font-mono. Tabular so digits don't
+     jitter in width as they tick, slashed zero so 0/O never get confused */
+  .font-data {
+    font-variant-numeric: tabular-nums slashed-zero;
+  }
+
+  /* status indicator — pairs with the existing animate-node pulse below.
+     nominal/caution/critical complete the signal triad this file defines */
+  .status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: currentColor;
+  }
+  .status-dot--nominal {
+    color: var(--emerald);
+  }
+  .status-dot--caution {
+    color: var(--amber);
+  }
+  .status-dot--critical {
+    color: var(--destructive);
+  }
+}
+
+/* ---------- accessibility hardening ----------
+   Deliberately left OUTSIDE any @layer: unlayered rules always win over
+   layered ones regardless of source order, so these overrides can't be
+   silently out-prioritized by a component's own utility classes later. */
+
+@media (prefers-contrast: more), (prefers-contrast: high) {
+  :root {
+    --border: oklch(0.82 0.16 195 / 45%);
+    --input: oklch(0.82 0.16 195 / 32%);
+    --muted-foreground: oklch(0.78 0.02 210);
+  }
+  .glass,
+  .glass-elevated {
+    background: oklch(0.09 0.01 220 / 96%);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass,
+  .glass-elevated {
+    background: oklch(0.09 0.01 220 / 98%);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .glass,
+  .glass-elevated {
+    background: Canvas;
+    border: 1px solid CanvasText;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .hud-frame::before,
+  .noise::before,
+  .scanlines::after {
+    display: none;
+  }
+  :focus-visible {
+    outline: 2px solid Highlight;
   }
 }
 
@@ -315,7 +490,7 @@
   }
 }
 .animate-rise {
-  animation: fade-rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: fade-rise 0.45s var(--ease-hud-out) both;
 }
 
 @keyframes blink-caret {

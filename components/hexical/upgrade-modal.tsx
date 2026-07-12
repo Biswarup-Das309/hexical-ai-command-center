@@ -5,12 +5,12 @@ import { useRouter } from 'next/navigation'
 import Script from 'next/script'
 import { toast } from 'sonner'
 import type { LucideIcon } from 'lucide-react'
-import { X, Sparkles, Shield, Network, Activity, TerminalSquare, Crosshair, FileJson, Zap, GitMerge, Target, FileBadge, Loader2 } from 'lucide-react'
+import { X, Sparkles, Shield, Network, Activity, TerminalSquare, Crosshair, FileJson, Zap, GitMerge, Target, FileBadge, Loader2, Mail, Phone } from 'lucide-react'
 import { PLAN_CATALOG, PLAN_ORDER, type PlanDisplayConfig, type PlanFeatureIcon, type PlanFeatureTone, type PlanTier } from '@/lib/plans'
 
 interface UpgradeModalProps {
   onClose: () => void
-  currentTier?: PlanTier
+  currentTier?: PlanTier | 'enterprise'
 }
 
 type PlanCardUi = {
@@ -82,6 +82,13 @@ const PLAN_CARD_UI: Record<PlanTier, PlanCardUi> = {
     badgeClassName: 'absolute top-5 right-5 bg-amber-500/10 text-amber-500 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-amber-500/20',
   },
 }
+
+// -----------------------------------------------------------------------------
+// Enterprise contact details — update here if they ever change.
+// -----------------------------------------------------------------------------
+const ENTERPRISE_CONTACT_EMAIL = 'biswarup.das.0087@gmail.com'
+const ENTERPRISE_CONTACT_PHONE_DISPLAY = '+91 81006 22939'
+const ENTERPRISE_CONTACT_PHONE_TEL = '+918100622939'
 
 function PricingCard({ action, plan }: { action: ReactElement; plan: PlanDisplayConfig }) {
   const ui = PLAN_CARD_UI[plan.tier]
@@ -241,14 +248,14 @@ export default function UpgradeModal({ onClose, currentTier = 'free' }: UpgradeM
       ) : (
         <button
           onClick={() => handleUpgrade('Go')}
-          disabled={loadingPlan !== null || activeTier === 'plus' || activeTier === 'pro'}
+          disabled={loadingPlan !== null || activeTier === 'plus' || activeTier === 'pro' || activeTier === 'enterprise'}
           className="w-full py-3 rounded-xl bg-white/10 text-white hover:bg-white/20 font-medium mb-8 transition-colors flex items-center justify-center gap-2 border border-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {loadingPlan === 'Go' ? (
             <>
               <Loader2 className="animate-spin" size={18} /> {isVerifying ? 'Verifying...' : 'Deploying...'}
             </>
-          ) : activeTier === 'plus' || activeTier === 'pro' ? (
+          ) : activeTier === 'plus' || activeTier === 'pro' || activeTier === 'enterprise' ? (
             'Included in Plan'
           ) : (
             'Deploy Go'
@@ -265,14 +272,14 @@ export default function UpgradeModal({ onClose, currentTier = 'free' }: UpgradeM
       ) : (
         <button
           onClick={() => handleUpgrade('Plus')}
-          disabled={loadingPlan !== null || activeTier === 'pro'}
+          disabled={loadingPlan !== null || activeTier === 'pro' || activeTier === 'enterprise'}
           className="w-full py-3 rounded-xl bg-cyan-500 text-black hover:bg-cyan-400 font-bold mb-8 transition-colors shadow-lg shadow-cyan-500/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {loadingPlan === 'Plus' ? (
             <>
               <Loader2 className="animate-spin text-black" size={18} /> {isVerifying ? 'Verifying...' : 'Deploying...'}
             </>
-          ) : activeTier === 'pro' ? (
+          ) : activeTier === 'pro' || activeTier === 'enterprise' ? (
             'Included in Plan'
           ) : (
             'Deploy Plus'
@@ -288,13 +295,15 @@ export default function UpgradeModal({ onClose, currentTier = 'free' }: UpgradeM
     ) : (
       <button
         onClick={() => handleUpgrade('Pro')}
-        disabled={loadingPlan !== null}
+        disabled={loadingPlan !== null || activeTier === 'enterprise'}
         className="w-full py-3 rounded-xl bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 font-bold mb-8 transition-colors flex items-center justify-center gap-2 border border-amber-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {loadingPlan === 'Pro' ? (
           <>
             <Loader2 className="animate-spin" size={18} /> {isVerifying ? 'Verifying...' : 'Deploying...'}
           </>
+        ) : activeTier === 'enterprise' ? (
+          'Included in Enterprise'
         ) : (
           'Deploy Pro'
         )}
@@ -348,11 +357,92 @@ export default function UpgradeModal({ onClose, currentTier = 'free' }: UpgradeM
           </div>
 
           <div className="overflow-y-auto p-4 md:p-8 scrollbar-thin scrollbar-thumb-white/10 flex-1">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
-              {PLAN_ORDER.map((tier) => (
-                <PricingCard key={tier} action={renderPlanAction(tier)} plan={PLAN_CATALOG[tier]} />
-              ))}
-            </div>
+            {billingCycle === 'personal' ? (
+              /* =========================================
+                 STANDARD TIERS (Go, Plus, Pro)
+                 ========================================= */
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
+                {PLAN_ORDER.map((tier) => (
+                  <PricingCard key={tier} action={renderPlanAction(tier)} plan={PLAN_CATALOG[tier]} />
+                ))}
+              </div>
+            ) : (
+              /* =========================================
+                 ENTERPRISE TIER (Custom Node)
+                 ========================================= */
+              <div className="max-w-5xl mx-auto w-full bg-[#111116] border border-white/10 rounded-3xl p-8 md:p-12 relative overflow-hidden shadow-2xl">
+                {/* Glow effect */}
+                <div className="absolute top-0 right-0 -mr-32 -mt-32 w-96 h-96 bg-white/5 rounded-full blur-3xl pointer-events-none"></div>
+
+                <div className="flex flex-col lg:flex-row gap-12 relative z-10">
+                  <div className="flex-1 space-y-6">
+                    <div className="inline-block bg-white/10 text-white text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-white/20">
+                      Custom Deployment
+                    </div>
+                    <h3 className="text-3xl md:text-4xl font-bold text-white tracking-tight">Hexical Enterprise Node</h3>
+                    <p className="text-muted-foreground leading-relaxed text-sm md:text-base">
+                      Designed for massive engineering teams. Bypass all rate limits, deploy custom routing architectures, and integrate directly into your private VPC. Connect with the founder directly to negotiate SLAs and data limits.
+                    </p>
+
+                    <div className="pt-4 pb-2">
+                      <div className="text-3xl font-bold text-white mb-1">
+                        Custom Pricing
+                      </div>
+                      <div className="text-xs text-muted-foreground tracking-wide uppercase">Custom volume based on SLA</div>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <a
+                        href={`mailto:${ENTERPRISE_CONTACT_EMAIL}?subject=Hexical%20Enterprise%20Inquiry`}
+                        className="px-8 py-4 rounded-xl bg-white text-black hover:bg-zinc-200 font-bold transition-colors shadow-[0_0_30px_rgba(255,255,255,0.15)] flex items-center justify-center gap-2"
+                      >
+                        <Mail size={18} /> Discuss Enterprise Access
+                      </a>
+                      <a
+                        href={`tel:${ENTERPRISE_CONTACT_PHONE_TEL}`}
+                        className="px-8 py-4 rounded-xl bg-white/5 text-white hover:bg-white/10 font-bold transition-colors border border-white/10 flex items-center justify-center gap-2"
+                      >
+                        <Phone size={18} /> Call the Founder
+                      </a>
+                    </div>
+
+                    <div className="pt-2 space-y-1.5">
+                      <a
+                        href={`mailto:${ENTERPRISE_CONTACT_EMAIL}`}
+                        className="flex items-center gap-2 text-sm text-muted-foreground hover:text-white transition-colors w-fit"
+                      >
+                        <Mail size={14} /> {ENTERPRISE_CONTACT_EMAIL}
+                      </a>
+                      <a
+                        href={`tel:${ENTERPRISE_CONTACT_PHONE_TEL}`}
+                        className="flex items-center gap-2 text-sm text-muted-foreground hover:text-white transition-colors w-fit"
+                      >
+                        <Phone size={14} /> {ENTERPRISE_CONTACT_PHONE_DISPLAY}
+                      </a>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 bg-black/40 border border-white/5 rounded-2xl p-6 lg:p-8">
+                    <h4 className="text-xs font-bold text-white/50 uppercase tracking-widest mb-6">Enterprise Capabilities</h4>
+                    <div className="space-y-5">
+                      {[
+                        { icon: Network, text: 'Private VPC & On-Prem Deployment' },
+                        { icon: Target, text: 'Custom LLM Routing & Agent Creation' },
+                        { icon: Sparkles, text: 'Unlimited Concurrent Agents' },
+                        { icon: Shield, text: 'SOC2 & HIPAA Compliance Logs' },
+                        { icon: Zap, text: 'Massive 1M+ Character Payload Limits' },
+                        { icon: Activity, text: 'Dedicated Founder Support & SLA' },
+                      ].map((feature, i) => (
+                        <div key={i} className="flex items-start gap-4 text-sm text-foreground/80 font-medium">
+                          <feature.icon size={20} className="text-white shrink-0" />
+                          {feature.text}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

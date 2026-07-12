@@ -115,7 +115,12 @@ const DEFAULT_GUEST_EMAIL = 'guest@hexical.ai'
 
 const PENDING_SESSION_ID = 'local_pending_session'
 const VERIFY_ENDPOINT = '/api/verify'
-const MAX_LOGIC_CHARS = 12000
+// NOTE: the flat MAX_LOGIC_CHARS = 12000 constant that used to live here was
+// the bug — it applied the same 12k ceiling to every tier, including Pro.
+// Per-request character limits now come straight from PLAN_LIMITS[tier]
+// (see lib/hexical-types.ts), read at call time in handleSubmit below, so
+// each tier gets its own configured ceiling (free 10k / go 15k / plus 60k /
+// pro 120k as of this writing) instead of one hardcoded number for everyone.
 const POLL_INTERVAL_MS = 1500
 const MAX_POLL_ATTEMPTS = 80
 const PROFILE_TO_VERIFY_PROFILE: Record<string, VerifyProfile> = {
@@ -363,8 +368,14 @@ export function HexicalConsole() {
   const headerMenuRef = useRef<HTMLDivElement | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 const hasHydratedRef = useRef<string | null>(null)
+
+  // FIX: PLAN_LIMITS entries expose a `capabilities` array (see
+  // lib/hexical-types.ts). This previously read `.features`, which doesn't
+  // exist on PlanLimitConfig — every call returned `undefined.includes(...)`
+  // and threw at render time, since this gates the Topology/Payloads/TTY
+  // tab icons and the profile menu unconditionally in the header.
   const hasFeatureAccess = useCallback((requiredFeature: string) => {
-    return PLAN_LIMITS[currentTier].features.includes(requiredFeature as any);
+    return PLAN_LIMITS[currentTier].capabilities.includes(requiredFeature as any);
   }, [currentTier]);
 
   const logToTerminal = useCallback((msg: string) => {
@@ -685,9 +696,17 @@ const hasHydratedRef = useRef<string | null>(null)
     const trimmedLogic = rawLogic.trim();
     if (busy || !trimmedLogic) return
 
-    if (trimmedLogic.length > MAX_LOGIC_CHARS) {
+    // FIX: read the ceiling for the user's actual tier instead of a single
+    // flat constant. Previously this checked against a hardcoded 12,000
+    // chars for every tier, including Pro — so Pro users hit the same wall
+    // as Free users. PLAN_LIMITS[currentTier].maxCharsPerRequest is the
+    // single source of truth for this (see lib/hexical-types.ts) and must
+    // stay in sync with MARGIN_CHAR_LIMITS enforced server-side.
+    const activeCharLimit = PLAN_LIMITS[currentTier].maxCharsPerRequest;
+
+    if (trimmedLogic.length > activeCharLimit) {
       toast.error('Payload too large.', {
-        description: `Keep verification requests under ${MAX_LOGIC_CHARS.toLocaleString()} characters.`
+        description: `Keep verification requests under ${activeCharLimit.toLocaleString()} characters for the ${currentTier.toUpperCase()} tier.`
       });
       return;
     }
