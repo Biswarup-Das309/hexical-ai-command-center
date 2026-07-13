@@ -167,6 +167,7 @@ export interface ExecutionResponse {
   steps: string[];
   status: 'completed';
   swarmConsensus?: Record<string, unknown>;
+  traceEvents?: TraceEvent[]; // <-- ADDED THIS LINE
   metrics: ResponseMetrics;
 }
 
@@ -434,15 +435,69 @@ export interface ConsensusVote {
   rationale: string;
 }
 // ---------------------------------------------------------------------------
-// Chat Stream Types
+// Chat Stream Types & Telemetry
 // ---------------------------------------------------------------------------
+
+// The structured telemetry event for the Investigation Timeline
+export interface TraceEvent {
+  id: string;
+  type: 'search' | 'verification' | 'reasoning' | 'risk' | 'synthesis' | 'general';
+  label: string;
+  detail?: string;
+  status?: 'completed' | 'partial' | 'failed';
+  latencyMs?: number;
+  
+  // Fields required for 'verification' type
+  left?: string;
+  right?: string;
+  result?: 'verified' | 'conflict' | 'unverified';
+  
+  // Fields required for 'risk' type
+  severity?: 'LOW' | 'MED' | 'HIGH' | 'CRITICAL';
+  cvss?: number;
+}
 
 export interface StreamMessage {
   id: string;
-  role: 'user' | 'hexical' | 'system';
+  role: 'user' | 'hexical' | 'system' | 'error';
   text: string;
   ts: string; 
   steps?: string[];
   valid?: boolean;
-  route?: string;
+  route?: RoutePath;
+  traceEvents?: TraceEvent[]; // Maps directly to the Investigation Panel
+}
+export type RoutePath =
+  | 'swarm'
+  | 'forge_api'
+  | 'global'
+  | 'math'
+  | 'local'
+  | 'cluster_edge'
+  | 'unknown';
+
+export function inferRoute(
+  steps: readonly string[] = []
+): RoutePath {
+  const blob = steps.join(' ').toLowerCase();
+
+  if (/swarm|red\s*team|blue\s*team|consensus|architect/.test(blob))
+    return 'swarm';
+
+  if (/forge|hackerone|bugcrowd|pdf|export/.test(blob))
+    return 'forge_api';
+
+  if (/openai|gpt|groq|anthropic|claude|cloud|remote|verification/.test(blob))
+    return 'global';
+
+  if (/math|calc|solver|equation|compute/.test(blob))
+    return 'math';
+
+  if (/local|database|offline|cache/.test(blob))
+    return 'local';
+
+  if (/cluster|edge|mesh|gateway/.test(blob))
+    return 'cluster_edge';
+
+  return 'unknown';
 }

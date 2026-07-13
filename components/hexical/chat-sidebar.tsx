@@ -51,6 +51,7 @@ const TIER_LABELS: Record<PlanTier, string> = {
   go: 'GO',
   plus: 'PLUS',
   pro: 'PRO',
+  enterprise: 'ENTERPRISE',
 }
 
 const CHAT_TITLE_MAX_LENGTH = 120
@@ -294,7 +295,10 @@ export function ChatSidebar({
           {isLoaded && userId && (
             <div className="flex w-full items-center gap-3">
               <div className="flex flex-shrink-0 items-center justify-center">
-                <UserButton afterSignOutUrl="/" appearance={{ elements: { avatarBox: 'size-8 rounded-md' } }} />
+               <UserButton 
+  afterSignOutUrl="/"
+  appearance={{ elements: { avatarBox: 'size-8 rounded-md' } }} 
+/>
               </div>
               {isOpen && (
                 <div className="flex flex-1 items-center overflow-hidden text-left">

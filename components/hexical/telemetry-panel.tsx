@@ -13,7 +13,7 @@ import {
   CheckCircle2,
   XCircle,
 } from 'lucide-react'
-import type { RoutePath, StreamMessage } from '@/lib/hexical-types'
+import type { RoutePath, StreamMessage } from '@/lib/hexical/types'
 import { useSettingsStore } from '@/lib/store'
 
 type Tone = 'cyan' | 'emerald' | 'muted'
@@ -34,12 +34,47 @@ interface RouteMetaEntry {
 // which run on-device. Adjust the tone assignment if that grouping doesn't
 // match your intent.
 const ROUTE_META: Record<RoutePath, RouteMetaEntry> = {
-  local: { label: 'Local Brain', icon: Database, tone: 'cyan' },
-  math: { label: 'Math Engine', icon: Sigma, tone: 'cyan' },
-  swarm: { label: 'Swarm Consensus', icon: Network, tone: 'emerald' },
-  forge_api: { label: 'Forge API', icon: Hammer, tone: 'emerald' },
-  global: { label: 'Global Groq Cloud', icon: Cloud, tone: 'emerald' },
-  unknown: { label: 'Unresolved', icon: HelpCircle, tone: 'muted' },
+  local: {
+    label: 'Local Brain',
+    icon: Database,
+    tone: 'cyan',
+  },
+
+  math: {
+    label: 'Math Engine',
+    icon: Sigma,
+    tone: 'cyan',
+  },
+
+  swarm: {
+    label: 'Swarm Consensus',
+    icon: Network,
+    tone: 'emerald',
+  },
+
+  forge_api: {
+    label: 'Forge API',
+    icon: Hammer,
+    tone: 'emerald',
+  },
+
+  global: {
+    label: 'Global Groq Cloud',
+    icon: Cloud,
+    tone: 'emerald',
+  },
+
+  cluster_edge: {
+    label: 'Cluster Edge',
+    icon: Network,
+    tone: 'emerald',
+  },
+
+  unknown: {
+    label: 'Unresolved',
+    icon: HelpCircle,
+    tone: 'muted',
+  },
 }
 
 // Single source of truth for tone → Tailwind classes. The original component
@@ -131,7 +166,8 @@ function TelemetryPanelImpl({ latest }: TelemetryPanelProps) {
   // Fall back to the "unknown" entry rather than trusting that a runtime
   // value always matches the RoutePath union — the type is a compile-time
   // promise, not a runtime guarantee, and this data is coming off a stream.
-  const meta = route ? (ROUTE_META[route] ?? ROUTE_META.unknown) : null
+  const meta: RouteMetaEntry | null =
+  route ? ROUTE_META[route] ?? ROUTE_META.unknown : null;
   // Guard against a malformed/partial payload arriving mid-stream.
   const steps = Array.isArray(latest?.steps) ? latest.steps : []
 

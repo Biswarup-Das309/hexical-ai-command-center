@@ -3,7 +3,7 @@
 import { memo, type ComponentPropsWithoutRef, type JSX } from 'react'
 import ReactMarkdown from 'react-markdown'
 
-import { type StreamMessage } from '@/lib/hexical-types'
+import { type StreamMessage } from '@/lib/hexical/types'
 
 interface DataStreamProps {
   messages: StreamMessage[]

@@ -5,14 +5,20 @@ import {
   Loader2, Eye, Crosshair, ChevronDown, Activity, X, Command, AlertTriangle, 
   TerminalSquare, LayoutDashboard, Zap, SearchCode, GitMerge, Shield, 
   Hash, Code, FileText, CheckCircle, Timer, Cpu, ShieldCheck, FileJson, Workflow,
-  Network, Lock, Download
+  Network, Lock, Download, Database, ArrowRightLeft, Brain
 } from 'lucide-react'
 import { toast } from 'sonner' 
 
 import { HexicalLogo } from '@/components/hexical/hexical-logo'
 import { createSupabaseClient } from '@/lib/supabase' 
 import { useGuestLimit } from '@/hooks/use-guest-limit'
-import { inferRoute, type StreamMessage, type PlanTier, PLAN_LIMITS } from '@/lib/hexical-types'
+import {
+  inferRoute,
+  type StreamMessage,
+  type TraceEvent,
+  type PlanTier,
+  PLAN_LIMITS
+} from '@/lib/hexical/types'
 import { ChatSidebar } from '@/components/hexical/chat-sidebar'
 import { DataStream } from '@/components/hexical/data-stream'
 import { CommandInput } from '@/components/hexical/command-input'
@@ -58,6 +64,22 @@ import {
 // None of the above can be verified or fixed from this file alone — treat
 // this diff as raising the floor, not a guarantee of "zero exploitable flaws".
 // =============================================================================
+//
+// TRUST NOTE — Investigation Timeline (read before touching the trace panel)
+// =============================================================================
+// The Investigation tab in the trace panel exists to answer "why should I
+// trust this answer" — sources checked, cross-validation performed, risk
+// assessed. Every field it renders (TraceEvent[], metrics.sourceCount,
+// metrics.claimsVerified, metrics.conflictsDetected) is OPTIONAL and must
+// only ever come from what the /api/verify pipeline actually did. If the
+// backend hasn't started emitting `traceEvents` yet, the UI shows an honest
+// empty state pointing to the raw Diagnostics tab — it must never backfill
+// with a plausible-looking placeholder sequence (e.g. "✓ Searching MITRE...").
+// A fake evidence trail is strictly worse than no evidence trail: the first
+// time a user asks "did it actually search MITRE?" and the answer is no,
+// the product's entire trust proposition breaks. See the TraceEvent
+// interface below for the exact contract the backend needs to fill in.
+// =============================================================================
 
 // =============================================================================
 // 1. EXTENDED TYPES & INTERFACES
@@ -81,7 +103,29 @@ interface TraceMetrics {
   // A random placeholder number is worse than no number — it looks like data.
   tokensUsed?: number; 
   confidenceScore?: number; 
+  // Same rule applies to these three: they back the Investigation tab's
+  // trust signals (Sources / Claims Verified / Conflicts). Each one is only
+  // rendered if the verification engine actually reports it — an empty grid
+  // cell is honest, a hardcoded "4 sources" is not.
+  sourceCount?: number;
+  claimsVerified?: number;
+  conflictsDetected?: number;
 }
+
+// A single, backend-reported step in the evidence trail behind a response.
+// This type is the contract for the Investigation tab: every field must
+// come from something the verification pipeline actually did. There is no
+// path from here to a fabricated source or a hardcoded "match" — if the
+// backend doesn't send traceEvents, the UI shows an honest empty state
+// instead of inventing one (see the Investigation Timeline render below).
+//
+// Suggested backend shapes:
+//   { type:'search', label:'MITRE CVE Database', status:'success', latencyMs:142 }
+//   { type:'verification', label:'Cross Validation', left:'MITRE', right:'CISA KEV', result:'match' }
+//   { type:'reasoning', label:'Threat Analysis', detail:'Weighed exploit maturity against patch availability.' }
+//   { type:'risk', label:'Risk Assessment', severity:'Critical', cvss:9.8 }
+//   { type:'synthesis', label:'Report Generated', detail:'Findings compiled from 4 corroborating sources.' }
+
 
 interface ExtendedStreamMessage extends StreamMessage {
   sources?: TraceSource[]; 
@@ -89,6 +133,10 @@ interface ExtendedStreamMessage extends StreamMessage {
   metrics?: TraceMetrics;
   swarmConsensus?: SwarmEvaluation; 
   graphData?: AttackGraph;
+  // Ordered evidence trail for the Investigation tab. Undefined/empty means
+  // the pipeline didn't report structured trace events for this response —
+  // render the honest fallback, never a placeholder timeline.
+  traceEvents?: TraceEvent[];
 }
 
 interface SwarmEvaluation {
@@ -348,6 +396,11 @@ export function HexicalConsole() {
   const [activeTraceMessage, setActiveTraceMessage] = useState<ExtendedStreamMessage | null>(null)
   const [showTracePanel, setShowTracePanel] = useState<boolean>(false)
   const [showRawJson, setShowRawJson] = useState<boolean>(false)
+  // Trace panel is split into a user-facing "why trust this" view and a
+  // developer-facing raw execution view. Investigation is the default because
+  // that's the audience the product is actually for; Diagnostics is one tap
+  // away for anyone who wants the unprocessed trace.
+  const [activePanelTab, setActivePanelTab] = useState<'investigation' | 'diagnostics'>('investigation')
   const [activeProfileId, setActiveProfileId] = useState<string>(SECURITY_PROFILES[0].id)
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(WORKSPACES[0].id)
   
@@ -605,6 +658,13 @@ const hasHydratedRef = useRef<string | null>(null)
           .eq('user_id', user.id) // defense in depth alongside RLS
           .order('created_at', { ascending: true });
 
+        // NOTE: only role/text/ts/steps are persisted and rehydrated here.
+        // metrics / swarmConsensus / traceEvents are NOT stored in `messages`
+        // today, so the Investigation tab will show its honest empty state
+        // for any message loaded from history rather than a live response.
+        // If you want the evidence trail to survive a reload, `messages`
+        // needs a jsonb column for this payload and the insert calls in
+        // handleSubmit below need to write it.
         formatted = convos.map(c => ({
           id: c.id, 
           title: c.title, 
@@ -913,13 +973,18 @@ const hasHydratedRef = useRef<string | null>(null)
       const responseValid = typeof finalData.valid === 'boolean' ? finalData.valid : false;
 
       // Only latencyMs is something we genuinely measured. Don't invent
-      // plausible-looking token counts or confidence scores when the
-      // backend doesn't supply them — a random number that *looks* real is
-      // more misleading than an honestly blank field.
+      // plausible-looking token counts, confidence scores, source counts,
+      // claim counts, or conflict counts when the backend doesn't supply
+      // them — a random number that *looks* real is more misleading than an
+      // honestly blank field. Each of these renders conditionally in the
+      // Investigation tab's metrics grid — see the trace panel below.
       const mockMetrics: TraceMetrics = {
         latencyMs: finalData.metrics?.latencyMs ?? executionTimeMs,
         tokensUsed: finalData.metrics?.tokensUsed,
-        confidenceScore: finalData.metrics?.confidenceScore
+        confidenceScore: finalData.metrics?.confidenceScore,
+        sourceCount: finalData.metrics?.sourceCount,
+        claimsVerified: finalData.metrics?.claimsVerified,
+        conflictsDetected: finalData.metrics?.conflictsDetected
       }
 
       // Prefer a real graph from the backend; fall back to a lightweight
@@ -934,13 +999,22 @@ const hasHydratedRef = useRef<string | null>(null)
       // misleading UI, not a real security capability.
       const swarmData: SwarmEvaluation | undefined = finalData.swarmConsensus
 
+      // Same rule as swarmConsensus above: only wire through an evidence
+      // trail if the backend actually generated one. Absent -> the
+      // Investigation tab renders its honest empty state instead of a
+      // fabricated timeline.
+      const traceEventsData: TraceEvent[] | undefined = Array.isArray(finalData.traceEvents)
+        ? finalData.traceEvents
+        : undefined
+
       logToTerminal(`[RX] Received evaluated payload. Status: ${responseValid ? 'SUCCESS' : 'WARN'}. Computation Time: ${executionTimeMs}ms.`);
 
       const hexMsg: ExtendedStreamMessage = { 
         id: generateUniqueID(), role: 'hexical', text: analysisText, steps: responseSteps, 
         valid: responseValid, route: inferRoute(responseSteps), ts: generateTimestamp(), 
         sources: [{ name: 'Hexical Verify API', verified: true, type: 'heuristic' }], 
-        isVerifiedContent: responseValid, metrics: mockMetrics, swarmConsensus: swarmData, graphData: newGraph
+        isVerifiedContent: responseValid, metrics: mockMetrics, swarmConsensus: swarmData, 
+        graphData: newGraph, traceEvents: traceEventsData
       }
 
       const updatedAIMessages = [...updatedUserMessages, hexMsg];
@@ -1313,157 +1387,325 @@ const hasHydratedRef = useRef<string | null>(null)
 
         {showTracePanel && activeTraceMessage && viewMode === 'chat' && (
           <div className="w-[380px] md:w-[450px] h-full border-l border-white/5 bg-[#0a0a0c]/95 backdrop-blur-3xl flex flex-col overflow-hidden animate-fade-in flex-shrink-0 z-40 shadow-[-20px_0_50px_rgba(0,0,0,0.5)]">
-            <div className="p-4 border-b border-white/10 flex items-center justify-between bg-black/40">
-              <div className="flex items-center gap-2">
-                <SearchCode className={`size-4 ${THEME_MAP[uiTheme].text}`} />
-                <span className="text-xs uppercase font-bold tracking-widest text-foreground">Advanced Diagnostics</span>
+            
+            {/* Header */}
+            <div className="border-b border-white/10 bg-black/40">
+              <div className="p-4 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <SearchCode className={`size-4 ${THEME_MAP[uiTheme].text}`} />
+                  <span className="text-xs uppercase font-bold tracking-widest text-foreground">Case File</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={handleExportPdf}
+                    title={hasFeatureAccess('pdf_export') ? 'Export as PDF' : 'Export as PDF (Paid workspaces only)'}
+                    className="p-1 hover:bg-white/10 rounded-md text-muted-foreground hover:text-white transition-colors"
+                  >
+                    {hasFeatureAccess('pdf_export') ? <Download size={16} /> : <Lock size={16} className="text-zinc-600" />}
+                  </button>
+                  <button 
+                    onClick={() => setShowTracePanel(false)} 
+                    className="p-1 hover:bg-white/10 rounded-md text-muted-foreground hover:text-white transition-colors"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center gap-1">
+
+              {/* Investigation vs Diagnostics — Investigation is "why should
+                  you trust this", built only from fields the backend actually
+                  returned. Diagnostics is "how did the system execute this",
+                  for developers who want the raw trace. Neither tab is
+                  allowed to backfill missing data with something invented. */}
+              <div className="px-4 pb-3 flex items-center gap-1">
                 <button
-                  onClick={handleExportPdf}
-                  title={hasFeatureAccess('pdf_export') ? 'Export as PDF' : 'Export as PDF (Paid workspaces only)'}
-                  className="p-1 hover:bg-white/10 rounded-md text-muted-foreground hover:text-white transition-colors"
+                  onClick={() => setActivePanelTab('investigation')}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[10px] font-sans font-semibold uppercase tracking-wider transition-all ${activePanelTab === 'investigation' ? `${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} border ${THEME_MAP[uiTheme].border}` : 'text-zinc-500 hover:text-white border border-transparent'}`}
                 >
-                  {hasFeatureAccess('pdf_export') ? <Download size={16} /> : <Lock size={16} className="text-zinc-600" />}
+                  <Eye size={12} /> Investigation
                 </button>
-                <button 
-                  onClick={() => setShowTracePanel(false)} 
-                  className="p-1 hover:bg-white/10 rounded-md text-muted-foreground hover:text-white transition-colors"
+                <button
+                  onClick={() => setActivePanelTab('diagnostics')}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[10px] font-sans font-semibold uppercase tracking-wider transition-all ${activePanelTab === 'diagnostics' ? `${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} border ${THEME_MAP[uiTheme].border}` : 'text-zinc-500 hover:text-white border border-transparent'}`}
                 >
-                  <X size={16} />
+                  <TerminalSquare size={12} /> Diagnostics
                 </button>
               </div>
             </div>
             
             <div className="flex-1 overflow-y-auto p-5 space-y-6 text-xs scrollbar-thin scrollbar-thumb-white/10">
-              {activeTraceMessage.swarmConsensus && (
-                <div className="space-y-3">
-                   <span className="text-muted-foreground block font-sans text-[10px] uppercase tracking-wider font-semibold border-b border-white/5 pb-2 flex items-center gap-2">
-                     <GitMerge size={12}/> Multi-Agent Swarm Consensus
-                   </span>
-                   
-                   <div className="p-3 bg-rose-500/5 border border-rose-500/20 rounded-xl relative overflow-hidden group">
-                     <div className="absolute top-0 right-0 bg-rose-500/20 text-rose-400 text-[8px] px-2 py-0.5 rounded-bl-lg font-bold">
-                       RED TEAM (OFFENSIVE)
-                     </div>
-                     <div className="font-mono text-rose-300/80 mb-2 leading-relaxed mt-2">
-                       "{activeTraceMessage.swarmConsensus.redTeam.logic}"
-                     </div>
-                     <div className="flex items-center justify-between bg-black/40 p-2 rounded border border-rose-500/10">
-                       <span className="text-rose-400/50">Exploit Confidence</span>
-                       <span className="text-rose-400 font-bold">{activeTraceMessage.swarmConsensus.redTeam.confidence}%</span>
-                     </div>
-                   </div>
 
-                   <div className="p-3 bg-cyan-500/5 border border-cyan-500/20 rounded-xl relative overflow-hidden group">
-                     <div className="absolute top-0 right-0 bg-cyan-500/20 text-cyan-400 text-[8px] px-2 py-0.5 rounded-bl-lg font-bold">
-                       BLUE TEAM (DEFENSIVE)
-                     </div>
-                     <div className="font-mono text-cyan-300/80 mb-2 leading-relaxed mt-2">
-                       "{activeTraceMessage.swarmConsensus.blueTeam.mitigation}"
-                     </div>
-                     <div className="flex items-center justify-between bg-black/40 p-2 rounded border border-cyan-500/10">
-                       <span className="text-cyan-400/50">Calculated Risk Level</span>
-                       <span className="text-cyan-400 font-bold">{activeTraceMessage.swarmConsensus.blueTeam.riskLevel}</span>
-                     </div>
-                   </div>
-                </div>
-              )}
-
-              <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5 shadow-inner flex justify-between items-start mt-6">
-                <div>
-                  <span className="text-muted-foreground block mb-2 font-sans text-[10px] uppercase tracking-wider font-semibold">
-                    Inferred Inference Route
-                  </span>
-                  <span className={`font-mono text-[11px] px-2 py-1 rounded-md ${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} border ${THEME_MAP[uiTheme].border}`}>
-                    {activeTraceMessage.route || 'default_eval'}
-                  </span>
-                </div>
-                <div className="flex flex-col items-end">
-                  <span className="text-muted-foreground block mb-1 font-sans text-[10px] uppercase tracking-wider font-semibold">
-                    Security Status
-                  </span>
-                  {activeTraceMessage.isVerifiedContent ? 
-                    <span className="text-emerald-400 font-sans text-[10px] font-bold flex items-center gap-1 bg-emerald-950/40 border border-emerald-500/20 px-2 py-1 rounded-md">
-                      <CheckCircle size={12}/> VERIFIED
-                    </span> : 
-                    <span className="text-amber-400 font-sans text-[10px] font-bold flex items-center gap-1 bg-amber-950/40 border border-amber-500/20 px-2 py-1 rounded-md">
-                      <AlertTriangle size={12}/> UNVERIFIED
-                    </span>
-                  }
-                </div>
-              </div>
-
-              {activeTraceMessage.metrics && (
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="bg-black/30 border border-white/5 rounded-lg p-2 flex flex-col items-center justify-center text-center">
-                    <Timer size={14} className="text-zinc-500 mb-1" />
-                    <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-sans">Latency</span>
-                    <span className="text-white font-mono text-xs">{activeTraceMessage.metrics.latencyMs}ms</span>
+              {activePanelTab === 'investigation' ? (
+                <>
+                  {/* Status Tags */}
+                  <div className="flex items-center justify-between text-[10px] font-mono font-bold uppercase tracking-wider">
+                    <div>
+                      <span className="text-muted-foreground block mb-1 font-sans normal-case tracking-wide font-semibold">Analysis Route</span>
+                      <span className={`px-2 py-1 ${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} border ${THEME_MAP[uiTheme].border} rounded`}>
+                        {activeTraceMessage.route || 'default_eval'}
+                      </span>
+                    </div>
+                    <div className="flex flex-col items-end">
+                      <span className="text-muted-foreground block mb-1 font-sans normal-case tracking-wide font-semibold">Evidence Status</span>
+                      {activeTraceMessage.isVerifiedContent ? 
+                        <span className="text-emerald-400 flex items-center gap-1 bg-emerald-950/40 border border-emerald-500/20 px-2 py-1 rounded">
+                          <CheckCircle size={12}/> VERIFIED
+                        </span> : 
+                        <span className="text-amber-400 flex items-center gap-1 bg-amber-950/40 border border-amber-500/20 px-2 py-1 rounded">
+                          <AlertTriangle size={12}/> UNVERIFIED
+                        </span>
+                      }
+                    </div>
                   </div>
-                  <div className="bg-black/30 border border-white/5 rounded-lg p-2 flex flex-col items-center justify-center text-center">
-                    <Cpu size={14} className="text-zinc-500 mb-1" />
-                    <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-sans">Tokens</span>
-                    <span className="text-white font-mono text-xs">{activeTraceMessage.metrics.tokensUsed ?? '—'}</span>
-                  </div>
-                  <div className="bg-black/30 border border-white/5 rounded-lg p-2 flex flex-col items-center justify-center text-center">
-                    <ShieldCheck size={14} className="text-zinc-500 mb-1" />
-                    <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-sans">Confidence</span>
-                    <span className={`${THEME_MAP[uiTheme].text} font-mono text-xs`}>{activeTraceMessage.metrics.confidenceScore != null ? `${activeTraceMessage.metrics.confidenceScore}%` : '—'}</span>
-                  </div>
-                </div>
-              )}
 
-              <div className="border border-white/5 rounded-lg overflow-hidden bg-black/20">
-                <button 
-                  onClick={() => setShowRawJson(!showRawJson)} 
-                  className="w-full p-3 flex justify-between items-center text-[10px] font-sans uppercase tracking-wider text-zinc-400 hover:text-white transition-colors bg-white/[0.02]"
-                >
-                  <span className="flex items-center gap-2">
-                    <FileJson size={14}/> View Raw JSON Payload
-                  </span>
-                  <ChevronDown size={14} className={`transition-transform duration-300 ${showRawJson ? 'rotate-180' : ''}`} />
-                </button>
-                {showRawJson && (
-                  <div className="p-3 border-t border-white/5 text-[9px] text-zinc-400 overflow-x-auto">
-                    <pre>{JSON.stringify({ 
-                      request_id: "req_" + generateUniqueID(), 
-                      timestamp: activeTraceMessage.ts, 
-                      route: activeTraceMessage.route, 
-                      execution_metrics: activeTraceMessage.metrics, 
-                      active_targets: extractedTargets 
-                    }, null, 2)}</pre>
-                  </div>
-                )}
-              </div>
+                  {/* Trust metrics — every cell is optional and only appears
+                      if activeTraceMessage.metrics actually carries that
+                      field. An empty grid is the honest outcome when the
+                      backend hasn't wired this up yet; never fill gaps with
+                      plausible-looking numbers. */}
+                  {(() => {
+                    const m = activeTraceMessage.metrics;
+                    const cells = [
+                      m?.confidenceScore != null && { icon: ShieldCheck, label: 'Confidence', value: `${m.confidenceScore}%`, tone: THEME_MAP[uiTheme].text },
+                      m?.sourceCount != null && { icon: Database, label: 'Sources', value: String(m.sourceCount), tone: 'text-white' },
+                      m?.claimsVerified != null && { icon: FileText, label: 'Claims Verified', value: String(m.claimsVerified), tone: 'text-white' },
+                      m?.conflictsDetected != null && { icon: AlertTriangle, label: 'Conflicts', value: String(m.conflictsDetected), tone: m.conflictsDetected > 0 ? 'text-rose-400' : 'text-emerald-400' }
+                    ].filter(Boolean) as { icon: any; label: string; value: string; tone: string }[];
 
-              <div className="space-y-3 pt-2">
-                <span className="text-muted-foreground block font-sans text-[10px] uppercase tracking-wider font-semibold border-b border-white/5 pb-2">
-                  Execution Pipeline Logs
-                </span>
-                {activeTraceMessage.steps && activeTraceMessage.steps.length > 0 ? (
-                  <div className="space-y-2 relative before:absolute before:inset-0 before:ml-[11px] before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-white/10 before:to-transparent">
-                    {activeTraceMessage.steps.map((step: string, index: number) => (
-                      <div 
-                        key={index} 
-                        className="relative flex items-start gap-3 p-3 rounded-lg bg-black/50 border border-white/5 font-mono text-[11px] text-muted-foreground leading-relaxed break-words hover:border-white/10 transition-colors group"
-                      >
-                        <div className={`absolute -left-1.5 top-3.5 size-3 bg-[#0a0a0c] border-2 rounded-full transition-all z-10 border-${THEME_MAP[uiTheme].accent}-500/50 group-hover:border-${THEME_MAP[uiTheme].accent}-400`} />
-                        <div className="ml-2 w-full">
-                          <span className={`${THEME_MAP[uiTheme].text} opacity-70 block mb-1 font-sans text-[9px] uppercase font-bold tracking-widest`}>
-                            Step 0{index + 1}
+                    if (cells.length === 0) {
+                      return (
+                        <div className="text-muted-foreground italic text-center py-2 border border-dashed border-white/10 rounded-lg bg-white/[0.01]">
+                          Extended verification metrics not reported by this pipeline yet.
+                        </div>
+                      );
+                    }
+
+                    const colClass = cells.length >= 4 ? 'grid-cols-4' : cells.length === 3 ? 'grid-cols-3' : cells.length === 2 ? 'grid-cols-2' : 'grid-cols-1';
+
+                    return (
+                      <div className={`grid gap-2 ${colClass}`}>
+                        {cells.map((c, i) => (
+                          <div key={i} className="bg-black/30 border border-white/5 rounded-lg p-2 flex flex-col items-center justify-center text-center">
+                            <c.icon size={14} className="text-zinc-500 mb-1" />
+                            <span className="text-[9px] text-zinc-500 uppercase tracking-wider font-sans">{c.label}</span>
+                            <span className={`${c.tone} font-mono text-xs`}>{c.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Swarm Consensus — only renders if the backend actually
+                      ran a red/blue team evaluation for this message. */}
+                  {activeTraceMessage.swarmConsensus && (
+                    <div className="space-y-3">
+                       <span className="text-muted-foreground block font-sans text-[10px] uppercase tracking-wider font-semibold border-b border-white/5 pb-2 flex items-center gap-2">
+                         <GitMerge size={12}/> Multi-Agent Swarm Consensus
+                       </span>
+                       <div className="p-3 bg-rose-500/5 border border-rose-500/20 rounded-xl relative overflow-hidden group">
+                         <div className="absolute top-0 right-0 bg-rose-500/20 text-rose-400 text-[8px] px-2 py-0.5 rounded-bl-lg font-bold">RED TEAM (OFFENSIVE)</div>
+                         <div className="font-mono text-rose-300/80 mb-2 leading-relaxed mt-2">"{activeTraceMessage.swarmConsensus.redTeam.logic}"</div>
+                         <div className="flex items-center justify-between bg-black/40 p-2 rounded border border-rose-500/10">
+                           <span className="text-rose-400/50">Exploit Confidence</span>
+                           <span className="text-rose-400 font-bold">{activeTraceMessage.swarmConsensus.redTeam.confidence}%</span>
+                         </div>
+                       </div>
+                       <div className="p-3 bg-cyan-500/5 border border-cyan-500/20 rounded-xl relative overflow-hidden group">
+                         <div className="absolute top-0 right-0 bg-cyan-500/20 text-cyan-400 text-[8px] px-2 py-0.5 rounded-bl-lg font-bold">BLUE TEAM (DEFENSIVE)</div>
+                         <div className="font-mono text-cyan-300/80 mb-2 leading-relaxed mt-2">"{activeTraceMessage.swarmConsensus.blueTeam.mitigation}"</div>
+                         <div className="flex items-center justify-between bg-black/40 p-2 rounded border border-cyan-500/10">
+                           <span className="text-cyan-400/50">Calculated Risk Level</span>
+                           <span className="text-cyan-400 font-bold">{activeTraceMessage.swarmConsensus.blueTeam.riskLevel}</span>
+                         </div>
+                       </div>
+                    </div>
+                  )}
+
+                  {/* Investigation Timeline — built entirely from
+                      activeTraceMessage.traceEvents. If the backend hasn't
+                      started emitting these yet, this shows an honest empty
+                      state rather than a fake "Searching MITRE... ✓"
+                      sequence. See the TraceEvent interface near the top of
+                      this file for the exact contract /api/verify needs to
+                      fill in for this section to populate. */}
+                  {(() => {
+                    const events = activeTraceMessage.traceEvents ?? [];
+
+                    if (events.length === 0) {
+                      return (
+                        <div className="space-y-3 pt-2">
+                          <span className="text-muted-foreground block font-sans text-[10px] uppercase tracking-wider font-semibold border-b border-white/5 pb-2 flex items-center gap-2">
+                            <SearchCode size={12}/> Investigation Timeline
                           </span>
-                          <span className="text-foreground/80">{step}</span>
+                          <div className="text-muted-foreground italic p-4 text-center border border-dashed border-white/10 rounded-xl bg-white/[0.01] leading-relaxed">
+                            This response doesn't have a structured evidence trail yet.
+                            Check the <span className="text-foreground/70 font-medium not-italic">Diagnostics</span> tab for the raw execution log.
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    const iconFor = (ev: TraceEvent) => {
+                      switch (ev.type) {
+                        case 'search': return Database;
+                        case 'verification': return ArrowRightLeft;
+                        case 'reasoning': return Brain;
+                        case 'risk': return AlertTriangle;
+                        case 'synthesis': return FileText;
+                        default: return Activity;
+                      }
+                    };
+                    const toneFor = (ev: TraceEvent) => {
+                      if (ev.result === 'conflict' || ev.status === 'failed') return { dot: 'border-rose-500/50 shadow-[0_0_8px_rgba(244,63,94,0.5)]', text: 'text-rose-400' };
+                      if (ev.result === 'unverified' || ev.status === 'partial') return { dot: 'border-amber-500/50 shadow-[0_0_8px_rgba(245,158,11,0.5)]', text: 'text-amber-400' };
+                      if (ev.type === 'risk') return { dot: 'border-amber-500/50 shadow-[0_0_8px_rgba(245,158,11,0.5)]', text: 'text-amber-400' };
+                      return { dot: 'border-emerald-500/50 shadow-[0_0_8px_rgba(16,185,129,0.5)]', text: 'text-emerald-400' };
+                    };
+
+                    return (
+                      <div className="space-y-3 pt-2">
+                        <span className="text-muted-foreground block font-sans text-[10px] uppercase tracking-wider font-semibold border-b border-white/5 pb-2 flex items-center gap-2">
+                          <SearchCode size={12}/> Investigation Timeline
+                        </span>
+                        <div className="space-y-0 relative before:absolute before:inset-0 before:ml-[11px] before:-translate-x-px before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-white/10 before:to-transparent">
+                          {events.map((ev, idx) => {
+                            const Icon = iconFor(ev);
+                            const tone = toneFor(ev);
+                            return (
+                              <div key={ev.id ?? idx} className="relative flex items-start gap-3 pb-6 last:pb-0 group">
+                                <div className={`absolute -left-1.5 top-1 size-3 bg-[#0a0a0c] border-2 rounded-full z-10 ${tone.dot}`} />
+                                <div className="ml-2 w-full bg-white/[0.02] border border-white/5 rounded-lg p-3">
+                                  <h3 className={`text-xs font-bold mb-2 flex items-center gap-2 ${tone.text}`}>
+                                    <Icon className="w-3 h-3 shrink-0" /> 
+                                    <span className="flex-1">{ev.label}</span>
+                                    {ev.latencyMs != null && <span className="text-[9px] text-zinc-500 font-mono normal-case">{ev.latencyMs}ms</span>}
+                                  </h3>
+                                  {ev.type === 'verification' ? (
+                                    <div className="flex items-center gap-2 bg-black/40 p-1.5 rounded border border-white/5 font-mono text-[10px] text-zinc-300">
+                                      <span>{ev.left}</span> <ArrowRightLeft className="w-2.5 h-2.5 text-zinc-600 shrink-0"/> <span>{ev.right}</span>
+                                      <span className={`ml-auto ${tone.text} capitalize`}>{ev.result ?? 'unknown'}</span>
+                                    </div>
+                                  ) : ev.type === 'risk' ? (
+                                    <div className="font-mono text-[10px] space-y-1 text-zinc-400">
+                                      {ev.severity && (
+                                        <p>Severity: <span className={`font-bold ${tone.text}`}>{ev.severity}{ev.cvss != null ? ` (CVSS ${ev.cvss})` : ''}</span></p>
+                                      )}
+                                      {ev.detail && <p>{ev.detail}</p>}
+                                    </div>
+                                  ) : (
+                                    ev.detail && <p className="font-mono text-[10px] text-zinc-400 leading-relaxed">{ev.detail}</p>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
-                    ))}
+                    );
+                  })()}
+                </>
+              ) : (
+                <>
+                  {/* Diagnostics: developer-facing view of the raw execution
+                      — model routing, latency, tokens, and the unprocessed
+                      step log. Same real data that was here before; nothing
+                      added, nothing invented, just moved under its own tab. */}
+                  <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5 shadow-inner flex justify-between items-start">
+                    <div>
+                      <span className="text-muted-foreground block mb-2 font-sans text-[10px] uppercase tracking-wider font-semibold">
+                        Inferred Inference Route
+                      </span>
+                      <span className={`font-mono text-[11px] px-2 py-1 rounded-md ${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} border ${THEME_MAP[uiTheme].border}`}>
+                        {activeTraceMessage.route || 'default_eval'}
+                      </span>
+                    </div>
+                    <div className="flex flex-col items-end">
+                      <span className="text-muted-foreground block mb-1 font-sans text-[10px] uppercase tracking-wider font-semibold">
+                        Security Status
+                      </span>
+                      {activeTraceMessage.isVerifiedContent ? 
+                        <span className="text-emerald-400 font-sans text-[10px] font-bold flex items-center gap-1 bg-emerald-950/40 border border-emerald-500/20 px-2 py-1 rounded-md">
+                          <CheckCircle size={12}/> VERIFIED
+                        </span> : 
+                        <span className="text-amber-400 font-sans text-[10px] font-bold flex items-center gap-1 bg-amber-950/40 border border-amber-500/20 px-2 py-1 rounded-md">
+                          <AlertTriangle size={12}/> UNVERIFIED
+                        </span>
+                      }
+                    </div>
                   </div>
-                ) : (
-                  <div className="text-muted-foreground italic p-3 text-center border border-dashed border-white/10 rounded-xl bg-white/[0.01]">
-                    No intermediary diagnostic chains reported.
+
+                  {activeTraceMessage.metrics && (
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="bg-black/30 border border-white/5 rounded-lg p-2 flex flex-col items-center justify-center text-center">
+                        <Timer size={14} className="text-zinc-500 mb-1" />
+                        <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-sans">Latency</span>
+                        <span className="text-white font-mono text-xs">{activeTraceMessage.metrics.latencyMs}ms</span>
+                      </div>
+                      <div className="bg-black/30 border border-white/5 rounded-lg p-2 flex flex-col items-center justify-center text-center">
+                        <Cpu size={14} className="text-zinc-500 mb-1" />
+                        <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-sans">Tokens</span>
+                        <span className="text-white font-mono text-xs">{activeTraceMessage.metrics.tokensUsed ?? '—'}</span>
+                      </div>
+                      <div className="bg-black/30 border border-white/5 rounded-lg p-2 flex flex-col items-center justify-center text-center">
+                        <ShieldCheck size={14} className="text-zinc-500 mb-1" />
+                        <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-sans">Confidence</span>
+                        <span className={`${THEME_MAP[uiTheme].text} font-mono text-xs`}>{activeTraceMessage.metrics.confidenceScore != null ? `${activeTraceMessage.metrics.confidenceScore}%` : '—'}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="border border-white/5 rounded-lg overflow-hidden bg-black/20">
+                    <button 
+                      onClick={() => setShowRawJson(!showRawJson)} 
+                      className="w-full p-3 flex justify-between items-center text-[10px] font-sans uppercase tracking-wider text-zinc-400 hover:text-white transition-colors bg-white/[0.02]"
+                    >
+                      <span className="flex items-center gap-2">
+                        <FileJson size={14}/> View Raw JSON Payload
+                      </span>
+                      <ChevronDown size={14} className={`transition-transform duration-300 ${showRawJson ? 'rotate-180' : ''}`} />
+                    </button>
+                    {showRawJson && (
+                      <div className="p-3 border-t border-white/5 text-[9px] text-zinc-400 overflow-x-auto">
+                        <pre>{JSON.stringify({ 
+                          request_id: "req_" + generateUniqueID(), 
+                          timestamp: activeTraceMessage.ts, 
+                          route: activeTraceMessage.route, 
+                          execution_metrics: activeTraceMessage.metrics, 
+                          active_targets: extractedTargets 
+                        }, null, 2)}</pre>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+
+                  <div className="space-y-3 pt-2">
+                    <span className="text-muted-foreground block font-sans text-[10px] uppercase tracking-wider font-semibold border-b border-white/5 pb-2">
+                      Raw Execution Log
+                    </span>
+                    {activeTraceMessage.steps && activeTraceMessage.steps.length > 0 ? (
+                      <div className="space-y-2 relative before:absolute before:inset-0 before:ml-[11px] before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-white/10 before:to-transparent">
+                        {activeTraceMessage.steps.map((step: string, index: number) => (
+                          <div 
+                            key={index} 
+                            className="relative flex items-start gap-3 p-3 rounded-lg bg-black/50 border border-white/5 font-mono text-[11px] text-muted-foreground leading-relaxed break-words hover:border-white/10 transition-colors group"
+                          >
+                            <div className={`absolute -left-1.5 top-3.5 size-3 bg-[#0a0a0c] border-2 rounded-full transition-all z-10 border-${THEME_MAP[uiTheme].accent}-500/50 group-hover:border-${THEME_MAP[uiTheme].accent}-400`} />
+                            <div className="ml-2 w-full">
+                              <span className={`${THEME_MAP[uiTheme].text} opacity-70 block mb-1 font-sans text-[9px] uppercase font-bold tracking-widest`}>
+                                Step 0{index + 1}
+                              </span>
+                              <span className="text-foreground/80">{step}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-muted-foreground italic p-3 text-center border border-dashed border-white/10 rounded-xl bg-white/[0.01]">
+                        No intermediary diagnostic chains reported.
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}
