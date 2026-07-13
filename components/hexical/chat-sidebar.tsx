@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import {
   Download,
@@ -68,6 +68,7 @@ export function ChatSidebar({
   isOpen,
   userName,
   userEmail,
+  avatarUrl,
   currentTier,
   onToggleOpen,
   onSelect,
@@ -89,31 +90,43 @@ export function ChatSidebar({
   useEffect(() => {
     if (!menuOpenId) return
 
-    const handleClickOutside = (event: MouseEvent) => {
+    const handleClickOutside = (event: MouseEvent | TouchEvent) => {
       if (!(event.target instanceof Element)) return
       if (event.target.closest('[data-chat-menu], [data-chat-menu-trigger]')) return
       setMenuOpenId(null)
     }
 
     document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
+    document.addEventListener('touchstart', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('touchstart', handleClickOutside)
+    }
   }, [menuOpenId])
 
   const pinnedChats = useMemo(() => chats.filter((chat) => chat.pinned), [chats])
   const recentChats = useMemo(() => chats.filter((chat) => !chat.pinned), [chats])
 
-  const startRename = (id: string, currentTitle: string) => {
+  // Stable identities so React.memo on ChatItem actually skips re-rendering
+  // sibling rows while one row is being renamed, hovered, or menu'd.
+  const startRename = useCallback((id: string, currentTitle: string) => {
     setEditingId(id)
     setEditValue(currentTitle.slice(0, CHAT_TITLE_MAX_LENGTH))
     setMenuOpenId(null)
-  }
+  }, [])
 
-  const submitRename = (id: string) => {
-    const nextTitle = editValue.trim().slice(0, CHAT_TITLE_MAX_LENGTH)
-    if (nextTitle) onRenameChat(id, nextTitle)
-    setEditingId(null)
-    setEditValue('')
-  }
+  // Takes the current value explicitly rather than reading it from a
+  // component-level closure, so this can stay referentially stable across
+  // every keystroke instead of being rebuilt each render.
+  const submitRename = useCallback(
+    (id: string, value: string) => {
+      const nextTitle = value.trim().slice(0, CHAT_TITLE_MAX_LENGTH)
+      if (nextTitle) onRenameChat(id, nextTitle)
+      setEditingId(null)
+      setEditValue('')
+    },
+    [onRenameChat],
+  )
 
   const chatItemProps = {
     activeId,
@@ -259,12 +272,20 @@ export function ChatSidebar({
           }`}
         >
           {!isLoaded && (
-            <div className="flex w-full animate-pulse items-center gap-3">
-              <div className="size-8 flex-shrink-0 rounded-md bg-white/10" />
+            <div className="flex w-full items-center gap-3">
+              {avatarUrl ? (
+                <img
+                  src={avatarUrl}
+                  alt=""
+                  className="size-8 flex-shrink-0 rounded-md object-cover"
+                />
+              ) : (
+                <div className="size-8 flex-shrink-0 animate-pulse rounded-md bg-white/10" />
+              )}
               {isOpen && (
                 <div className="flex w-full flex-1 flex-col gap-1.5">
-                  <div className="h-3.5 w-2/3 rounded bg-white/10" />
-                  <div className="h-2.5 w-1/2 rounded bg-white/5" />
+                  <div className="h-3.5 w-2/3 animate-pulse rounded bg-white/10" />
+                  <div className="h-2.5 w-1/2 animate-pulse rounded bg-white/5" />
                 </div>
               )}
             </div>
@@ -320,14 +341,14 @@ interface ChatItemProps {
   editValue: string
   setEditValue: (value: string) => void
   onSelect: (id: string) => void
-  submitRename: (id: string) => void
+  submitRename: (id: string, value: string) => void
   startRename: (id: string, title: string) => void
   onTogglePin: (id: string) => void
   onDeleteChat: (id: string) => void
   activeId: string
 }
 
-function ChatItem({
+const ChatItem = memo(function ChatItem({
   chat,
   menuOpenId,
   setMenuOpenId,
@@ -346,6 +367,37 @@ function ChatItem({
   const isEditing = editingId === chat.id
   const isMenuOpen = menuOpenId === chat.id
 
+  const menuTriggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  // Guards against the rename input's onBlur re-firing after Enter/Escape
+  // has already unmounted it — removing a focused element from the DOM
+  // triggers a native blur, which would otherwise replay a stale submit.
+  const suppressBlurRef = useRef(false)
+  const menuId = `chat-menu-${chat.id}`
+
+  // Accessible menu-button focus behavior: send focus to the first item
+  // when the menu opens, and return it to the trigger when it closes —
+  // via keyboard, an item click, or an outside click, all funnel through
+  // the same isMenuOpen transition.
+  useEffect(() => {
+    if (!isMenuOpen) return
+    const firstItem = menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')
+    firstItem?.focus()
+    return () => {
+      menuTriggerRef.current?.focus()
+    }
+  }, [isMenuOpen])
+
+  const focusMenuItem = (direction: 1 | -1) => {
+    const items = menuRef.current
+      ? Array.from(menuRef.current.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'))
+      : []
+    if (items.length === 0) return
+    const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement)
+    const nextIndex = (currentIndex + direction + items.length) % items.length
+    items[nextIndex]?.focus()
+  }
+
   return (
     <div className="group relative flex w-full items-center">
       {isEditing ? (
@@ -353,18 +405,27 @@ function ChatItem({
           autoFocus
           value={editValue}
           maxLength={CHAT_TITLE_MAX_LENGTH}
+          aria-label={`Rename ${chat.title}`}
           onChange={(event) => setEditValue(event.target.value.slice(0, CHAT_TITLE_MAX_LENGTH))}
           onBlur={() => {
+            if (suppressBlurRef.current) {
+              suppressBlurRef.current = false
+              return
+            }
             if (!editValue.trim()) {
               setEditingId(null)
               setEditValue('')
               return
             }
-            submitRename(chat.id)
+            submitRename(chat.id, editValue)
           }}
           onKeyDown={(event) => {
-            if (event.key === 'Enter') submitRename(chat.id)
+            if (event.key === 'Enter') {
+              suppressBlurRef.current = true
+              submitRename(chat.id, editValue)
+            }
             if (event.key === 'Escape') {
+              suppressBlurRef.current = true
               setEditingId(null)
               setEditValue('')
             }
@@ -376,12 +437,6 @@ function ChatItem({
           type="button"
           aria-current={isActive ? 'page' : undefined}
           onClick={() => onSelect(chat.id)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault()
-              onSelect(chat.id)
-            }
-          }}
           className={`flex flex-1 items-center gap-3 truncate rounded-lg border p-2.5 font-sans text-sm transition-colors ${
             isActive
               ? 'border-white/5 bg-white/10 font-medium text-white'
@@ -396,8 +451,12 @@ function ChatItem({
       {!isEditing && (
         <button
           type="button"
+          ref={menuTriggerRef}
           data-chat-menu-trigger
           aria-label={`Open options for ${chat.title}`}
+          aria-haspopup="menu"
+          aria-expanded={isMenuOpen}
+          aria-controls={menuId}
           onClick={(event) => {
             event.stopPropagation()
             setMenuOpenId(isMenuOpen ? null : chat.id)
@@ -412,15 +471,29 @@ function ChatItem({
 
       {isMenuOpen && (
         <div
+          ref={menuRef}
           data-chat-menu
-          tabIndex={-1}
+          id={menuId}
+          role="menu"
+          aria-label={`Options for ${chat.title}`}
           onKeyDown={(event) => {
-            if (event.key === 'Escape') setMenuOpenId(null)
+            if (event.key === 'Escape') {
+              setMenuOpenId(null)
+            }
+            if (event.key === 'ArrowDown') {
+              event.preventDefault()
+              focusMenuItem(1)
+            }
+            if (event.key === 'ArrowUp') {
+              event.preventDefault()
+              focusMenuItem(-1)
+            }
           }}
           className="absolute right-2 top-10 z-[999] w-48 rounded-xl border border-white/10 bg-[#111116] py-1.5 font-sans shadow-2xl animate-fade-in"
         >
           <button
             type="button"
+            role="menuitem"
             onClick={(event) => {
               event.stopPropagation()
               setMenuOpenId(null)
@@ -432,6 +505,7 @@ function ChatItem({
 
           <button
             type="button"
+            role="menuitem"
             onClick={(event) => {
               event.stopPropagation()
               onTogglePin(chat.id)
@@ -444,6 +518,7 @@ function ChatItem({
 
           <button
             type="button"
+            role="menuitem"
             onClick={(event) => {
               event.stopPropagation()
               startRename(chat.id, chat.title)
@@ -457,6 +532,7 @@ function ChatItem({
 
           <button
             type="button"
+            role="menuitem"
             onClick={(event) => {
               event.stopPropagation()
               onDeleteChat(chat.id)
@@ -470,4 +546,4 @@ function ChatItem({
       )}
     </div>
   )
-}
+})

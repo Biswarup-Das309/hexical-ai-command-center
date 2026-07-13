@@ -403,3 +403,46 @@ export function getDailyBudgetPaise(): number {
   const budgetInr = Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_DAILY_BUDGET_INR;
   return Math.round(budgetInr * 100);
 }
+// ---------------------------------------------------------------------------
+// Swarm Engine Types (Added for Interactive UI Support)
+// ---------------------------------------------------------------------------
+
+// All valid AI agent roles in the Hexical Swarm
+export type AgentRoleType = 
+  | 'coordinator' 
+  | 'planner' 
+  | 'red_team_exploit' 
+  | 'blue_team_defense' 
+  | 'consensus_engine';
+
+// The structure of a single argument made by an agent during execution
+export interface DebateRound {
+  roundNumber: number;
+  proposingAgentId: string;
+  proposingAgentRole: AgentRoleType;
+  argument: string;
+  evidenceASTNodeIds: string[]; // The specific AST nodes they are referencing
+  concessionMade: boolean;
+  timestampMs: number;
+}
+
+// The final vote cast by an agent after a debate to determine vulnerability state
+export interface ConsensusVote {
+  agentId: string;
+  role: AgentRoleType;
+  vote: 'SECURE' | 'VULNERABLE' | 'ABSTAIN';
+  rationale: string;
+}
+// ---------------------------------------------------------------------------
+// Chat Stream Types
+// ---------------------------------------------------------------------------
+
+export interface StreamMessage {
+  id: string;
+  role: 'user' | 'hexical' | 'system';
+  text: string;
+  ts: string; 
+  steps?: string[];
+  valid?: boolean;
+  route?: string;
+}
