@@ -423,11 +423,14 @@ export async function POST(req: Request): Promise<NextResponse> {
   // based on whatever it returns. It never builds a LanguageModel or calls
   // generateObject() itself — that stays behind the provider boundary.
   let structuredFinding: StructuredFinding | null = null;
-  const eliteTraceEnabled = tierFeatures.includes('interactive_topology'); // Plus/Pro gate
+  // Plus/Pro gate — same threshold decides whether we pay for the extra
+  // extraction call below AND whether traceEvents is present in the response
+  // at all (see the tier strip in the final response and in respondFromCache).
+  const traceLogsEnabled = tierFeatures.includes('interactive_topology');
 
-  if (eliteTraceEnabled) {
+  if (traceLogsEnabled) {
     const findingInputTokens = estimateRequestTokens('', `${userMsg}\n${result.text}`);
-    const findingOutputTokens = 400;
+    const findingOutputTokens = 500; // bumped slightly to leave room for the sources array
     const findingReservation = await reserveMonthlyTokens(redis, userId, activeTier, findingInputTokens + findingOutputTokens);
     const findingPaiseEstimate = estimateCostPaise(result.provider, findingInputTokens, findingOutputTokens);
     const findingCostReservation = findingReservation.allowed
@@ -443,7 +446,13 @@ export async function POST(req: Request): Promise<NextResponse> {
           'Extract structured findings from a completed security analysis. Only report ' +
           'what the analysis actually concluded — if it found no vulnerability, set risk ' +
           'to null rather than inventing one. Evidence strings must cite specifics from ' +
-          'the analysis text, not generic boilerplate.',
+          'the analysis text, not generic boilerplate. Every verification and every risk ' +
+          'object must also include a `sources` array: one entry per distinct fact you ' +
+          'relied on, each with a `type` (code_location, cwe, owasp, cve, documentation, ' +
+          'or analysis_text), a short `label`, and — where one exists in the analysis — a ' +
+          '`locator` such as a line reference, a CWE/CVE id, or the exact phrase in the ' +
+          'analysis text the claim is grounded in. Never invent a locator; omit it rather ' +
+          'than guess. If you cannot point to a real source for a claim, drop the claim.',
         prompt: `Original input:\n${userMsg}\n\nCompleted analysis:\n${result.text}`,
         schema: StructuredFindingSchema,
         maxOutputTokens: findingOutputTokens,
