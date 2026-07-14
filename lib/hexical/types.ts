@@ -3,6 +3,19 @@
  * Shared types, request schema, and tier/plan configuration.
  * This file is the single source of truth for pricing, limits, and payload
  * shape — every other module imports from here instead of redefining config.
+ *
+ * v5.1 patch:
+ *  - Added SubscriptionStatus / TierEntitlement / resolveEntitlement() so a
+ *    tier can carry a real expiry instead of being a bare string that only
+ *    ever gets set by hand. resolveEntitlement() is what route.ts now calls
+ *    instead of a bare normalizeTier() — it downgrades to 'free' the moment
+ *    tier_expires_at is in the past, even if the `profiles.tier` column
+ *    itself hasn't been reset yet.
+ *  - Added ERROR_CODES: a stable, machine-readable code on every error
+ *    response from /api/verify, so the frontend can tell "you need to
+ *    upgrade your plan" apart from "this action needs an authorization
+ *    scope" apart from "you're rate limited" instead of collapsing every
+ *    4xx into the same upgrade modal.
  */
 
 import { z } from 'zod';
@@ -345,9 +358,96 @@ export function readBooleanEnv(key: string, fallback: boolean): boolean {
 }
 
 export function normalizeTier(raw: unknown): Tier {
-  const tier = String(raw ?? 'free').toLowerCase();
+  const tier = String(raw ?? 'free').trim().toLowerCase();
   return VALID_TIERS.includes(tier as Tier) ? (tier as Tier) : 'free';
 }
+
+// ---------------------------------------------------------------------------
+// Entitlement resolution (tier + expiry + subscription status)
+// ---------------------------------------------------------------------------
+// Previously, `profiles.tier` was read as a bare string with no concept of
+// "until when." That's what made manual upgrades (Supabase dashboard edits,
+// support-granted trials, etc.) impossible to reason about on the frontend
+// ("is this still active? until when?") and let a cancelled/expired grant
+// keep working indefinitely if nobody remembered to flip the column back.
+//
+// resolveEntitlement() is the single place that turns
+// (tier, tier_expires_at, subscription_status) into what actually gets
+// enforced. Call it everywhere tier gating happens — don't call
+// normalizeTier() directly on a profile row and skip the expiry check.
+//
+// Schema this expects on `profiles` (see supabase/migrations in the repo
+// root for the exact SQL): `tier_expires_at timestamptz null`,
+// `subscription_status text null`. Both are nullable — a null
+// `tier_expires_at` means "no expiry on file" (e.g. free tier, or a
+// lifetime/manual grant with no end date), not "expired."
+
+export type SubscriptionStatus = 'active' | 'canceled' | 'past_due' | 'none';
+const VALID_SUBSCRIPTION_STATUSES: readonly SubscriptionStatus[] = ['active', 'canceled', 'past_due', 'none'] as const;
+
+export interface TierEntitlement {
+  /** The tier that should actually be enforced right now — already
+   *  downgraded to 'free' if `expiresAt` has passed. */
+  tier: Tier;
+  subscriptionStatus: SubscriptionStatus;
+  /** ISO timestamp string, or null if there's no expiry on record. */
+  expiresAt: string | null;
+  /** True if `expiresAt` was in the past at resolution time. */
+  expired: boolean;
+}
+
+export function resolveEntitlement(rawTier: unknown, rawExpiresAt: unknown, rawStatus: unknown): TierEntitlement {
+  const storedTier = normalizeTier(rawTier);
+  const expiresAt = typeof rawExpiresAt === 'string' && rawExpiresAt.length > 0 ? rawExpiresAt : null;
+
+  const parsedExpiry = expiresAt ? new Date(expiresAt) : null;
+  const expired = parsedExpiry !== null && !Number.isNaN(parsedExpiry.getTime()) && parsedExpiry.getTime() < Date.now();
+
+  const statusRaw = typeof rawStatus === 'string' ? rawStatus.trim().toLowerCase() : '';
+  const storedStatus: SubscriptionStatus = VALID_SUBSCRIPTION_STATUSES.includes(statusRaw as SubscriptionStatus)
+    ? (statusRaw as SubscriptionStatus)
+    : storedTier === 'free'
+      ? 'none'
+      : 'active';
+
+  return {
+    tier: expired ? 'free' : storedTier,
+    subscriptionStatus: expired ? 'past_due' : storedStatus,
+    expiresAt,
+    expired,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Error codes
+// ---------------------------------------------------------------------------
+// Stable, machine-readable identifiers attached to every error JSON body
+// /api/verify returns (as `code`). HTTP status alone isn't enough for the
+// frontend to react correctly — a 403 from "you need to upgrade" and a 403
+// from "you need an authorization scope for this target" require completely
+// different UI (upgrade modal vs. a scope-required message), and collapsing
+// them was the direct cause of Pro users being sent to the billing page for
+// swarm/exploit requests that actually failed the authorization gate, not
+// the tier gate.
+export const ERROR_CODES = {
+  SERVER_CONFIG_ERROR: 'SERVER_CONFIG_ERROR',
+  UNAUTHENTICATED: 'UNAUTHENTICATED',
+  REQUEST_BODY_TOO_LARGE: 'REQUEST_BODY_TOO_LARGE',
+  MALFORMED_REQUEST: 'MALFORMED_REQUEST',
+  SCHEMA_VALIDATION_FAILED: 'SCHEMA_VALIDATION_FAILED',
+  REPLAY_REJECTED: 'REPLAY_REJECTED',
+  TIER_CHAR_LIMIT_EXCEEDED: 'TIER_CHAR_LIMIT_EXCEEDED',
+  TIER_UPGRADE_REQUIRED: 'TIER_UPGRADE_REQUIRED',
+  AUTHORIZATION_REQUIRED: 'AUTHORIZATION_REQUIRED',
+  RATE_LIMITED: 'RATE_LIMITED',
+  MESSAGE_QUOTA_EXCEEDED: 'MESSAGE_QUOTA_EXCEEDED',
+  SWARM_DAILY_LIMIT_EXCEEDED: 'SWARM_DAILY_LIMIT_EXCEEDED',
+  MONTHLY_TOKEN_BUDGET_EXCEEDED: 'MONTHLY_TOKEN_BUDGET_EXCEEDED',
+  MONTHLY_COST_BUDGET_EXCEEDED: 'MONTHLY_COST_BUDGET_EXCEEDED',
+  SWARM_CONSENSUS_FAILURE: 'SWARM_CONSENSUS_FAILURE',
+  PROVIDER_FAILURE: 'PROVIDER_FAILURE',
+} as const;
+export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
 
 export const FEATURE_FLAGS = {
   swarmEnabled: readBooleanEnv('SWARM_ENABLED', true),

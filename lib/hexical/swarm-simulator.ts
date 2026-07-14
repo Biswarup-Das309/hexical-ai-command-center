@@ -2,17 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentRoleType, ConsensusVote, DebateRound } from '@/lib/hexical/types'
 
 interface SimulationStep {
-  /** Milliseconds from the start of the run when this step fires. */
   delay: number
-  /** Agent to mark active for this step. Omit to leave the current agent as-is. */
   agent?: AgentRoleType
   action?: string
-  /**
-   * timestampMs is intentionally excluded from the script — it gets stamped
-   * with the real Date.now() when the step actually fires, not when the
-   * module loads, so rounds carry a timestamp that matches when they
-   * appeared on screen.
-   */
   round?: Omit<DebateRound, 'timestampMs'>
   votes?: ConsensusVote[]
 }
@@ -67,28 +59,35 @@ const MOCK_DEBATE_SCRIPT: SimulationStep[] = [
       },
     ],
   },
-  // No `agent` here — clearing the active agent on completion is handled
-  // explicitly below instead of smuggling a `null` through a type meant
-  // for `AgentRoleType | undefined`.
   { delay: 15000, action: 'COMPLETE' },
 ]
 
 export function useSwarmSimulator() {
   const [isExecuting, setIsExecuting] = useState(false)
-  const [activeAgent, setActiveAgent] = useState<AgentRoleType | undefined>(undefined)
+  const [activeAgent, setActiveAgent] = useState<AgentRoleType>()
   const [debateRounds, setDebateRounds] = useState<DebateRound[]>([])
   const [votes, setVotes] = useState<ConsensusVote[]>([])
+
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([])
+  const runIdRef = useRef(0)
 
   const stopSimulation = useCallback(() => {
+    // Invalidate every pending callback.
+    runIdRef.current++
+
     timersRef.current.forEach(clearTimeout)
     timersRef.current = []
+
     setIsExecuting(false)
     setActiveAgent(undefined)
   }, [])
 
   const startSimulation = useCallback(() => {
     stopSimulation()
+
+    // Create a unique ID for this run.
+    const currentRunId = ++runIdRef.current
+
     setIsExecuting(true)
     setDebateRounds([])
     setVotes([])
@@ -96,12 +95,23 @@ export function useSwarmSimulator() {
 
     MOCK_DEBATE_SCRIPT.forEach((step) => {
       const timer = setTimeout(() => {
+        // Ignore stale callbacks from previous runs.
+        if (currentRunId !== runIdRef.current) {
+          return
+        }
+
         if (step.agent) {
           setActiveAgent(step.agent)
         }
 
         if (step.round) {
-          setDebateRounds((prev) => [...prev, { ...step.round, timestampMs: Date.now() } as DebateRound])
+          setDebateRounds((prev) => [
+            ...prev,
+            {
+              ...step.round,
+              timestampMs: Date.now(),
+            } as DebateRound,
+          ])
         }
 
         if (step.votes) {
@@ -118,15 +128,21 @@ export function useSwarmSimulator() {
     })
   }, [stopSimulation])
 
-  // Clear any in-flight timers if the consuming component unmounts mid-run —
-  // without this, a navigation during a simulation keeps timers alive and
-  // calls setState on an unmounted component.
   useEffect(() => {
     return () => {
+      runIdRef.current++
+
       timersRef.current.forEach(clearTimeout)
       timersRef.current = []
     }
   }, [])
 
-  return { isExecuting, activeAgent, debateRounds, votes, startSimulation, stopSimulation }
+  return {
+    isExecuting,
+    activeAgent,
+    debateRounds,
+    votes,
+    startSimulation,
+    stopSimulation,
+  }
 }
