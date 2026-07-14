@@ -59,6 +59,33 @@ export const ExecutionPayloadSchema = z.object({
   requestTimestampMs: z.number().int().positive().optional(),
 });
 export type ExecutionPayload = z.infer<typeof ExecutionPayloadSchema>;
+// ---------------------------------------------------------------------------
+// Structured finding extraction (grounded LLM output for the trace panel)
+// ---------------------------------------------------------------------------
+// This schema is used with generateObject to pull verification/risk data
+// OUT of the model's own completed analysis text. The model is never asked
+// to invent a vulnerability — `risk: null` is a valid, expected, and
+// trustworthy answer when nothing was found. Evidence strings are required
+// to be specific to avoid the model defaulting to generic filler.
+export const StructuredFindingSchema = z.object({
+  verification: z.object({
+    left: z.string().max(60),
+    right: z.string().max(60),
+    result: z.enum(['verified', 'conflict', 'unverified']),
+    evidence: z.array(z.string().max(140)).min(1).max(6),
+  }),
+  risk: z
+    .object({
+      severity: z.enum(['LOW', 'MED', 'HIGH', 'CRITICAL']),
+      cvss: z.number().min(0).max(10),
+      impact: z.string().max(160),
+      attackComplexity: z.enum(['Low', 'High']),
+      privilegesRequired: z.enum(['None', 'Low', 'High']),
+      userInteraction: z.enum(['None', 'Required']),
+    })
+    .nullable(),
+});
+export type StructuredFinding = z.infer<typeof StructuredFindingSchema>;
 
 // ---------------------------------------------------------------------------
 // Result / response shapes
@@ -441,20 +468,34 @@ export interface ConsensusVote {
 // The structured telemetry event for the Investigation Timeline
 export interface TraceEvent {
   id: string;
-  type: 'search' | 'verification' | 'reasoning' | 'risk' | 'synthesis' | 'general';
+  type: 'recon' | 'fingerprint' | 'route' | 'search' | 'verification' | 'reasoning' | 'risk' | 'synthesis' | 'general';
   label: string;
   detail?: string;
   status?: 'completed' | 'partial' | 'failed';
   latencyMs?: number;
-  
-  // Fields required for 'verification' type
+
+  // 'recon' — only set when measureAttackSurface() actually found matches
+  attackSurfaceMetrics?: { endpoints: number; forms: number; authRoutes: number };
+
+  // 'fingerprint' — only set when detectTechnologies() actually matched something
+  technologies?: string[];
+
+  // 'route' — mirrors the real ModelRoute decision, nothing invented
+  routeInfo?: { selectedRoute: string; model: string; reason: string };
+
+  // 'verification'
   left?: string;
   right?: string;
   result?: 'verified' | 'conflict' | 'unverified';
-  
-  // Fields required for 'risk' type
+  evidence?: string[]; // model-reported, grounded in this specific analysis — never canned
+
+  // 'risk'
   severity?: 'LOW' | 'MED' | 'HIGH' | 'CRITICAL';
   cvss?: number;
+  impact?: string;
+  attackComplexity?: 'Low' | 'High';
+  privilegesRequired?: 'None' | 'Low' | 'High';
+  userInteraction?: 'None' | 'Required';
 }
 
 export interface StreamMessage {

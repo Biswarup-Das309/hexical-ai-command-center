@@ -74,7 +74,10 @@ const groqProvider = memoize(() => createGroq({ apiKey: process.env.GROQ_API_KEY
 const googleProvider = memoize(() => createGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY }));
 const deepseekProvider = memoize(() => createDeepSeek({ apiKey: process.env.DEEPSEEK_API_KEY }));
 
-function resolveModel(provider: Provider, modelId: string): LanguageModel {
+export function getLanguageModel(
+  provider: Provider,
+  modelId: string,
+): LanguageModel {
   switch (provider) {
     case 'anthropic':
       return anthropicProvider()(modelId);
@@ -137,7 +140,7 @@ async function callProviderOnce(args: {
   maxOutputTokens: number;
   temperature: number;
 }): Promise<ModelExecutionResult> {
-  const model = resolveModel(args.provider, args.modelId);
+  const model = getLanguageModel(args.provider, args.modelId);
 
   const { value: result, retryCount } = await withProviderRetry(args.provider, async signal => {
     return generateText({
@@ -236,7 +239,7 @@ export function streamProvider(args: {
   maxOutputTokens: number;
   temperature: number;
 }): StreamingRun {
-  const model = resolveModel(args.provider, args.modelId);
+  const model = getLanguageModel(args.provider, args.modelId);
   const result = streamText({
     model,
     system: args.systemPrompt,
@@ -288,7 +291,7 @@ async function generateAgentObject<T>(args: {
   schema: z.ZodType<T>;
   maxOutputTokens: number;
 }): Promise<{ value: T; usage: { inputTokens: number; outputTokens: number }; retryCount: number }> {
-  const model = resolveModel(args.provider, args.modelId);
+  const model = getLanguageModel(args.provider, args.modelId);
   const { value, retryCount } = await withProviderRetry(args.provider, async signal => {
     return generateObject({
       model,
@@ -378,6 +381,45 @@ export async function executeSwarm(args: {
     fallbackTrail: [],
     providerRetryCount: red.retryCount + blue.retryCount + arch.retryCount,
   };
+}
+// ---------------------------------------------------------------------------
+// Structured finding extraction (trace-panel evidence, grounded in the
+// model's own completed analysis — never invented). Reuses the same
+// generateAgentObject/circuit-breaker/retry path as the swarm agents rather
+// than a bare generateObject call, so a bad provider gets the same
+// retry-then-circuit-break treatment here as everywhere else in this file.
+// ---------------------------------------------------------------------------
+export async function extractStructuredFinding<T>(args: {
+  redis: Redis;
+  provider: Provider;
+  modelId: string;
+  system: string;
+  prompt: string;
+  schema: z.ZodType<T>;
+  maxOutputTokens: number;
+}): Promise<{ value: T; usage: { inputTokens: number; outputTokens: number } } | null> {
+  if (await isProviderCircuitOpen(args.redis, args.provider)) {
+    log.warn('structured_finding_skipped_circuit_open', { provider: args.provider });
+    return null;
+  }
+  
+  try {
+    const { value, usage } = await generateAgentObject({
+      provider: args.provider,
+      modelId: args.modelId,
+      system: args.system,
+      prompt: args.prompt,
+      schema: args.schema,
+      maxOutputTokens: args.maxOutputTokens,
+    });
+    
+    await markProviderSuccess(args.redis, args.provider);
+    return { value, usage };
+  } catch (err) {
+    await markProviderFailure(args.redis, args.provider);
+    log.warn('structured_finding_extraction_failed', { provider: args.provider, error: errorMessage(err) });
+    return null; // caller must treat this as "no finding" — never fall back to a fabricated one
+  }
 }
 
 /** Orchestrates the adaptive-Pro-swarm behaviour: run one Claude pass first;

@@ -21,8 +21,20 @@
  *    instead of relying only on a system-prompt instruction.
  *  - Optional SSE streaming for single-agent (non swarm-gated) responses.
  *  - Structured JSON logs instead of console.error/warn strings.
+ *  - Structured finding extraction holds no AI SDK calls of its own: it
+ *    reserves/reconciles budget here, then delegates the actual model call
+ *    to providers.ts's extractStructuredFinding(), which owns retry, the
+ *    circuit breaker, and provider selection. route.ts never constructs a
+ *    LanguageModel or calls generateObject() directly.
  */
-
+import {
+  executeRoute,
+  streamProvider,
+  estimateRequestTokens,
+  extractStructuredFinding,
+  SwarmParseError,
+} from '@/lib/hexical/providers';
+import { buildReconEvent, buildFingerprintEvent } from '@/lib/hexical/recon';
 import { randomUUID } from 'crypto';
 import { NextResponse, after } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
@@ -36,7 +48,9 @@ import {
   type ResponseMetrics,
   type Tier,
   type UsageEvent,
-  type TraceEvent, // <-- ADDED THIS
+  type TraceEvent,
+  type StructuredFinding,
+  StructuredFindingSchema,
   REQUIRED_ENV,
   MARGIN_CHAR_LIMITS,
   PLAN_FEATURES,
@@ -45,6 +59,7 @@ import {
   NONCE_TTL_SECS,
   MONTHLY_TOKEN_BUDGETS,
   normalizeTier,
+  providerAvailable,
 } from '@/lib/hexical/types';
 import {
   jsonHeaders,
@@ -54,6 +69,7 @@ import {
   RequestBodyTooLargeError,
   dayKeyPart,
   secondsUntilTomorrow,
+  sanitizeLabel,
 } from '@/lib/hexical/util';
 import {
   checkRateLimit,
@@ -67,21 +83,15 @@ import {
   readMonthlyTokenUsage,
   reserveMonthlyCost,
   reconcileMonthlyCost,
+  isProviderCircuitOpen,
+  markProviderFailure,
+  markProviderSuccess,
 } from '@/lib/hexical/limits';
 import { verifyAuthorization } from '@/lib/hexical/authorization';
 import { buildPromptPayload, buildSafeSystemContext, buildIsolatedUserMessage, buildSingleSystemPrompt } from '@/lib/hexical/security';
 import { chooseModelRoute, hasSensitiveCacheMarkers, fallbackProviders } from '@/lib/hexical/routing';
 import { buildCacheKey, readCachedResponse, writeCachedResponse, estimateCostPaise, allocatedRevenuePaise } from '@/lib/hexical/cache';
-import {
-  executeRoute,
-  streamProvider,
-  estimateRequestTokens,
-  SwarmParseError,
-} from '@/lib/hexical/providers';
-import { providerAvailable } from '@/lib/hexical/types';
-import { isProviderCircuitOpen, markProviderFailure, markProviderSuccess } from '@/lib/hexical/limits';
 import { log } from '@/lib/hexical/telemetry';
-import { sanitizeLabel } from '@/lib/hexical/util';
 
 export const runtime = 'nodejs';
 
@@ -245,14 +255,17 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   // --- DETERMINISTIC TELEMETRY START ---
   const traceEvents: TraceEvent[] = [];
-  
+
+  traceEvents.push(buildReconEvent(promptPayload.promptLogic, `ev-${randomUUID().slice(0, 8)}`));
+  traceEvents.push(buildFingerprintEvent(promptPayload.promptLogic, `ev-${randomUUID().slice(0, 8)}`));
+
   traceEvents.push({
     id: `ev-${randomUUID().slice(0, 8)}`,
-    type: 'search',
-    label: 'Initializing Secure Pipeline',
-    detail: `Routed to ${route.provider}/${route.model} via ${route.reason}.`,
+    type: 'route',
+    label: 'Optimal Inference Routing',
     status: 'completed',
-    latencyMs: Date.now() - startedAt
+    latencyMs: Date.now() - startedAt,
+    routeInfo: { selectedRoute: route.mode.toUpperCase(), model: route.model, reason: route.reason },
   });
   if (promptPayload.compressedConversation) {
     execSteps.push(`Compressed conversation context; older turns compacted: ${promptPayload.olderTurnsCompressed}.`);
@@ -350,8 +363,8 @@ export async function POST(req: Request): Promise<NextResponse> {
   execSteps.push(route.mode === 'swarm' ? 'Executing adaptive Red / Blue / Architect swarm.' : 'Executing single-agent model analysis.');
 
   let result;
-  const llmStartTime = Date.now(); // <-- Capture execution start time
-  
+  const llmStartTime = Date.now(); // execution start time, used for reasoning-step latency
+
   try {
     result = await executeRoute({
       redis,
@@ -389,32 +402,92 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   if (result.fallbackTrail.length > 0) execSteps.push(`Fallback trail: ${result.fallbackTrail.join(' -> ')}.`);
 
-  // --- POPULATE REMAINING TRACE EVENTS ---
   traceEvents.push({
     id: `ev-${randomUUID().slice(0, 8)}`,
     type: 'reasoning',
     label: route.mode === 'swarm' ? 'Swarm Consensus Execution' : 'AST & Control Flow Execution',
     detail: 'Heuristic engine evaluated input sanitization and interpolation matrices.',
     status: 'completed',
-    latencyMs: Date.now() - llmStartTime
+    latencyMs: Date.now() - llmStartTime,
   });
 
-  traceEvents.push({
-    id: `ev-${randomUUID().slice(0, 8)}`,
-    type: 'verification',
-    label: 'Security Rule Validation',
-    left: 'Execution Sink',
-    right: 'Input Source',
-    result: result.confidenceScore > 80 ? 'verified' : 'unverified',
-  });
+  // --- Grounded structured findings (Plus/Pro only — costs one extra call) ---
+  // Gated behind the same feature flag as other deep-analysis features so it
+  // doesn't silently blow the margin ledger for free/go tiers. Reuses the
+  // existing reserve → reconcile pattern so this call is properly accounted
+  // against MONTHLY_TOKEN_BUDGETS and MONTHLY_COST_BUDGET_PAISE, not free.
+  //
+  // route.ts's role here is strictly budget bookkeeping: reserve tokens and
+  // cost, hand the call to extractStructuredFinding() in providers.ts (which
+  // owns provider selection, the circuit breaker, and retry), then reconcile
+  // based on whatever it returns. It never builds a LanguageModel or calls
+  // generateObject() itself — that stays behind the provider boundary.
+  let structuredFinding: StructuredFinding | null = null;
+  const eliteTraceEnabled = tierFeatures.includes('interactive_topology'); // Plus/Pro gate
 
-  traceEvents.push({
-    id: `ev-${randomUUID().slice(0, 8)}`,
-    type: 'risk',
-    label: 'Vulnerability Threat Matrix',
-    severity: result.confidenceScore > 90 ? 'CRITICAL' : (result.confidenceScore > 75 ? 'HIGH' : 'MED'),
-    cvss: result.confidenceScore > 90 ? 9.1 : (result.confidenceScore > 75 ? 7.5 : 5.0),
-  });
+  if (eliteTraceEnabled) {
+    const findingInputTokens = estimateRequestTokens('', `${userMsg}\n${result.text}`);
+    const findingOutputTokens = 400;
+    const findingReservation = await reserveMonthlyTokens(redis, userId, activeTier, findingInputTokens + findingOutputTokens);
+    const findingPaiseEstimate = estimateCostPaise(result.provider, findingInputTokens, findingOutputTokens);
+    const findingCostReservation = findingReservation.allowed
+      ? await reserveMonthlyCost(redis, userId, activeTier, findingPaiseEstimate)
+      : { allowed: false as const, reservedPaise: 0 };
+
+    if (findingReservation.allowed && findingCostReservation.allowed) {
+      const finding = await extractStructuredFinding({
+        redis,
+        provider: result.provider,
+        modelId: result.model,
+        system:
+          'Extract structured findings from a completed security analysis. Only report ' +
+          'what the analysis actually concluded — if it found no vulnerability, set risk ' +
+          'to null rather than inventing one. Evidence strings must cite specifics from ' +
+          'the analysis text, not generic boilerplate.',
+        prompt: `Original input:\n${userMsg}\n\nCompleted analysis:\n${result.text}`,
+        schema: StructuredFindingSchema,
+        maxOutputTokens: findingOutputTokens,
+      });
+
+      if (finding) {
+        structuredFinding = finding.value;
+        await reconcileMonthlyTokens(
+          redis, userId, activeTier, findingReservation.reservedTokens,
+          finding.usage.inputTokens + finding.usage.outputTokens,
+        );
+        await reconcileMonthlyCost(
+          redis, userId, activeTier, findingCostReservation.reservedPaise,
+          estimateCostPaise(result.provider, finding.usage.inputTokens, finding.usage.outputTokens),
+        );
+      } else {
+        // extractStructuredFinding() already logged the failure and tripped
+        // the circuit breaker if warranted — route.ts's only remaining job
+        // is to give back the reservation it took for a call that never
+        // produced billable usage.
+        await reconcileMonthlyTokens(redis, userId, activeTier, findingReservation.reservedTokens, 0);
+        await reconcileMonthlyCost(redis, userId, activeTier, findingCostReservation.reservedPaise, 0);
+      }
+    } else if (findingReservation.allowed) {
+      await reconcileMonthlyTokens(redis, userId, activeTier, findingReservation.reservedTokens, 0);
+    }
+  }
+
+  if (structuredFinding) {
+    traceEvents.push({
+      id: `ev-${randomUUID().slice(0, 8)}`,
+      type: 'verification',
+      label: 'Security Rule Validation',
+      ...structuredFinding.verification,
+    });
+    if (structuredFinding.risk) {
+      traceEvents.push({
+        id: `ev-${randomUUID().slice(0, 8)}`,
+        type: 'risk',
+        label: 'Vulnerability Threat Matrix',
+        ...structuredFinding.risk,
+      });
+    }
+  }
 
   traceEvents.push({
     id: `ev-${randomUUID().slice(0, 8)}`,
@@ -422,7 +495,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     label: 'Compiling Final Report',
     detail: 'Synthesized execution logs and evidence trail for frontend delivery.',
     status: 'completed',
-    latencyMs: Date.now() - startedAt
+    latencyMs: Date.now() - startedAt,
   });
 
   const response: ExecutionResponse = {
@@ -430,7 +503,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     steps: execSteps,
     status: 'completed',
     swarmConsensus: result.swarmConsensus,
-    traceEvents, // <-- INJECTS TRACE EVENTS INTO THE JSON PAYLOAD
+    traceEvents,
     metrics: {
       latencyMs,
       tokensUsed: totalTokens,

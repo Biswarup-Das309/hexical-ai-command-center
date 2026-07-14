@@ -1547,6 +1547,9 @@ const hasHydratedRef = useRef<string | null>(null)
 
                     const iconFor = (ev: TraceEvent) => {
                       switch (ev.type) {
+                        case 'recon': return SearchCode;
+                        case 'fingerprint': return Cpu;
+                        case 'route': return Network;
                         case 'search': return Database;
                         case 'verification': return ArrowRightLeft;
                         case 'reasoning': return Brain;
@@ -1555,6 +1558,7 @@ const hasHydratedRef = useRef<string | null>(null)
                         default: return Activity;
                       }
                     };
+
                     const toneFor = (ev: TraceEvent) => {
                       if (ev.result === 'conflict' || ev.status === 'failed') return { dot: 'border-rose-500/50 shadow-[0_0_8px_rgba(244,63,94,0.5)]', text: 'text-rose-400' };
                       if (ev.result === 'unverified' || ev.status === 'partial') return { dot: 'border-amber-500/50 shadow-[0_0_8px_rgba(245,158,11,0.5)]', text: 'text-amber-400' };
@@ -1580,20 +1584,87 @@ const hasHydratedRef = useRef<string | null>(null)
                                     <span className="flex-1">{ev.label}</span>
                                     {ev.latencyMs != null && <span className="text-[9px] text-zinc-500 font-mono normal-case">{ev.latencyMs}ms</span>}
                                   </h3>
-                                  {ev.type === 'verification' ? (
-                                    <div className="flex items-center gap-2 bg-black/40 p-1.5 rounded border border-white/5 font-mono text-[10px] text-zinc-300">
-                                      <span>{ev.left}</span> <ArrowRightLeft className="w-2.5 h-2.5 text-zinc-600 shrink-0"/> <span>{ev.right}</span>
-                                      <span className={`ml-auto ${tone.text} capitalize`}>{ev.result ?? 'unknown'}</span>
+
+                                  {ev.type === 'recon' && ev.attackSurfaceMetrics && (
+                                    <div className="grid grid-cols-3 gap-2 mt-1 font-mono text-[10px]">
+                                      {(['endpoints', 'forms', 'authRoutes'] as const).map((k) => (
+                                        <div key={k} className="bg-black/40 p-2 rounded border border-white/5 text-center">
+                                          <div className="text-zinc-500 capitalize">{k}</div>
+                                          <div className="text-white font-bold">{ev.attackSurfaceMetrics![k]}</div>
+                                        </div>
+                                      ))}
                                     </div>
-                                  ) : ev.type === 'risk' ? (
-                                    <div className="font-mono text-[10px] space-y-1 text-zinc-400">
-                                      {ev.severity && (
-                                        <p>Severity: <span className={`font-bold ${tone.text}`}>{ev.severity}{ev.cvss != null ? ` (CVSS ${ev.cvss})` : ''}</span></p>
+                                  )}
+
+                                  {ev.type === 'fingerprint' && ev.technologies && ev.technologies.length > 0 && (
+                                    <div className="flex flex-wrap gap-1.5 mt-2">
+                                      {ev.technologies.map((tech, tIdx) => (
+                                        <span key={tIdx} className="bg-white/5 border border-white/10 px-2 py-0.5 rounded text-[9px] text-zinc-300 font-mono">
+                                          {tech}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {ev.type === 'route' && ev.routeInfo && (
+                                    <div className="grid grid-cols-1 gap-1 mt-2 bg-black/40 p-2 rounded border border-white/5 font-mono text-[10px]">
+                                      <div><span className="text-zinc-500">Route:</span> <span className="text-cyan-400 font-bold">{ev.routeInfo.selectedRoute}</span></div>
+                                      <div><span className="text-zinc-500">Model:</span> <span className="text-zinc-300">{ev.routeInfo.model}</span></div>
+                                      <div><span className="text-zinc-500">Reason:</span> <span className="text-zinc-300">{ev.routeInfo.reason}</span></div>
+                                    </div>
+                                  )}
+
+                                  {ev.type === 'verification' && (
+                                    <>
+                                      <div className="flex items-center gap-2 bg-black/40 p-1.5 rounded border border-white/5 font-mono text-[10px] text-zinc-300">
+                                        <span>{ev.left}</span> <ArrowRightLeft className="w-2.5 h-2.5 text-zinc-600 shrink-0"/> <span>{ev.right}</span>
+                                        <span className={`ml-auto ${tone.text} capitalize`}>{ev.result ?? 'unknown'}</span>
+                                      </div>
+                                      {ev.evidence && ev.evidence.length > 0 && (
+                                        <div className="mt-2 space-y-1 bg-black/30 p-2 rounded border border-white/5 font-mono text-[10px]">
+                                          {ev.evidence.map((item, eIdx) => (
+                                            <div key={eIdx} className="text-zinc-300 flex items-start gap-1">
+                                              <span className="text-amber-400">•</span> {item}
+                                            </div>
+                                          ))}
+                                        </div>
                                       )}
-                                      {ev.detail && <p>{ev.detail}</p>}
+                                    </>
+                                  )}
+
+                                  {ev.type === 'risk' && (
+                                    <div className="mt-1 grid grid-cols-2 gap-2 bg-black/40 p-2 rounded border border-white/5 font-mono text-[10px]">
+                                      {ev.severity && (
+                                        <div className="col-span-2">
+                                          <span className="text-zinc-500">Severity:</span>{' '}
+                                          <span className={`font-bold ${tone.text}`}>{ev.severity}{ev.cvss != null ? ` (CVSS ${ev.cvss})` : ''}</span>
+                                        </div>
+                                      )}
+                                      {ev.impact && (
+                                        <div className="col-span-2"><span className="text-zinc-500">Impact:</span> <span className="text-white font-medium">{ev.impact}</span></div>
+                                      )}
+                                      {ev.attackComplexity && (
+                                        <div><span className="text-zinc-500">Complexity:</span> <span className="text-zinc-300">{ev.attackComplexity}</span></div>
+                                      )}
+                                      {ev.privilegesRequired && (
+                                        <div><span className="text-zinc-500">Privileges:</span> <span className="text-zinc-300">{ev.privilegesRequired}</span></div>
+                                      )}
+                                      {ev.userInteraction && (
+                                        <div className="col-span-2"><span className="text-zinc-500">Interaction:</span> <span className="text-zinc-300">{ev.userInteraction}</span></div>
+                                      )}
                                     </div>
-                                  ) : (
-                                    ev.detail && <p className="font-mono text-[10px] text-zinc-400 leading-relaxed">{ev.detail}</p>
+                                  )}
+
+                                  {(ev.type === 'reasoning' || ev.type === 'synthesis' || ev.type === 'search' || ev.type === 'general') && ev.detail && (
+                                    <p className="font-mono text-[10px] text-zinc-400 leading-relaxed">{ev.detail}</p>
+                                  )}
+
+                                  {/* Recon/fingerprint honest empty state — no matches found, no metrics to show */}
+                                  {ev.type === 'recon' && !ev.attackSurfaceMetrics && ev.detail && (
+                                    <p className="font-mono text-[10px] text-zinc-500 italic leading-relaxed">{ev.detail}</p>
+                                  )}
+                                  {ev.type === 'fingerprint' && (!ev.technologies || ev.technologies.length === 0) && ev.detail && (
+                                    <p className="font-mono text-[10px] text-zinc-500 italic leading-relaxed">{ev.detail}</p>
                                   )}
                                 </div>
                               </div>
