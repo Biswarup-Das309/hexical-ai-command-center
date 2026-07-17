@@ -26,6 +26,23 @@
  *    to providers.ts's extractStructuredFinding(), which owns retry, the
  *    circuit breaker, and provider selection. route.ts never constructs a
  *    LanguageModel or calls generateObject() directly.
+ *
+ *  v5.1 patch (tier/entitlement + error-code pass):
+ *  - Tier is now resolved via resolveEntitlement() instead of a bare
+ *    normalizeTier() call, so an expired tier_expires_at date is honored
+ *    server-side even if the `profiles.tier` column itself hasn't been
+ *    reset back to 'free' yet. See lib/hexical/types.ts.
+ *  - Every error response now carries a machine-readable `code` field
+ *    (see ERROR_CODES in types.ts). The frontend previously had to guess
+ *    the failure reason from HTTP status alone, which meant a 403 from the
+ *    *authorization* gate (missing/expired scope on an exploit/swarm
+ *    request) rendered identically to a 403 from the *tier* gate — both
+ *    popped the "upgrade your plan" modal, even for Pro users who simply
+ *    hadn't attached an authorization scope. That's fixed on both ends now.
+ *  - Added structured warn logs when a profile's tier value doesn't
+ *    resolve the way you'd expect (missing row, unrecognized string,
+ *    expired grant), so tier mismatches show up in server logs instead of
+ *    silently falling back to 'free'.
  */
 import {
   executeRoute,
@@ -58,8 +75,11 @@ import {
   HEAVY_QUEUE_THRESHOLD_CHARS,
   NONCE_TTL_SECS,
   MONTHLY_TOKEN_BUDGETS,
+  VALID_TIERS,
   normalizeTier,
+  resolveEntitlement,
   providerAvailable,
+  ERROR_CODES,
 } from '@/lib/hexical/types';
 import {
   jsonHeaders,
@@ -124,7 +144,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   for (const key of REQUIRED_ENV) {
     if (!process.env[key]) {
       log.error('boot_fatal_missing_env', { key });
-      return NextResponse.json({ error: 'Server configuration error.' }, { status: 500, headers: jsonHeaders() });
+      return NextResponse.json({ error: 'Server configuration error.', code: ERROR_CODES.SERVER_CONFIG_ERROR }, { status: 500, headers: jsonHeaders() });
     }
   }
 
@@ -133,7 +153,7 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const { userId } = await auth();
   if (!userId) {
-    return NextResponse.json({ error: 'Unauthorized.' }, { status: 401, headers: jsonHeaders() });
+    return NextResponse.json({ error: 'Unauthorized.', code: ERROR_CODES.UNAUTHENTICATED }, { status: 401, headers: jsonHeaders() });
   }
 
   let body: unknown;
@@ -141,50 +161,97 @@ export async function POST(req: Request): Promise<NextResponse> {
     body = await readJsonBodyWithLimit(req, MAX_BODY_BYTES);
   } catch (err) {
     if (err instanceof RequestBodyTooLargeError) {
-      return NextResponse.json({ error: 'Payload too large.' }, { status: 413, headers: jsonHeaders() });
+      return NextResponse.json({ error: 'Payload too large.', code: ERROR_CODES.REQUEST_BODY_TOO_LARGE }, { status: 413, headers: jsonHeaders() });
     }
-    return NextResponse.json({ error: 'Malformed JSON payload.' }, { status: 400, headers: jsonHeaders() });
+    return NextResponse.json({ error: 'Malformed JSON payload.', code: ERROR_CODES.MALFORMED_REQUEST }, { status: 400, headers: jsonHeaders() });
   }
 
   const parsed = ExecutionPayloadSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ error: 'Schema validation failed.', details: parsed.error.format() }, { status: 400, headers: jsonHeaders() });
+    return NextResponse.json({ error: 'Schema validation failed.', code: ERROR_CODES.SCHEMA_VALIDATION_FAILED, details: parsed.error.format() }, { status: 400, headers: jsonHeaders() });
   }
   const payload = parsed.data;
 
   if (!isTimestampFresh(payload.requestTimestampMs)) {
-    return NextResponse.json({ error: 'Request timestamp is stale. Possible replay rejected.' }, { status: 400, headers: jsonHeaders() });
+    return NextResponse.json({ error: 'Request timestamp is stale. Possible replay rejected.', code: ERROR_CODES.REPLAY_REJECTED }, { status: 400, headers: jsonHeaders() });
   }
 
   if (payload.requestNonce) {
     const fresh = await consumeNonce(redis, userId, payload.requestNonce, NONCE_TTL_SECS);
     if (!fresh) {
-      return NextResponse.json({ error: 'Duplicate nonce detected. Replay attack rejected.' }, { status: 409, headers: jsonHeaders() });
+      return NextResponse.json({ error: 'Duplicate nonce detected. Replay attack rejected.', code: ERROR_CODES.REPLAY_REJECTED }, { status: 409, headers: jsonHeaders() });
     }
   }
 
   // --- tier lookup / seed -----------------------------------------------
-  let { data: userProfile } = await supabase.from('profiles').select('tier').eq('user_id', userId).maybeSingle();
+  // Pull tier_expires_at + subscription_status alongside tier so we can
+  // resolve a real, expiry-aware entitlement instead of trusting a plan
+  // string that may be stale (e.g. a manual Supabase edit that was never
+  // paired with an expiry, or a cancelled subscription whose row was never
+  // swept back to 'free'). See resolveEntitlement() in types.ts.
+  let { data: userProfile } = await supabase
+    .from('profiles')
+    .select('tier, tier_expires_at, subscription_status')
+    .eq('user_id', userId)
+    .maybeSingle();
+
   if (!userProfile) {
-    const { data: seeded } = await supabase.from('profiles').insert({ user_id: userId, tier: 'free' }).select('tier').maybeSingle();
+    const { data: seeded } = await supabase
+      .from('profiles')
+      .insert({ user_id: userId, tier: 'free' })
+      .select('tier, tier_expires_at, subscription_status')
+      .maybeSingle();
     if (seeded) userProfile = seeded;
   }
-  const activeTier: Tier = normalizeTier(userProfile?.tier);
+
+  // Structured warnings so a "why isn't my tier applying" report is a log
+  // grep away instead of a guessing game. None of these change behavior —
+  // they just make the three most common misconfigurations visible:
+  //   1. no profile row at all for this Clerk user id (wrong id, or the
+  //      user was upgraded in a table Supabase-side that this route never reads)
+  //   2. a tier string that doesn't match any VALID_TIERS entry (typo)
+  //   3. a tier that resolved but whose tier_expires_at has already passed
+  if (!userProfile) {
+    log.warn('tier_profile_missing_after_seed', { userId });
+  } else if (userProfile.tier && !VALID_TIERS.includes(String(userProfile.tier).trim().toLowerCase() as Tier)) {
+    log.warn('tier_value_unrecognized', { userId, rawTier: userProfile.tier });
+  }
+
+  const entitlement = resolveEntitlement(userProfile?.tier, userProfile?.tier_expires_at, userProfile?.subscription_status);
+  if (entitlement.expired) {
+    log.warn('tier_expired_fallback', { userId, storedTier: userProfile?.tier, expiresAt: userProfile?.tier_expires_at });
+  }
+  const activeTier: Tier = entitlement.tier;
 
   const maxChars = MARGIN_CHAR_LIMITS[activeTier];
   if (payload.logic.length > maxChars) {
     return NextResponse.json(
-      { error: 'Payload too large.', message: `Tier [${activeTier.toUpperCase()}] allows up to ${maxChars} characters.` },
+      { error: 'Payload too large.', code: ERROR_CODES.TIER_CHAR_LIMIT_EXCEEDED, message: `Tier [${activeTier.toUpperCase()}] allows up to ${maxChars} characters.` },
       { status: 413, headers: jsonHeaders() },
     );
   }
 
   const tierFeatures = PLAN_FEATURES[activeTier];
   if (payload.profile === 'swarm' && !tierFeatures.includes('swarm_intelligence')) {
-    return NextResponse.json({ error: 'Swarm Intelligence requires a Pro subscription.' }, { status: 403, headers: jsonHeaders() });
+    return NextResponse.json(
+      { error: 'Swarm Intelligence requires a Pro subscription.', code: ERROR_CODES.TIER_UPGRADE_REQUIRED, requiredFeature: 'swarm_intelligence' },
+      { status: 403, headers: jsonHeaders() },
+    );
   }
+  // NOTE (policy gap, not a bug fixed silently): `core_heuristics` is
+  // present on every tier in PLAN_FEATURES (free/go/plus/pro all include
+  // it), so this check can never actually block exploit/patch access by
+  // tier today — those two profiles are effectively gated by the
+  // authorization-scope check below ONLY, not by plan. If exploit/patch
+  // are meant to be Plus/Pro-only, remove 'core_heuristics' from
+  // free/go in PLAN_FEATURES (types.ts) and this check will start
+  // enforcing it. Left as-is here since that's a pricing decision, not
+  // something to change without confirming intent.
   if ((payload.profile === 'exploit' || payload.profile === 'patch') && !tierFeatures.includes('core_heuristics')) {
-    return NextResponse.json({ error: 'Advanced security profiles require an upgraded workspace.' }, { status: 403, headers: jsonHeaders() });
+    return NextResponse.json(
+      { error: 'Advanced security profiles require an upgraded workspace.', code: ERROR_CODES.TIER_UPGRADE_REQUIRED, requiredFeature: 'core_heuristics' },
+      { status: 403, headers: jsonHeaders() },
+    );
   }
 
   // --- rate limit / message quota ---------------------------------------
@@ -192,7 +259,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   const rl = await checkRateLimit(redis, userId, activeTier, clientIp);
   if (!rl.allowed) {
     return NextResponse.json(
-      { error: 'Rate limit exceeded. Please wait before retrying.' },
+      { error: 'Rate limit exceeded. Please wait before retrying.', code: ERROR_CODES.RATE_LIMITED },
       { status: 429, headers: jsonHeaders({ 'Retry-After': String(Math.ceil((rl.resetMs - Date.now()) / 1000)), 'X-RateLimit-Remaining': '0' }) },
     );
   }
@@ -203,6 +270,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json(
       {
         error: 'Message quota exceeded.',
+        code: ERROR_CODES.MESSAGE_QUOTA_EXCEEDED,
         message: `Tier [${activeTier.toUpperCase()}] allows ${messageQuota.limit} messages per 5-hour window. Resets in ${resetMinutes} minute(s).`,
       },
       { status: 429, headers: jsonHeaders({ 'Retry-After': String(messageQuota.resetSeconds), 'X-MessageQuota-Remaining': '0' }) },
@@ -220,8 +288,16 @@ export async function POST(req: Request): Promise<NextResponse> {
     authorizationRef: payload.authorizationRef,
   });
   if (!authDecision.allowed) {
+    // Distinct code from TIER_UPGRADE_REQUIRED on purpose: this is the
+    // single biggest source of confusion reported against this route. A
+    // Pro user with full plan access still gets a 403 here if they haven't
+    // attached a verified authorizationRef for the target — and the old
+    // frontend showed the exact same "upgrade your plan" modal for both
+    // cases, which made it look like tier gating was broken/re-charging
+    // people who'd already paid. It wasn't a billing bug — it was an
+    // unlabeled 403. See hexical-console.tsx's handling of this code.
     return NextResponse.json(
-      { error: 'Authorization required.', message: authDecision.reason },
+      { error: 'Authorization required.', code: ERROR_CODES.AUTHORIZATION_REQUIRED, message: authDecision.reason },
       { status: 403, headers: jsonHeaders() },
     );
   }
@@ -230,7 +306,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (FEATURE_FLAGS.swarmEnabled && activeTier === 'pro' && payload.profile === 'swarm') {
     const swarmCap = await checkSwarmDailyLimit(redis, userId);
     if (!swarmCap.allowed) {
-      return NextResponse.json({ error: 'Daily Swarm quota exhausted. Resets at midnight UTC.' }, { status: 429, headers: jsonHeaders() });
+      return NextResponse.json({ error: 'Daily Swarm quota exhausted. Resets at midnight UTC.', code: ERROR_CODES.SWARM_DAILY_LIMIT_EXCEEDED }, { status: 429, headers: jsonHeaders() });
     }
   }
 
@@ -302,7 +378,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   const reservation = await reserveMonthlyTokens(redis, userId, activeTier, estimatedTokens);
   if (!reservation.allowed) {
     return NextResponse.json(
-      { error: 'Monthly quota exceeded.', message: `Tier [${activeTier.toUpperCase()}] monthly token budget is exhausted.` },
+      { error: 'Monthly quota exceeded.', code: ERROR_CODES.MONTHLY_TOKEN_BUDGET_EXCEEDED, message: `Tier [${activeTier.toUpperCase()}] monthly token budget is exhausted.` },
       { status: 429, headers: jsonHeaders({ 'X-TokenBudget-Remaining': String(reservation.remainingTokens) }) },
     );
   }
@@ -317,7 +393,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     // nothing was spent — hand back the token reservation we just took
     await reconcileMonthlyTokens(redis, userId, activeTier, reservation.reservedTokens, 0);
     return NextResponse.json(
-      { error: 'Monthly cost budget exceeded.', message: `Tier [${activeTier.toUpperCase()}] monthly spend ceiling reached.` },
+      { error: 'Monthly cost budget exceeded.', code: ERROR_CODES.MONTHLY_COST_BUDGET_EXCEEDED, message: `Tier [${activeTier.toUpperCase()}] monthly spend ceiling reached.` },
       { status: 429, headers: jsonHeaders({ 'X-CostBudget-Remaining': String(costReservation.remainingPaise) }) },
     );
   }
@@ -382,13 +458,13 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (err instanceof SwarmParseError) {
       log.error('swarm_parse_failure', { error: err.message });
       return NextResponse.json(
-        { error: 'Consensus Generation Error', message: 'Swarm engines failed to produce a coherent report. Execution halted.' },
+        { error: 'Consensus Generation Error', code: ERROR_CODES.SWARM_CONSENSUS_FAILURE, message: 'Swarm engines failed to produce a coherent report. Execution halted.' },
         { status: 502, headers: jsonHeaders() },
       );
     }
 
     log.error('model_execution_failure', { error: err instanceof Error ? err.message : String(err) });
-    return NextResponse.json({ error: 'All model providers failed. Please retry shortly.' }, { status: 502, headers: jsonHeaders() });
+    return NextResponse.json({ error: 'All model providers failed. Please retry shortly.', code: ERROR_CODES.PROVIDER_FAILURE }, { status: 502, headers: jsonHeaders() });
   }
 
   const totalTokens = result.tokensIn + result.tokensOut;

@@ -87,15 +87,26 @@ export async function withSpan<T>(
   const tracer = otel.trace.getTracer('hexical-api');
   return tracer.startActiveSpan(name, async span => {
     for (const [key, value] of Object.entries(attributes)) span.setAttribute(key, value);
-    try {
-      const result = await fn();
-      span.setStatus({ code: 1 });
-      return result;
-    } catch (err) {
-      span.recordException(err);
-      span.setStatus({ code: 2, message: err instanceof Error ? err.message : String(err) });
-      throw err;
-    } finally {
+   try {
+  const result = await fn();
+
+  span.setAttribute('durationMs', Date.now() - startedAt);
+
+  span.setStatus({ code: 1 });
+
+  return result;
+} catch (err) {
+  span.setAttribute('durationMs', Date.now() - startedAt);
+
+  span.recordException(err);
+
+  span.setStatus({
+    code: 2,
+    message: err instanceof Error ? err.message : String(err),
+  });
+
+  throw err;
+}finally {
       span.end();
     }
   });

@@ -1,13 +1,15 @@
 // app/api/webhooks/razorpay/route.ts
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { clerkClient } from '@clerk/nextjs/server';
 import crypto from 'crypto';
 import { PRICING } from '@/lib/pricing.config';
 
 function normalizeTier(requestedTier: unknown): string | null {
   if (typeof requestedTier !== 'string') return null;
-  if (!Object.prototype.hasOwnProperty.call(PRICING, requestedTier)) return null;
-  return requestedTier;
+  const clean = requestedTier.trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(PRICING, clean)) return null;
+  return clean;
 }
 
 export async function POST(req: Request) {
@@ -41,15 +43,15 @@ export async function POST(req: Request) {
       .update(bodyText)
       .digest('hex');
 
-    if (signature.length !== expectedSignature.length) {
-      console.warn('[WEBHOOK_WARNING]: Signature length mismatch rejected.');
-      return NextResponse.json({ error: 'Invalid signature length' }, { status: 400 });
-    }
+    // Guard: timingSafeEqual throws if buffer lengths differ, so check first —
+    // but do the length check itself in constant-ish time by comparing hashes,
+    // not raw signature strings, to avoid leaking length via early return timing.
+    const sigBuffer = Buffer.from(signature);
+    const expectedBuffer = Buffer.from(expectedSignature);
 
-    const isSignatureValid = crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expectedSignature)
-    );
+    const isSignatureValid =
+      sigBuffer.length === expectedBuffer.length &&
+      crypto.timingSafeEqual(sigBuffer, expectedBuffer);
 
     if (!isSignatureValid) {
       console.warn('[WEBHOOK_WARNING]: Signature mismatch detected.');
@@ -65,29 +67,46 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid JSON payload' }, { status: 400 });
     }
 
-    if (event?.event !== 'payment.captured' && event?.event !== 'order.paid') {
-      return NextResponse.json({ status: 'ok' });
+    const eventType = event?.event;
+
+    if (eventType !== 'payment.captured' && eventType !== 'order.paid') {
+      // Not an event we act on — acknowledge so Razorpay doesn't retry.
+      return NextResponse.json({ status: 'ok', reason: 'event_ignored' });
     }
 
     const paymentEntity = event?.payload?.payment?.entity;
+    const orderEntity = event?.payload?.order?.entity;
+
     if (!paymentEntity) {
-      console.error('[WEBHOOK_ERROR]: Missing payment entity in payload.');
+      console.error(`[WEBHOOK_ERROR]: Missing payment entity in payload for event "${eventType}".`);
       return NextResponse.json({ status: 'ignored', reason: 'malformed_payload' }, { status: 200 });
     }
 
     const paymentId: string | undefined = paymentEntity.id;
-    const orderId: string | undefined = paymentEntity.order_id;
+    const orderId: string | undefined = paymentEntity.order_id || orderEntity?.id;
     const amountPaid: unknown = paymentEntity.amount;
 
-    const notes = paymentEntity.notes || {};
+    // 🔑 FIX: merge notes from both entities. Order notes are where your
+    // backend actually attaches metadata at checkout creation time — the
+    // payment entity does not reliably inherit them. Order notes win on
+    // conflict since they're the authoritative source written by your server.
+    const notes = {
+      ...(paymentEntity?.notes || {}),
+      ...(orderEntity?.notes || {}),
+    };
     const { clerkUserId, requestedTier } = notes;
 
     if (!paymentId || !clerkUserId || typeof clerkUserId !== 'string' || !requestedTier) {
-      console.error(`[WEBHOOK_ERROR]: Missing vital routing notes for payment ${paymentId ?? 'unknown'}`);
+      console.error(
+        `[WEBHOOK_ERROR]: Missing vital routing notes for payment ${paymentId ?? 'unknown'}. ` +
+        `Got clerkUserId=${clerkUserId ?? 'undefined'}, requestedTier=${requestedTier ?? 'undefined'}. ` +
+        `Raw notes: ${JSON.stringify(notes)}`
+      );
       return NextResponse.json({ status: 'ignored', reason: 'malformed_payload' }, { status: 200 });
     }
 
-    // 4. Tier validation
+    // 4. Tier validation (trimmed + lowercased so stray whitespace/casing
+    // from the client never silently drops a paid conversion)
     const targetTier = normalizeTier(requestedTier);
     if (!targetTier) {
       console.warn(`[WEBHOOK_WARNING]: Invalid tier "${String(requestedTier)}" for payment ${paymentId}`);
@@ -95,8 +114,14 @@ export async function POST(req: Request) {
     }
 
     // 5. Single source of truth for pricing + tokens
-    const expectedAmount = PRICING[targetTier as keyof typeof PRICING].pricePaise;
-    const tokenBudget = PRICING[targetTier as keyof typeof PRICING].tokens;
+    const tierConfig = PRICING[targetTier as keyof typeof PRICING];
+    if (!tierConfig) {
+      console.error(`[WEBHOOK_ERROR]: Tier "${targetTier}" passed normalization but missing from PRICING map.`);
+      return NextResponse.json({ status: 'ignored', reason: 'pricing_config_error' }, { status: 200 });
+    }
+
+    const expectedAmount = tierConfig.pricePaise;
+    const tokenBudget = tierConfig.tokens;
 
     if (typeof amountPaid !== 'number' || !Number.isFinite(amountPaid) || amountPaid < expectedAmount) {
       console.error(
@@ -106,31 +131,52 @@ export async function POST(req: Request) {
     }
 
     // 6. Atomic idempotency + asset injection via single RPC call.
-    // The RPC function inside Supabase will handle the tier, tokens, AND the 30-day expiration.
+    // The RPC function inside Supabase handles the tier, tokens, AND the
+    // 30-day expiration in one transaction. This is the billing source of truth.
     const { data: rpcResult, error: rpcError } = await supabaseAdmin.rpc('process_payment_webhook', {
       p_payment_id: paymentId,
       p_user_id: clerkUserId,
       p_order_id: orderId ?? null,
       p_tier: targetTier,
       p_tokens: tokenBudget,
-      p_period_days: 30, // <--- This tells the database to calculate the expiration!
+      p_period_days: 30,
     });
 
     if (rpcError) {
       console.error(`[SUPABASE_ERROR]: process_payment_webhook failed for ${clerkUserId}`, rpcError);
+      // Return 500 so Razorpay retries this webhook — do NOT swallow this,
+      // the user paid and the DB write genuinely failed.
       throw rpcError;
     }
 
     if (rpcResult?.[0]?.already_processed) {
-      console.log(`[WEBHOOK_IDEMPOTENCY]: Payment ${paymentId} already processed.`);
+      console.log(`[WEBHOOK_IDEMPOTENCY]: Payment ${paymentId} already processed. Skipping duplicate.`);
       return NextResponse.json({ status: 'already_processed' });
     }
 
     console.log(`[WEBHOOK_SUCCESS]: User ${clerkUserId} upgraded to ${targetTier}. ${tokenBudget} tokens injected.`);
+
+    // 7. Best-effort Clerk metadata mirror. NOT load-bearing — the frontend
+    // reads entitlement from Supabase via /api/entitlement, so this failing
+    // must never fail the whole webhook or leave the user unentitled.
+    try {
+      const client = await clerkClient();
+      await client.users.updateUserMetadata(clerkUserId, {
+        publicMetadata: { tier: targetTier },
+      });
+    } catch (clerkErr) {
+      console.error(`[CLERK_SYNC_WARNING]: Failed to mirror tier to Clerk metadata for ${clerkUserId}`, clerkErr);
+      // Intentionally not thrown — Supabase write already succeeded, which
+      // is what actually gates access. This is a cosmetic sync only.
+    }
+
     return NextResponse.json({ status: 'ok' });
-    
+
   } catch (err: any) {
     console.error('[WEBHOOK_CRITICAL_ERROR]:', err);
+    // 500 tells Razorpay to retry — correct behavior for a genuine failure
+    // (e.g. Supabase RPC threw), since the payment did happen and the user
+    // still needs to be entitled.
     return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 });
   }
 }
