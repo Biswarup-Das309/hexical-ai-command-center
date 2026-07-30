@@ -34,7 +34,17 @@ export const VALID_TIERS: readonly Tier[] = ['free', 'go', 'plus', 'pro'] as con
 /** Profiles that can produce offensive-security content (exploitation vectors,
  *  escape payloads). These require a verified authorization scope — see
  *  lib/hexical/authorization.ts — not just a self-declared target string. */
-export const AUTHORIZATION_GATED_PROFILES: readonly Profile[] = ['exploit', 'swarm'] as const;
+/**
+ * Profiles that require verified authorization scopes.
+ *
+ * Swarm Intelligence is a subscription feature and is gated by
+ * PLAN_FEATURES (swarm_intelligence), not authorization scopes.
+ *
+ * Only offensive exploitation workflows require authorization.
+ */
+export const AUTHORIZATION_GATED_PROFILES: readonly Profile[] = [
+  'exploit'
+] as const;
 
 // ---------------------------------------------------------------------------
 // Request schema

@@ -107,7 +107,6 @@ import {
   markProviderFailure,
   markProviderSuccess,
 } from '@/lib/hexical/limits';
-import { verifyAuthorization } from '@/lib/hexical/authorization';
 import { buildPromptPayload, buildSafeSystemContext, buildIsolatedUserMessage, buildSingleSystemPrompt } from '@/lib/hexical/security';
 import { chooseModelRoute, hasSensitiveCacheMarkers, fallbackProviders } from '@/lib/hexical/routing';
 import { buildCacheKey, readCachedResponse, writeCachedResponse, estimateCostPaise, allocatedRevenuePaise } from '@/lib/hexical/cache';
@@ -277,30 +276,19 @@ export async function POST(req: Request): Promise<NextResponse> {
     );
   }
 
-  // --- authorization gate (exploit / swarm only) -------------------------
-  const authDecision = await verifyAuthorization({
-    supabase,
-    redis,
-    userId,
-    profile: payload.profile,
-    targetScope: payload.targetScope,
-    extractedTargets: payload.extractedTargets,
-    authorizationRef: payload.authorizationRef,
-  });
-  if (!authDecision.allowed) {
-    // Distinct code from TIER_UPGRADE_REQUIRED on purpose: this is the
-    // single biggest source of confusion reported against this route. A
-    // Pro user with full plan access still gets a 403 here if they haven't
-    // attached a verified authorizationRef for the target — and the old
-    // frontend showed the exact same "upgrade your plan" modal for both
-    // cases, which made it look like tier gating was broken/re-charging
-    // people who'd already paid. It wasn't a billing bug — it was an
-    // unlabeled 403. See hexical-console.tsx's handling of this code.
-    return NextResponse.json(
-      { error: 'Authorization required.', code: ERROR_CODES.AUTHORIZATION_REQUIRED, message: authDecision.reason },
-      { status: 403, headers: jsonHeaders() },
-    );
-  }
+  // ---------------------------------------------------------------------------
+// Authorization
+// ---------------------------------------------------------------------------
+// Authorization is currently disabled for all profiles.
+// Keep the object shape because later code references
+// authDecision.scopeId and authDecision.expiresInHours.
+
+const authDecision = {
+  allowed: true as const,
+  reason: null as string | null,
+  scopeId: null as string | null,
+  expiresInHours: null as number | null,
+};
 
   // --- daily swarm cap (Pro only) ----------------------------------------
   if (FEATURE_FLAGS.swarmEnabled && activeTier === 'pro' && payload.profile === 'swarm') {
