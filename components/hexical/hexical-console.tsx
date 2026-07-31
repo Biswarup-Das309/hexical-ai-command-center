@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useReducer } from 'react'
 import { 
   Loader2, Eye, Crosshair, ChevronDown, Activity, X, Command, AlertTriangle, 
   TerminalSquare, LayoutDashboard, Zap, SearchCode, GitMerge, Shield, 
@@ -360,16 +360,187 @@ const parseAttackGraph = (logic: string): AttackGraph => {
 }
 
 // =============================================================================
-// 4. MAIN CONSOLE COMPONENT
+// 4. CHAT INITIALIZATION STATE MACHINE
+// =============================================================================
+// chats/activeId gate handleSubmit and are mutated from five call sites
+// (hydration, new chat, delete, submit, pin/rename). Independent useState
+// calls at each site cannot enforce the joint invariant "chats is non-empty
+// AND activeId references an existing chat" under async interleaving — that
+// is exactly how the "Console is still initializing" incident happened. A
+// reducer makes every transition atomic and lets HYDRATE_SUCCESS see the
+// real current state (React guarantees this at dispatch time, even under
+// concurrent rendering / StrictMode replay) instead of a stale closure, so
+// it can merge server data instead of blindly clobbering local state.
+// =============================================================================
+
+type ChatPhase = 'local' | 'hydrating' | 'ready' | 'hydration_failed'
+
+interface ChatMachineState {
+  phase: ChatPhase;
+  chats: ChatState[];
+  activeId: string;
+  hydratedIdentity: string | null;
+}
+
+type ChatAction =
+  | { type: 'HYDRATE_START' }
+  | { type: 'HYDRATE_SUCCESS'; identity: string; serverChats: ChatState[] }
+  | { type: 'HYDRATE_ERROR' }
+  | { type: 'NEW_CHAT' }
+  | { type: 'SELECT_CHAT'; id: string }
+  | { type: 'DELETE_CHAT_OPTIMISTIC'; id: string }
+  | { type: 'DELETE_CHAT_ROLLBACK'; snapshot: ChatState[]; activeId: string }
+  | { type: 'APPEND_MESSAGES'; chatId: string; title?: string; messages: ExtendedStreamMessage[] }
+  | { type: 'TOGGLE_PIN'; id: string }
+  | { type: 'RENAME'; id: string; title: string }
+
+// "Dirty" = the user has actually typed into this chat. A chat containing
+// only the synthetic init message is safe to discard/replace.
+function isChatDirty(chat: ChatState | undefined): boolean {
+  return !!chat && chat.messages.some(m => m.role === 'user')
+}
+
+function ensureActiveId(chats: ChatState[], desired: string): string {
+  return chats.some(c => c.id === desired) ? desired : (chats[0]?.id ?? desired)
+}
+
+function chatReducer(state: ChatMachineState, action: ChatAction): ChatMachineState {
+  switch (action.type) {
+    case 'HYDRATE_START':
+      return { ...state, phase: 'hydrating' }
+
+    case 'HYDRATE_SUCCESS': {
+      const localActive = state.chats.find(c => c.id === state.activeId)
+
+      // If the user already sent a message in the local placeholder chat
+      // before this snapshot arrived, that chat is authoritative — the
+      // server snapshot was taken before that message existed and would
+      // silently erase it from the UI if we overwrote. Keep it, splice in
+      // every other server chat. It reconciles naturally on the next
+      // hydration once its own writes (conversation upsert + message
+      // insert) have landed.
+      if (isChatDirty(localActive)) {
+        const rest = action.serverChats.filter(c => c.id !== localActive!.id)
+        return {
+          phase: 'ready',
+          chats: [localActive!, ...rest],
+          activeId: state.activeId,
+          hydratedIdentity: action.identity
+        }
+      }
+
+      // Local chat was untouched — safe to fully adopt the server snapshot.
+      // If the local pending chat hasn't been persisted server-side yet,
+      // keep it as a local-only entry rather than dropping it.
+      const pendingId = state.activeId
+      const serverHasPending = action.serverChats.some(c => c.id === pendingId)
+      let merged = serverHasPending
+        ? action.serverChats
+        : [state.chats.find(c => c.id === pendingId) ?? createFreshChatState(pendingId), ...action.serverChats]
+
+      if (merged.length === 0) merged = [createFreshChatState(generateUniqueID())]
+
+      const existingEmpty = merged.find(c => c.messages.length <= 1)
+      const nextActiveId = existingEmpty?.id ?? merged[0].id
+
+      return {
+        phase: 'ready',
+        chats: merged,
+        activeId: ensureActiveId(merged, nextActiveId),
+        hydratedIdentity: action.identity
+      }
+    }
+
+    case 'HYDRATE_ERROR':
+      // Degrade gracefully: keep whatever local state already exists (it is
+      // guaranteed non-empty by the initializer). No auto-retry loop here —
+      // the next identity change or remount retries naturally via
+      // hasHydratedRef being released by the caller.
+      return { ...state, phase: 'hydration_failed', hydratedIdentity: null }
+
+    case 'NEW_CHAT': {
+      const existingEmpty = state.chats.find(c => c.messages.length <= 1)
+      if (existingEmpty) return { ...state, activeId: existingEmpty.id }
+      const id = generateUniqueID()
+      return { ...state, chats: [createFreshChatState(id), ...state.chats], activeId: id }
+    }
+
+    case 'SELECT_CHAT':
+      return state.chats.some(c => c.id === action.id) ? { ...state, activeId: action.id } : state
+
+    case 'DELETE_CHAT_OPTIMISTIC': {
+      const next = state.chats.filter(c => c.id !== action.id)
+      const chats = next.length > 0 ? next : [createFreshChatState(generateUniqueID())]
+      const activeId = state.activeId === action.id ? chats[0].id : ensureActiveId(chats, state.activeId)
+      return { ...state, chats, activeId }
+    }
+
+    case 'DELETE_CHAT_ROLLBACK':
+      return { ...state, chats: action.snapshot, activeId: action.activeId }
+
+    case 'APPEND_MESSAGES':
+      return {
+        ...state,
+        chats: state.chats.map(c =>
+          c.id === action.chatId
+            ? { ...c, title: action.title ?? c.title, messages: [...c.messages, ...action.messages] }
+            : c
+        )
+      }
+
+    case 'TOGGLE_PIN':
+      return { ...state, chats: state.chats.map(c => c.id === action.id ? { ...c, pinned: !c.pinned } : c) }
+
+    case 'RENAME':
+      return { ...state, chats: state.chats.map(c => c.id === action.id ? { ...c, title: action.title } : c) }
+
+    default:
+      return state
+  }
+}
+
+// Pure lazy initializer — safe under StrictMode's double-invoke-on-mount,
+// since React only ever commits one of the two invocations. sessionStorage
+// is *read* here, never written (writing is a side effect and belongs in
+// an effect — see the mount effect below).
+function initChatMachine(): ChatMachineState {
+  const pendingId =
+    (typeof window !== 'undefined' && sessionStorage.getItem(PENDING_SESSION_ID)) || generateUniqueID()
+  return {
+    phase: 'local',
+    chats: [createFreshChatState(pendingId)],
+    activeId: pendingId,
+    hydratedIdentity: null
+  }
+}
+
+// =============================================================================
+// 5. MAIN CONSOLE COMPONENT
 // =============================================================================
 export function HexicalConsole() {
-  const { user, isLoaded } = useUser()
-  const { session } = useSession()
+  const { user, isLoaded: isUserLoaded } = useUser()
+  const { session, isLoaded: isSessionLoaded } = useSession()
+  // Both Clerk hooks must be resolved before we trust `session` for auth
+  // calls. Gating only on isUserLoaded let getAuthenticatedClient() run
+  // against a not-yet-resolved session, silently fall back to the
+  // anonymous singleton client, and return an empty (but error-free) result
+  // from RLS-filtered queries — indistinguishable from "new user" and a
+  // real data-loss risk for returning users.
+  const isClerkReady = isUserLoaded && isSessionLoaded
   const { signOut, openSignIn } = useClerk() 
   const { checkLimit, recordUsage } = useGuestLimit()
 
-  const [chats, setChats] = useState<ChatState[]>([])
-  const [activeId, setActiveId] = useState<string>('')
+  // ---------------------------------------------------------------------
+  // chats/activeId are owned by the reducer above. This guarantees, from
+  // the very first render (before any effect runs), that:
+  //   - chats.length > 0
+  //   - activeId references an existing entry in chats
+  // No call site can violate that invariant; every mutation goes through
+  // chatReducer.
+  // ---------------------------------------------------------------------
+  const [chatState, dispatch] = useReducer(chatReducer, undefined, initChatMachine)
+  const { chats, activeId } = chatState
+
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false)
   const [busy, setBusy] = useState<boolean>(false)
   const [loadingPhase, setLoadingPhase] = useState<string>(PROCESSING_PHASES[0])
@@ -420,7 +591,7 @@ export function HexicalConsole() {
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const headerMenuRef = useRef<HTMLDivElement | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
-const hasHydratedRef = useRef<string | null>(null)
+  const hasHydratedRef = useRef<string | null>(null)
 
   // FIX: PLAN_LIMITS entries expose a `capabilities` array (see
   // lib/hexical-types.ts). This previously read `.features`, which doesn't
@@ -488,27 +659,27 @@ const hasHydratedRef = useRef<string | null>(null)
   const getApiAuthToken = useCallback(async () => {
     return session?.getToken() ?? undefined;
   }, [session])
-  
-  const handleNewChat = useCallback(() => {
-    const existingEmpty = chats.find(c => c.messages.length <= 1);
-    if (existingEmpty) { 
-      setActiveId(existingEmpty.id); 
-      setActiveTraceMessage(null); 
-      return; 
-    }
 
-    const newId = generateUniqueID();
-    const newChat = createFreshChatState(newId);
-    
-    setChats(prev => [newChat, ...prev]);
-    setActiveId(newId);
-    setActiveTraceMessage(null); 
-    setExtractedTargets([]); 
-    setActiveGraph({nodes:[], edges:[]});
-    
-    sessionStorage.setItem(PENDING_SESSION_ID, newId);
-    logToTerminal(`[SYSTEM] Spawned isolated lazy context: ${newId}`);
-  }, [chats, logToTerminal]);
+  // Persist the pending chat id to sessionStorage exactly once, on mount.
+  // This is a side effect and must live in an effect, not in the reducer's
+  // lazy initializer (which must stay pure for StrictMode double-invoke
+  // safety). Idempotent: if a value is already there (e.g. from a prior
+  // mount in the same tab), it's left untouched.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (!sessionStorage.getItem(PENDING_SESSION_ID)) {
+      sessionStorage.setItem(PENDING_SESSION_ID, chatState.activeId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const handleNewChat = useCallback(() => {
+    dispatch({ type: 'NEW_CHAT' })
+    setActiveTraceMessage(null)
+    setExtractedTargets([])
+    setActiveGraph({ nodes: [], edges: [] })
+    logToTerminal(`[SYSTEM] Spawned isolated lazy context.`)
+  }, [logToTerminal])
 
   // ============================================================================
   // CRITICAL FIX: SECURE DELETE WITH PESSIMISTIC ROLLBACK
@@ -520,15 +691,12 @@ const hasHydratedRef = useRef<string | null>(null)
     }
 
     // 2. Snapshot current state for rollback
-    const previousChats = [...chats];
-    
-    // 3. Optimistic Update
-    const nextChats = chats.filter(c => c.id !== id);
-    setChats(nextChats);
-    
-    if (activeId === id) {
-      setActiveId(''); // Clear active screen
-    }
+    const previousChats = chats;
+    const previousActiveId = activeId;
+
+    // 3. Optimistic update via reducer — guarantees chats stays non-empty
+    // and activeId stays valid even mid-delete.
+    dispatch({ type: 'DELETE_CHAT_OPTIMISTIC', id });
 
     if (user && !stealthMode) {
       try {
@@ -547,32 +715,23 @@ const hasHydratedRef = useRef<string | null>(null)
         }
         
         logToTerminal(`[DB] Permanent cryptographic purge executed for workspace: ${id}`);
-        
-        // 5. Spawn fresh UI ONLY if database confirmed the purge and list is empty
-        if (nextChats.length === 0) {
-           handleNewChat();
-        }
 
       } catch (err: any) {
         logToTerminal(`[DB_ERR] Kernel panic during purge. Restoring session state.`);
         console.error("Supabase Delete Error:", err);
         
-        // 6. Rollback to exactly how it was
-        setChats(previousChats);
-        setActiveId(id);
+        // 5. Rollback to exactly how it was
+        dispatch({ type: 'DELETE_CHAT_ROLLBACK', snapshot: previousChats, activeId: previousActiveId });
         toast.error("Database purge failed.", { description: "Session data restored to UI." });
       }
-    } else {
-      // Guest mode handling
-      if (nextChats.length === 0) handleNewChat();
     }
-  }, [chats, activeId, user, stealthMode, getAuthenticatedClient, handleNewChat, logToTerminal]);
+  }, [chats, activeId, user, stealthMode, getAuthenticatedClient, logToTerminal]);
 
   useEffect(() => { setIsMounted(true) }, [])
   useEffect(() => { if (window.innerWidth >= 768) setIsSidebarOpen(true) }, [])
   
   useEffect(() => {
-    if (!isLoaded) return;
+    if (!isClerkReady) return;
     let cancelled = false;
 
     const syncIdentity = async () => {
@@ -583,11 +742,9 @@ const hasHydratedRef = useRef<string | null>(null)
         logToTerminal(`[AUTH] Cloud token derived. Sync engine online.`);
 
         // SECURITY: a valid session proves *who* the user is, not *what
-        // they've paid for*. Previously this set 'pro' for any signed-in
-        // user, which meant simply having an account unlocked every gated
-        // tab client-side. Default to the free tier and only upgrade the UI
-        // after confirming the plan from a trusted source (a billing table
-        // or Clerk metadata your webhook writes). This value is for
+        // they've paid for*. Default to the free tier and only upgrade the
+        // UI after confirming the plan from a trusted source (a billing
+        // table or Clerk metadata your webhook writes). This value is for
         // show/hide UI only — the backend must independently verify
         // entitlement on every request regardless of what's set here.
         setCurrentTier('go');
@@ -616,24 +773,33 @@ const hasHydratedRef = useRef<string | null>(null)
 
     syncIdentity();
     return () => { cancelled = true; };
-  }, [isLoaded, user, logToTerminal, getAuthenticatedClient])
+  }, [isClerkReady, user, logToTerminal, getAuthenticatedClient])
 
+  // ============================================================================
+  // CHAT HYDRATION — dispatches into chatReducer instead of setChats/
+  // setActiveId directly, so the non-empty / valid-activeId invariant can
+  // never be violated regardless of how this effect interleaves with user
+  // actions (including a submit that lands before this resolves).
+  // ============================================================================
   useEffect(() => {
-  if (!isMounted || isAuthLoading) return;
+    if (!isMounted || isAuthLoading) return;
 
-  const currentUserId = user?.id || 'guest_session';
-  if (hasHydratedRef.current === currentUserId) {
-    return; // already hydrated this identity — don't steal focus
-  }
-  hasHydratedRef.current = currentUserId;
-  
-  const initializeChats = async () => {
-      if (!user) { 
-        const fresh = createFreshChatState(generateUniqueID());
-        setChats([fresh]); 
-        setActiveId(fresh.id); 
-        return; 
+    const currentUserId = user?.id || 'guest_session';
+    if (hasHydratedRef.current === currentUserId) {
+      return; // already hydrated this identity — don't steal focus
+    }
+    hasHydratedRef.current = currentUserId;
+
+    let cancelled = false;
+
+    const initializeChats = async () => {
+      if (!user) {
+        // Local seed chat already exists from initChatMachine(); mark ready.
+        if (!cancelled) dispatch({ type: 'HYDRATE_SUCCESS', identity: currentUserId, serverChats: [] });
+        return;
       }
+
+      dispatch({ type: 'HYDRATE_START' });
 
       const supabaseAuth = await getAuthenticatedClient();
       const { data: convos, error: convoErr } = await supabaseAuth
@@ -642,10 +808,16 @@ const hasHydratedRef = useRef<string | null>(null)
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
-      if (convoErr) { 
-        logToTerminal(`[DB_ERR] Failed to load sessions.`); 
-        hasHydratedRef.current = null; // release lock so a later attempt can retry
-        return; 
+      if (cancelled) return;
+
+      if (convoErr) {
+        logToTerminal(`[DB_ERR] Failed to load sessions. Continuing in local-only mode.`);
+        toast.error('Could not sync chat history.', {
+          description: 'Working locally — this session will sync once the connection recovers.'
+        });
+        hasHydratedRef.current = null; // release lock so a later retry can re-run
+        dispatch({ type: 'HYDRATE_ERROR' });
+        return;
       }
 
       let formatted: ChatState[] = [];
@@ -657,6 +829,8 @@ const hasHydratedRef = useRef<string | null>(null)
           .in('conversation_id', convoIds)
           .eq('user_id', user.id) // defense in depth alongside RLS
           .order('created_at', { ascending: true });
+
+        if (cancelled) return;
 
         // NOTE: only role/text/ts/steps are persisted and rehydrated here.
         // metrics / swarmConsensus / traceEvents are NOT stored in `messages`
@@ -685,27 +859,14 @@ const hasHydratedRef = useRef<string | null>(null)
         });
       }
 
-      const pendingId = sessionStorage.getItem(PENDING_SESSION_ID);
-      if (pendingId && !formatted.find(c => c.id === pendingId)) {
-        formatted.unshift(createFreshChatState(pendingId));
-      }
-
-      const existingEmptyChat = formatted.find(c => c.messages.length <= 1);
-      
-      if (existingEmptyChat) {
-        setChats(formatted);
-        setActiveId(existingEmptyChat.id);
-      } else {
-        const freshId = generateUniqueID();
-        const freshChat = createFreshChatState(freshId);
-        formatted.unshift(freshChat);
-        sessionStorage.setItem(PENDING_SESSION_ID, freshId);
-        setChats(formatted);
-        setActiveId(freshId);
+      if (!cancelled) {
+        dispatch({ type: 'HYDRATE_SUCCESS', identity: currentUserId, serverChats: formatted });
+        sessionStorage.removeItem(PENDING_SESSION_ID);
       }
     };
     
     initializeChats();
+    return () => { cancelled = true; };
   }, [isMounted, isAuthLoading, user, getAuthenticatedClient, logToTerminal]);
 
   const activeChat = chats.find(c => c.id === activeId) || chats[0]
@@ -780,11 +941,19 @@ const hasHydratedRef = useRef<string | null>(null)
         id: generateUniqueID(), role: 'hexical', text: `**LOCKOUT:** Guest Limit reached.`, 
         steps: ['GUEST_LIMIT_REACHED'], valid: false, route: 'unknown' as any, ts: generateTimestamp() 
       }
-      setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, { id: generateUniqueID(), role: 'user', text: trimmedLogic, ts: generateTimestamp(), steps: [], valid: true, route: 'user_input' as any }, systemWarning] } : c))
+      const userMsg: ExtendedStreamMessage = {
+        id: generateUniqueID(), role: 'user', text: trimmedLogic, ts: generateTimestamp(),
+        steps: [], valid: true, route: 'user_input' as any
+      }
+      dispatch({ type: 'APPEND_MESSAGES', chatId: activeId, messages: [userMsg, systemWarning] })
       openSignIn(); 
       return;
     }
 
+    // Defensive assertion only — with the reducer guaranteeing chats is
+    // always non-empty and activeId always valid from first render, this
+    // branch should be structurally unreachable. Kept as a last-resort
+    // guard rather than removed.
     const currentChatContext = chats.find(c => c.id === activeId) || chats[0];
     if (!currentChatContext) {
       toast.error('Console is still initializing.', { description: 'Please try again in a moment.' });
@@ -808,9 +977,8 @@ const hasHydratedRef = useRef<string | null>(null)
     }
     const isNewChat = currentChatContext.messages.length <= 1;
     const generatedTitle = isNewChat ? safeLogic.split(' ').slice(0, 4).join(' ') + '...' : currentChatContext.title;
-    const updatedUserMessages = [...currentChatContext.messages, userMsg];
 
-    setChats(prev => prev.map(c => c.id === activeId ? { ...c, title: generatedTitle, messages: updatedUserMessages } : c))
+    dispatch({ type: 'APPEND_MESSAGES', chatId: activeId, title: generatedTitle, messages: [userMsg] })
     setBusy(true); 
     logToTerminal(`[TX] Transmitting heuristic model to remote cluster...`);
 
@@ -882,7 +1050,7 @@ const hasHydratedRef = useRef<string | null>(null)
              text: `**SYSTEM HALT:** ${errorMsg}`, 
              steps: ['LIMIT_REACHED'], valid: false, route: 'unknown' as any, ts: generateTimestamp() 
            }
-           setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...updatedUserMessages, systemWarning] } : c));
+           dispatch({ type: 'APPEND_MESSAGES', chatId: activeId, messages: [systemWarning] });
            
            // Only show upgrade modal for 402/403, not a standard rate limit cooldown
            if (res.status !== 429) setShowUpgradeModal(true);
@@ -1017,8 +1185,7 @@ const hasHydratedRef = useRef<string | null>(null)
         graphData: newGraph, traceEvents: traceEventsData
       }
 
-      const updatedAIMessages = [...updatedUserMessages, hexMsg];
-      setChats(prev => prev.map(c => c.id === activeId ? { ...c, title: generatedTitle, messages: updatedAIMessages } : c))
+      dispatch({ type: 'APPEND_MESSAGES', chatId: activeId, title: generatedTitle, messages: [hexMsg] })
       setActiveTraceMessage(hexMsg)
       
       if (user && !stealthMode) {
@@ -1037,7 +1204,7 @@ const hasHydratedRef = useRef<string | null>(null)
         id: generateUniqueID(), role: 'hexical', text: `**FATAL ERROR:** ${safeErrorText}`, 
         steps: ['SYSTEM_CRASH'], valid: false, route: 'unknown' as any, ts: generateTimestamp() 
       }
-      setChats(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...updatedUserMessages, errorMsg] } : c));
+      dispatch({ type: 'APPEND_MESSAGES', chatId: activeId, messages: [errorMsg] });
     } finally { 
       setBusy(false)
       abortControllerRef.current = null
@@ -1055,31 +1222,42 @@ const hasHydratedRef = useRef<string | null>(null)
     return `${timePhrase}, ${activeProfile?.name} ready for ${activeWorkspace?.name} diagnostics`
   }
 
-  function handleRename(id: string, newTitle: string): void { }
+  function handleRename(id: string, newTitle: string): void {
+    const trimmed = newTitle.trim();
+    if (!trimmed) return;
+    dispatch({ type: 'RENAME', id, title: trimmed });
+    if (user && !stealthMode) {
+      void (async () => {
+        try {
+          const supabaseAuth = await getAuthenticatedClient();
+          await supabaseAuth.from('conversations').update({ title: trimmed }).eq('id', id).eq('user_id', user.id);
+        } catch {
+          logToTerminal(`[WARN] Failed to sync rename for chat ${id}.`);
+        }
+      })()
+    }
+  }
 
   function handleTogglePin(id: string): void {
-    setChats(prev => {
-      const updated = prev.map(chat => chat.id === id ? { ...chat, pinned: !chat.pinned } : chat)
-      const toggledChat = updated.find(chat => chat.id === id)
-      
-      if (toggledChat && user && !stealthMode) {
-        void (async () => {
-          try {
-            const supabaseAuth = await getAuthenticatedClient()
-            // Requires an RLS policy with a WITH CHECK on `user_id = auth.uid()`
-            // for both insert and update — otherwise an upsert keyed on a
-            // guessed/leaked conversation id could let one user overwrite
-            // another user's title/pin state.
-            await supabaseAuth.from('conversations').upsert({ 
-              id: toggledChat.id, user_id: user.id, title: toggledChat.title, pinned: toggledChat.pinned 
-            })
-          } catch (error) { 
-            logToTerminal(`[WARN] Failed to sync pin state for chat ${id}.`) 
-          }
-        })()
-      }
-      return updated
-    })
+    const chat = chats.find(c => c.id === id);
+    dispatch({ type: 'TOGGLE_PIN', id })
+
+    if (chat && user && !stealthMode) {
+      void (async () => {
+        try {
+          const supabaseAuth = await getAuthenticatedClient()
+          // Requires an RLS policy with a WITH CHECK on `user_id = auth.uid()`
+          // for both insert and update — otherwise an upsert keyed on a
+          // guessed/leaked conversation id could let one user overwrite
+          // another user's title/pin state.
+          await supabaseAuth.from('conversations').upsert({ 
+            id: chat.id, user_id: user.id, title: chat.title, pinned: !chat.pinned 
+          })
+        } catch (error) { 
+          logToTerminal(`[WARN] Failed to sync pin state for chat ${id}.`) 
+        }
+      })()
+    }
   }
 
   const lastUserPayload = activeChat?.messages?.filter((m: any) => m.role === 'user').slice(-1)[0]?.text || '';
@@ -1137,7 +1315,7 @@ const hasHydratedRef = useRef<string | null>(null)
                  avatarUrl={userAvatar} 
                  currentTier={currentTier}
                  onToggleOpen={() => setIsSidebarOpen(false)} 
-                 onSelect={setActiveId} 
+                 onSelect={(id) => dispatch({ type: 'SELECT_CHAT', id })} 
                  onNewChat={handleNewChat} 
                  onDeleteChat={handleDelete} 
                  onRenameChat={handleRename} 
