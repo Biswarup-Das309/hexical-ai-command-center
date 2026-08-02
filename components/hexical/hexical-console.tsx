@@ -811,14 +811,18 @@ export function HexicalConsole() {
       if (cancelled) return;
 
       if (convoErr) {
-        logToTerminal(`[DB_ERR] Failed to load sessions. Continuing in local-only mode.`);
-        toast.error('Could not sync chat history.', {
-          description: 'Working locally — this session will sync once the connection recovers.'
-        });
-        hasHydratedRef.current = null; // release lock so a later retry can re-run
-        dispatch({ type: 'HYDRATE_ERROR' });
-        return;
-      }
+  console.error('[CONVERSATION_SYNC_ERROR]', convoErr);
+
+  logToTerminal(`[DB_ERR] Failed to load sessions. Continuing in local-only mode.`);
+
+  toast.error('Could not sync chat history.', {
+    description: 'Working locally — this session will sync once the connection recovers.'
+  });
+
+  hasHydratedRef.current = null;
+  dispatch({ type: 'HYDRATE_ERROR' });
+  return;
+}
 
       let formatted: ChatState[] = [];
       if (convos && convos.length > 0) {
