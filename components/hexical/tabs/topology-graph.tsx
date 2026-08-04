@@ -109,13 +109,13 @@ export const AttackGraphVisualizer = ({ graph, theme }: { graph: any, theme: Acc
       <div className="w-full h-full min-h-[500px] flex-1 p-6 flex flex-col bg-[#0a0a0c]">
         <div className="flex items-center gap-3 mb-6">
           <Workflow className="size-6 text-zinc-500" />
-          <h2 className="text-2xl font-medium text-white tracking-tight">Attack Path Topology</h2>
+          <h2 className="text-2xl font-medium text-white tracking-tight">Change Impact Map</h2>
         </div>
         <div className="flex-1 border border-dashed border-white/10 rounded-2xl bg-[#111116]/50 flex flex-col items-center justify-center text-center shadow-inner min-h-[400px]">
           <Workflow className="size-12 text-zinc-700 opacity-50 mb-4" />
           <h3 className="text-zinc-300 font-mono text-sm uppercase tracking-widest font-bold mb-2">Awaiting Architecture Data</h3>
           <p className="text-zinc-500 font-mono text-xs max-w-sm leading-relaxed">
-            Execute an active reconnaissance payload in the Core terminal to generate a dynamic threat map.
+            Run an investigation that returns project-relationship data to populate this impact map.
           </p>
         </div>
       </div>
@@ -128,11 +128,11 @@ export const AttackGraphVisualizer = ({ graph, theme }: { graph: any, theme: Acc
       <div className="flex items-center justify-between mb-6 shrink-0 z-10">
          <div className="flex items-center gap-3">
            <Workflow className="size-6 text-emerald-400" />
-           <h2 className="text-2xl font-sans font-medium text-white tracking-tight">Attack Path Topology</h2>
+           <h2 className="text-2xl font-sans font-medium text-white tracking-tight">Change Impact Map</h2>
          </div>
          <div className="flex gap-2">
             <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded border border-emerald-500/20 flex items-center gap-2">
-              <div className="size-2 bg-emerald-500 rounded-full animate-pulse"></div> Live Simulation
+              <div className="size-2 bg-emerald-500 rounded-full animate-pulse"></div> Returned analysis
             </span>
             <button className="text-[10px] font-mono font-bold uppercase tracking-widest text-zinc-400 bg-white/5 hover:bg-white/10 hover:text-white px-3 py-1.5 rounded border border-white/10 transition-all flex items-center gap-2">
               <Download size={12}/> Export

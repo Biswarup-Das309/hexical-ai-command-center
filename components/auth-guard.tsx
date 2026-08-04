@@ -3,7 +3,7 @@
 import { useAuth, SignInButton } from '@clerk/nextjs';
 import { HexicalConsole } from '@/components/hexical/hexical-console';
 import {
-  Shield,
+  GitBranch,
   Code2,
   GraduationCap,
   Radar,
@@ -54,8 +54,7 @@ function LandingPage() {
             </span>
           </h1>
           <p className="mx-auto mt-5 max-w-xl font-mono text-sm text-zinc-400 sm:text-base">
-            Multi-agent cybersecurity platform with full execution transparency.
-            See every model call, raw payload, and security check behind each answer.
+            An AI engineering system for investigating problems, building plans, coordinating specialists, and verifying outcomes with evidence.
           </p>
           <SignInButton mode="modal">
             <button className="mt-8 rounded-lg bg-cyan-400 px-7 py-3 text-sm font-semibold text-black transition hover:bg-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a0a0c]">
@@ -76,29 +75,29 @@ function LandingPage() {
               </span>
             </div>
             <div className="space-y-1.5 overflow-x-auto px-5 py-5 font-mono text-[13px] leading-relaxed">
-              <TraceLine time="00:00.12" tag="RECON_ENGINE" tagColor="text-cyan-400">
-                scanning target: <span className="text-zinc-300">api.staging.internal</span>
+              <TraceLine time="00:00.12" tag="INVESTIGATE" tagColor="text-cyan-400">
+                mapping repository context: <span className="text-zinc-300">apps/web/auth/session.ts</span>
               </TraceLine>
-              <TraceLine time="00:00.41" tag="RECON_ENGINE" tagColor="text-cyan-400" status="ok">
-                3 open ports found — 443, 8080, 5432
+              <TraceLine time="00:00.41" tag="CODE_ANALYSIS" tagColor="text-cyan-400" status="ok">
+                traced 3 call paths through the authentication boundary
               </TraceLine>
               <TraceLine time="00:01.03" tag="MODEL_CALL" tagColor="text-violet-400">
-                gpt-oss-sec-7b → &quot;classify auth flow on /users/:id&quot;
+                engineering route → &quot;classify the failing session refresh flow&quot;
               </TraceLine>
               <TraceLine time="00:01.09" tag="VERIFY" tagColor="text-emerald-400" status="ok">
-                response matches raw payload — diff: 0
+                plan evidence matches the analyzed code paths
               </TraceLine>
-              <TraceLine time="00:01.22" tag="EXPLOIT_ARCHITECT" tagColor="text-cyan-400">
-                drafting payload — broken object-level authorization
+              <TraceLine time="00:01.22" tag="PLANNER" tagColor="text-cyan-400">
+                sequencing a minimal remediation and validation plan
               </TraceLine>
-              <TraceLine time="00:01.30" tag="SECURITY_CHECK" tagColor="text-emerald-400" status="ok">
-                payload scoped to test environment only
+              <TraceLine time="00:01.30" tag="POLICY_CHECK" tagColor="text-emerald-400" status="ok">
+                execution remains scoped to an approved isolated environment
               </TraceLine>
-              <TraceLine time="00:01.44" tag="CVSS_CALC" tagColor="text-amber-400">
-                7.1 HIGH — broken access control
+              <TraceLine time="00:01.44" tag="IMPACT_ANALYSIS" tagColor="text-amber-400">
+                identified affected consumers and regression risk
               </TraceLine>
-              <TraceLine time="00:01.51" tag="DEFENSE_MATRIX" tagColor="text-emerald-400" status="ok">
-                mitigation drafted — scope JWT claims to resource owner
+              <TraceLine time="00:01.51" tag="VERIFY" tagColor="text-emerald-400" status="ok">
+                validation criteria and change evidence recorded
               </TraceLine>
               <div className="flex items-center gap-2 pt-1 text-zinc-600">
                 <span>hexical@trace:~$</span>
@@ -115,19 +114,19 @@ function LandingPage() {
         <section className="mx-auto max-w-5xl border-t border-zinc-900 px-6 py-20">
           <div className="grid gap-6 sm:grid-cols-3">
             <AudienceCard
-              icon={<Shield className="h-6 w-6" />}
-              title="Researchers & bug bounty hunters"
-              body="Validate findings and streamline reporting without re-checking the AI's logic line by line."
+              icon={<GitBranch className="h-6 w-6" />}
+              title="Engineering teams"
+              body="Investigate incidents, regressions, and planned changes with an evidence-backed workflow."
             />
             <AudienceCard
               icon={<Code2 className="h-6 w-6" />}
-              title="Developers"
-              body="Run AST-level code analysis and trace a flaw back to the exact line it originates from."
+              title="Developers & maintainers"
+              body="Use code and AST analysis to trace behavior, assess changes, and validate fixes."
             />
             <AudienceCard
               icon={<GraduationCap className="h-6 w-6" />}
-              title="CS/IT students"
-              body="Learn real security workflows by watching the step-by-step reasoning behind each exploit."
+              title="Technical leads"
+              body="Coordinate specialist agents around an explicit plan with clear authorization boundaries."
             />
           </div>
         </section>
@@ -137,23 +136,23 @@ function LandingPage() {
           <div className="grid gap-x-10 gap-y-8 sm:grid-cols-2">
             <FeatureRow
               icon={<Radar className="h-5 w-5" />}
-              title="Recon Engine, Exploit Architect, Defense Matrix"
-              body="Automated discovery, structured payload drafting, and mitigation suggestions in one pipeline."
+              title="Investigate, plan, execute, verify"
+              body="A coherent engineering loop from repository context through validated results."
             />
             <FeatureRow
               icon={<Binary className="h-5 w-5" />}
-              title="AST code tracing & CVSS calculator"
-              body="Precise, line-level vulnerability mapping with standardized severity scoring."
+              title="Code intelligence & impact analysis"
+              body="Trace structure, examine diffs, and understand the downstream effect of a change."
             />
             <FeatureRow
               icon={<TerminalSquare className="h-5 w-5" />}
-              title="Live TTY sandbox"
-              body="Run controlled simulations in a real terminal, isolated from production."
+              title="Execution Sandbox"
+              body="Run approved work in an isolated, policy-controlled environment."
             />
             <FeatureRow
               icon={<Users className="h-5 w-5" />}
-              title="Swarm Intelligence"
-              body="Run multiple specialized agents against the same target at once."
+              title="Engineering Swarm"
+              body="Coordinate specialized agents against the same engineering goal."
               badge="PRO"
             />
           </div>

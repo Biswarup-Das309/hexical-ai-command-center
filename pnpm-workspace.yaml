@@ -1,3 +1,6 @@
 allowBuilds:
   msw: true
   sharp: true
+
+overrides:
+  '@upstash/redis': 1.38.0

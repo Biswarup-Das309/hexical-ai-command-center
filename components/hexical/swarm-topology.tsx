@@ -61,7 +61,7 @@ const AGENT_NODES: Partial<Record<AgentRoleType, NodeConfig>> = {
   },
   red_team_exploit: {
     id: 'red_team_exploit',
-    label: 'Red Team Exploit',
+    label: 'Adversarial Review',
     icon: Crosshair,
     colorClass: 'border-red-500 text-red-400 bg-red-950/30',
     glowClass: 'shadow-[0_0_25px_rgba(239,68,68,0.3)]',
@@ -70,7 +70,7 @@ const AGENT_NODES: Partial<Record<AgentRoleType, NodeConfig>> = {
   },
   blue_team_defense: {
     id: 'blue_team_defense',
-    label: 'Blue Team Defense',
+    label: 'Safeguard Review',
     icon: Shield,
     colorClass: 'border-emerald-500 text-emerald-400 bg-emerald-950/30',
     glowClass: 'shadow-[0_0_25px_rgba(16,185,129,0.3)]',
@@ -291,8 +291,7 @@ export default function SwarmTopology({
                 </div>
                 <div className="bg-[#111116] border border-white/5 rounded-lg p-3 text-muted-foreground space-y-2">
                   <p>
-                    <strong>System Context:</strong> Thread monitoring and asynchronous callback
-                    validation pipeline assets.
+                    <strong>System Context:</strong> Engineering goal review and evidence synthesis.
                   </p>
                   <p>
                     <strong>Status:</strong>{' '}
@@ -311,8 +310,7 @@ export default function SwarmTopology({
                 />
                 <p className="text-xs font-medium">No live swarm graph processes active.</p>
                 <p className="text-[10px] text-white/40 max-w-[200px] mt-1">
-                  Execute a runtime scan target compilation to stream structural debate telemetry data
-                  cycles.
+                  Run an Engineering Swarm review to stream backend-reported agent evidence.
                 </p>
               </motion.div>
             ) : (
@@ -334,7 +332,7 @@ export default function SwarmTopology({
                         }`}
                       >
                         Round {round.roundNumber}:{' '}
-                        {round.proposingAgentRole === 'red_team_exploit' ? 'Exploit Vector' : 'Defense Patch'}
+                        {round.proposingAgentRole === 'red_team_exploit' ? 'Issue hypothesis' : 'Safeguard proposal'}
                       </span>
                       <span className="text-[9px] text-white/30">{formatTimestamp(round.timestampMs)}</span>
                     </div>
@@ -361,7 +359,7 @@ export default function SwarmTopology({
         {votes.length > 0 && (
           <div className="mt-3 pt-3 border-t border-white/5 shrink-0 bg-black/40 p-2 rounded-lg">
             <div className="flex items-center gap-1.5 text-[10px] text-white font-bold tracking-widest uppercase mb-1.5">
-              <CheckCircle2 size={12} className="text-amber-500" /> Consensus Engine Target Matrix
+              <CheckCircle2 size={12} className="text-amber-500" /> Consensus Status Matrix
             </div>
             <div className="flex gap-1">
               {votes.map((v, i) => (

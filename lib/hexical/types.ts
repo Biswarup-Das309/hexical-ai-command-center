@@ -263,6 +263,24 @@ export const PLAN_FEATURES: Record<Tier, readonly string[]> = {
   pro: ['core_heuristics', 'interactive_topology', 'pdf_export', 'swarm_intelligence', 'advanced_terminal'],
 };
 
+/** Server-side Execution Sandbox resource ceilings. Non-Pro tiers have no
+ * lifecycle access because they do not carry the advanced_terminal feature. */
+export const TTY_RESOURCE_LIMITS = {
+  free: null,
+  go: null,
+  plus: null,
+  pro: {
+    maxConcurrentSessions: 3,
+    maxConcurrentExecutionsPerSession: 4,
+    maxExecutionsPerMinute: 60,
+    maxExecutionDurationMs: 30_000,
+    maxSessionIdleMs: 15 * 60 * 1_000,
+    maxSessionDurationMs: 60 * 60 * 1_000,
+    maxOutputBytesPerExecution: 256 * 1_024,
+    maxQueueDepth: 20,
+  },
+} as const;
+
 export const MARGIN_CHAR_LIMITS: Record<Tier, number> = {
   free: 10_000,
   go: 15_000,

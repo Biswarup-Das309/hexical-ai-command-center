@@ -7,6 +7,7 @@ export type PlanCapability =
   | 'interactive_topology'
   | 'bounty_forge'
   | 'swarm_intelligence'
+  | 'advanced_terminal'
   | 'pdf_export'
 
 export type PlanFeatureIcon =
@@ -109,6 +110,7 @@ export const PLAN_LIMITS: Record<PlanTier, PlanLimitConfig> = {
       'interactive_topology',
       'bounty_forge',
       'swarm_intelligence',
+      'advanced_terminal',
       'pdf_export',
     ],
   },
@@ -151,7 +153,7 @@ export const PLAN_CATALOG: Record<PlanTier, PlanDisplayConfig> = {
     features: [
       { icon: 'terminal', tone: 'muted', text: 'Groq fast inference route' },
       { icon: 'network', tone: 'muted', text: 'Basic code and logic analysis' },
-      { icon: 'activity', tone: 'muted', text: 'Recon profile for standard checks' },
+      { icon: 'activity', tone: 'muted', text: 'Repository intelligence for standard checks' },
       { icon: 'fileJson', tone: 'muted', text: tokenBudgetText('free') },
     ],
   },
@@ -173,13 +175,13 @@ export const PLAN_CATALOG: Record<PlanTier, PlanDisplayConfig> = {
     name: 'Plus',
     checkoutName: 'Plus',
     priceLabel: `${RUPEE}999`,
-    badge: 'Hunter',
-    description: 'Premium analysis for larger inputs, audits, and bounty workflows.',
+    badge: 'Builder',
+    description: 'Premium engineering analysis for larger inputs, change planning, and validation workflows.',
     features: [
       { icon: 'zap', tone: 'accent', text: tokenBudgetText('plus') },
       { icon: 'terminal', tone: 'accent', text: 'OpenAI route for standard and deep analysis' },
-      { icon: 'crosshair', tone: 'accent', text: 'Bounty workflow context' },
-      { icon: 'target', tone: 'accent', text: 'Interactive topology features' },
+      { icon: 'crosshair', tone: 'accent', text: 'Structured remediation workflow' },
+      { icon: 'target', tone: 'accent', text: 'Interactive impact analysis' },
       { icon: 'gitMerge', tone: 'accent', text: requestSizeText('plus') },
     ],
   },
@@ -188,13 +190,13 @@ export const PLAN_CATALOG: Record<PlanTier, PlanDisplayConfig> = {
     name: 'Pro',
     checkoutName: 'Pro',
     priceLabel: `${RUPEE}4,999`,
-    badge: 'Architect',
-    description: 'Highest limits with Claude deep analysis and Pro multi-agent review.',
+    badge: 'Engineering',
+    description: 'Highest limits with deep analysis and coordinated multi-agent engineering review.',
     includesLabel: 'Includes Plus, and:',
     features: [
       { icon: 'sparkles', tone: 'accent', text: tokenBudgetText('pro') },
       { icon: 'shield', tone: 'accent', text: 'Claude route for deep analysis' },
-      { icon: 'fileBadge', tone: 'accent', text: '10 multi-agent review requests per day' },
+      { icon: 'fileBadge', tone: 'accent', text: '10 coordinated engineering reviews per day' },
       { icon: 'zap', tone: 'accent', text: requestSizeText('pro') },
     ],
   },

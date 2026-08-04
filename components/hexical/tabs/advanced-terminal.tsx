@@ -35,11 +35,11 @@ export const AdvancedTerminal = ({ logs, theme, onCommand }: { logs: string[], t
        <div className="flex items-center justify-between mb-6">
          <div className="flex items-center gap-3">
            <TerminalSquare className={`size-6 ${THEME_MAP[theme].text}`} />
-           <h2 className="text-2xl font-sans font-medium text-white tracking-tight">Advanced TTY Sandbox</h2>
+           <h2 className="text-2xl font-sans font-medium text-white tracking-tight">Execution Sandbox</h2>
          </div>
-         <span className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-3 py-1 rounded text-[10px] font-mono uppercase tracking-widest flex items-center gap-2">
-           <div className="size-2 bg-emerald-500 rounded-full animate-pulse"/> 
-           root@kali-sandbox
+         <span className="bg-amber-500/10 border border-amber-500/20 text-amber-400 px-3 py-1 rounded text-[10px] font-mono uppercase tracking-widest flex items-center gap-2">
+           <div className="size-2 bg-amber-500 rounded-full"/>
+           no session attached
          </span>
       </div>
       
@@ -69,15 +69,16 @@ export const AdvancedTerminal = ({ logs, theme, onCommand }: { logs: string[], t
         </div>
         
         <div className="border-t border-white/10 bg-[#0a0a0c] p-3 flex items-center gap-3">
-          <span className={`${THEME_MAP[theme].text} font-bold shrink-0`}>root@hexical:~#</span>
+          <span className={`${THEME_MAP[theme].text} font-bold shrink-0`}>sandbox&gt;</span>
           <input 
             type="text" 
             value={input} 
-            onChange={e=>setInput(e.target.value)} 
-            onKeyDown={handleKeyDown} 
-            className="flex-1 bg-transparent outline-none text-white placeholder:text-zinc-700 w-full" 
-            placeholder="nmap -sC -sV target.local..." 
-            autoFocus 
+            onChange={e=>setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled
+            className="flex-1 bg-transparent outline-none text-white placeholder:text-zinc-700 w-full disabled:cursor-not-allowed disabled:opacity-60"
+            placeholder="Attach an approved server execution session to enable commands"
+            aria-label="Execution sandbox command"
           />
         </div>
       </div>

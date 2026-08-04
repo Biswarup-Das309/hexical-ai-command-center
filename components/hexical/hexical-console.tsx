@@ -185,7 +185,7 @@ const createFreshChatState = (id: string): ChatState => ({
   messages: [{ 
     id: 'init', 
     role: 'hexical', 
-    text: 'Reasoning system activated. SECURE PROTOCOLS ENGAGED. AWAITING TARGET VECTORS.', 
+    text: 'Engineering command center ready. Describe a repository problem, planned change, or validation goal.',
     ts: '00:00', 
     steps: [], 
     valid: true,
@@ -201,30 +201,30 @@ const THEME_MAP: Record<AccentTheme, { border: string, text: string, bg: string,
   amber: { border: 'border-amber-500/20', text: 'text-amber-400', bg: 'bg-amber-500/10', glow: 'shadow-amber-950/20', accent: 'amber' }
 }
 
-const SECURITY_PROFILES = [
-  { id: 'recon', name: 'Recon Engine', description: 'Attack surface mapping & enumeration', icon: Network, color: 'text-emerald-400', reqFeature: 'core_heuristics' },
-  { id: 'swarm', name: 'Swarm Intelligence', description: 'Multi-agent Red/Blue team consensus', icon: GitMerge, color: 'text-amber-400', reqFeature: 'swarm_intelligence' },
-  { id: 'bug-hunter', name: 'Exploit Architect', description: 'Weaponized PoC generation', icon: Crosshair, color: 'text-rose-400', reqFeature: 'core_heuristics' },
-  { id: 'defense', name: 'Defense Matrix', description: 'WAF rules & code patch generation', icon: Shield, color: 'text-cyan-400', reqFeature: 'core_heuristics' }
+const ENGINEERING_PROFILES = [
+  { id: 'recon', name: 'Repository Intelligence', description: 'Map code context, dependencies, and relevant behavior', icon: SearchCode, color: 'text-emerald-400', reqFeature: 'core_heuristics' },
+  { id: 'swarm', name: 'Engineering Swarm', description: 'Coordinate specialist agents around an engineering goal', icon: GitMerge, color: 'text-amber-400', reqFeature: 'swarm_intelligence' },
+  { id: 'bug-hunter', name: 'Security Analysis', description: 'Run authorized application-security analysis with evidence-backed remediation', icon: Brain, color: 'text-rose-400', reqFeature: 'core_heuristics' },
+  { id: 'defense', name: 'Change Verification', description: 'Assess change impact, safeguards, and validation evidence', icon: ShieldCheck, color: 'text-cyan-400', reqFeature: 'core_heuristics' }
 ]
 
 const WORKSPACES = [
-  { id: 'global', name: 'Global Namespace' }, 
-  { id: 'cloud', name: 'Cloud Infrastructure (AWS/GCP)' }, 
-  { id: 'web', name: 'Web Application (React/Next.js)' }, 
-  { id: 'binary', name: 'Compiled Binary / Memory' },
-  { id: 'appsec', name: 'AppSec (Java / C++)' }
+  { id: 'global', name: 'Engineering Workspace' },
+  { id: 'cloud', name: 'Cloud Service Project' },
+  { id: 'web', name: 'Web Application Project' },
+  { id: 'binary', name: 'Runtime / Systems Project' },
+  { id: 'appsec', name: 'Application Security Project' }
 ]
 
 const PROCESSING_PHASES = [
-  "Spawning isolated WebContainer...", 
-  "Injecting pre-flight heuristic hooks...",
-  "Compiling AST & Control Flow Graphs...", 
-  "Fuzzing input interpolations...",
-  "Deploying Red Team Agent...", 
-  "Deploying Blue Team Agent...",
-  "Negotiating exploit feasibility...", 
-  "Generating Attack SVG Maps..."
+  "Collecting project context...",
+  "Investigating code and execution paths...",
+  "Building an evidence-backed plan...",
+  "Coordinating specialist agents...",
+  "Applying authorization and policy checks...",
+  "Preparing isolated execution...",
+  "Analyzing change impact...",
+  "Compiling verification evidence..."
 ]
 
 // =============================================================================
@@ -328,36 +328,9 @@ const extractTargetsFromLogic = (text: string): string[] => {
   return Array.from(new Set([...(text.match(ipRegex) || []), ...(text.match(domainRegex) || [])])).slice(0, 8);
 }
 
-const parseAttackGraph = (logic: string): AttackGraph => {
-  const isWeb = logic.includes('xss') || logic.includes('sql') || logic.includes('http');
-  if (isWeb) {
-    return {
-      nodes: [
-        { id: '1', label: 'HTTP Request', type: 'entry', x: 50, y: 150 },
-        { id: '2', label: 'WAF Bypass', type: 'pivot', x: 250, y: 80 },
-        { id: '3', label: 'Input Interpolation', type: 'vuln', x: 250, y: 220 },
-        { id: '4', label: 'Database Execution', type: 'impact', x: 500, y: 150 }
-      ],
-      edges: [ 
-        { source: '1', target: '2', label: 'Obfuscation' }, 
-        { source: '1', target: '3', label: 'Raw Injection' }, 
-        { source: '2', target: '4', label: 'Execution' }, 
-        { source: '3', target: '4', label: 'Execution' } 
-      ]
-    };
-  }
-  return {
-    nodes: [
-      { id: '1', label: 'External Attack Surface', type: 'entry', x: 50, y: 150 },
-      { id: '2', label: 'Service Enumeration', type: 'pivot', x: 300, y: 150 },
-      { id: '3', label: 'Privilege Escalation', type: 'impact', x: 550, y: 150 }
-    ],
-    edges: [ 
-      { source: '1', target: '2', label: 'Scan' }, 
-      { source: '2', target: '3', label: 'Exploit' } 
-    ]
-  };
-}
+// Impact maps are only shown when the backend returns real relationship data.
+// Never fabricate project topology from user text.
+const parseAttackGraph = (_logic: string): AttackGraph => ({ nodes: [], edges: [] })
 
 // =============================================================================
 // 4. CHAT INITIALIZATION STATE MACHINE
@@ -572,7 +545,7 @@ export function HexicalConsole() {
   // that's the audience the product is actually for; Diagnostics is one tap
   // away for anyone who wants the unprocessed trace.
   const [activePanelTab, setActivePanelTab] = useState<'investigation' | 'diagnostics'>('investigation')
-  const [activeProfileId, setActiveProfileId] = useState<string>(SECURITY_PROFILES[0].id)
+  const [activeProfileId, setActiveProfileId] = useState<string>(ENGINEERING_PROFILES[0].id)
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(WORKSPACES[0].id)
   
   const [showProfileMenu, setShowProfileMenu] = useState<boolean>(false)
@@ -628,26 +601,11 @@ export function HexicalConsole() {
   // backend-controlled sandbox with a strict allow-list and output limits;
   // never interpolate user input into a real shell reachable from the browser.
   const handleTerminalCommand = (cmd: string) => {
-    logToTerminal(`$ ${cmd}`);
     const normalized = cmd.trim().toLowerCase();
-    
-    if (normalized.startsWith('nmap')) {
-      setTimeout(() => logToTerminal(`Starting Nmap 7.94...`), 200);
-      setTimeout(() => logToTerminal(`Nmap scan report for ${cmd.split(' ')[1] || 'target'}`), 800);
-      setTimeout(() => logToTerminal(`PORT    STATE SERVICE\n80/tcp   open  http\n443/tcp  open  https\n8080/tcp open  http-proxy`), 1500);
-    } else if (normalized.startsWith('ffuf')) {
-      setTimeout(() => logToTerminal(`[WARN] Directory brute-forcing initiated. WAF detection likely.`), 300);
-      setTimeout(() => logToTerminal(`[SUCCESS] Found: /api/v1/users (Status: 401)`), 1200);
-      setTimeout(() => logToTerminal(`[SUCCESS] Found: /admin/dashboard (Status: 302)`), 1800);
-    } else if (normalized.startsWith('curl')) {
-      setTimeout(() => logToTerminal(`[HTTP] Sending GET request...`), 200);
-      setTimeout(() => logToTerminal(`[WARN] 403 Forbidden - Request blocked by WAF.`), 600);
-    } else if (normalized.startsWith('whoami')) {
-      setTimeout(() => logToTerminal(`root`), 200);
-    } else if (normalized === 'clear') {
+    if (normalized === 'clear') {
       setSystemLogs([]);
     } else {
-      logToTerminal(`[ERR] Command not found in WebContainer: ${cmd.split(' ')[0]}`);
+      logToTerminal('[SANDBOX] No approved execution session is attached. Browser input is never run on a host.');
     }
   }
 
@@ -967,7 +925,7 @@ export function HexicalConsole() {
     const targets = extractTargetsFromLogic(trimmedLogic);
     if (targets.length > 0) { 
       setExtractedTargets(prev => Array.from(new Set([...prev, ...targets])).slice(0, 8)); 
-      logToTerminal(`[RECON] Extracted ${targets.length} valid entities from AST flow.`); 
+      logToTerminal(`[CONTEXT] Extracted ${targets.length} references from the submitted goal.`);
     }
     
     const safeLogic = sanitizeLocalPayload(trimmedLogic, autoRedact);
@@ -1113,7 +1071,7 @@ export function HexicalConsole() {
             if (statusData.status === 'queued') { 
               setLoadingPhase(`In Queue (Position: ${statusData.position})...`); 
             } else if (statusData.status === 'processing') { 
-              setLoadingPhase('Executing payload...'); 
+              setLoadingPhase('Processing investigation...');
             } else if (statusData.status === 'completed') {
               finalData = statusData.data; 
               isPolling = false;
@@ -1179,7 +1137,7 @@ export function HexicalConsole() {
         ? finalData.traceEvents
         : undefined
 
-      logToTerminal(`[RX] Received evaluated payload. Status: ${responseValid ? 'SUCCESS' : 'WARN'}. Computation Time: ${executionTimeMs}ms.`);
+      logToTerminal(`[RX] Received investigation result. Status: ${responseValid ? 'SUCCESS' : 'WARN'}. Computation Time: ${executionTimeMs}ms.`);
 
       const hexMsg: ExtendedStreamMessage = { 
         id: generateUniqueID(), role: 'hexical', text: analysisText, steps: responseSteps, 
@@ -1217,13 +1175,13 @@ export function HexicalConsole() {
 
   if (!isMounted) return null
   
-  const activeProfile = SECURITY_PROFILES.find(p => p.id === activeProfileId) || SECURITY_PROFILES[0]
+  const activeProfile = ENGINEERING_PROFILES.find(p => p.id === activeProfileId) || ENGINEERING_PROFILES[0]
   const activeWorkspace = WORKSPACES.find(w => w.id === activeWorkspaceId) || WORKSPACES[0]
 
   function getContextualGreeting() {
     const hour = new Date().getHours()
     const timePhrase = hour < 6 ? 'Night shift' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
-    return `${timePhrase}, ${activeProfile?.name} ready for ${activeWorkspace?.name} diagnostics`
+    return `${timePhrase}, ${activeProfile?.name} ready for ${activeWorkspace?.name}`
   }
 
   function handleRename(id: string, newTitle: string): void {
@@ -1349,28 +1307,28 @@ export function HexicalConsole() {
 
             <div className="flex-1 flex items-center overflow-x-auto no-scrollbar gap-2 shrink">
               <div className="hidden lg:flex p-1 bg-white/[0.02] border border-white/5 rounded-lg backdrop-blur-md shrink-0">
-                <button onClick={() => setViewMode('chat')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'chat' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><LayoutDashboard size={14}/> Core</button>
+                <button onClick={() => setViewMode('chat')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'chat' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><LayoutDashboard size={14}/> Investigate</button>
                 
                 <button onClick={() => setViewMode('graph')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'graph' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}>
-                  {hasFeatureAccess('interactive_topology') ? <Workflow size={14}/> : <Lock size={12} className="text-zinc-600" />} Topology
+                  {hasFeatureAccess('interactive_topology') ? <Workflow size={14}/> : <Lock size={12} className="text-zinc-600" />} Impact
                 </button>
                 <button onClick={() => setViewMode('payloads')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'payloads' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}>
-                  {hasFeatureAccess('core_heuristics') ? <Zap size={14}/> : <Lock size={12} className="text-zinc-600" />} Payloads
+                  {hasFeatureAccess('core_heuristics') ? <Zap size={14}/> : <Lock size={12} className="text-zinc-600" />} Utilities
                 </button>
                 <button onClick={() => setViewMode('bounty')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'bounty' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}>
-                  <FileText size={14}/> Forge
+                  <FileText size={14}/> Evidence
                 </button>
                 
-                <button onClick={() => setViewMode('ast')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'ast' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Code size={14}/> AST</button>
-                <button onClick={() => setViewMode('cvss')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'cvss' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Hash size={14}/> CVSS</button>
+                <button onClick={() => setViewMode('ast')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'ast' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Code size={14}/> Code</button>
+                <button onClick={() => setViewMode('cvss')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'cvss' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Hash size={14}/> Security Risk</button>
                 <button onClick={() => setViewMode('terminal')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'terminal' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}>
-                  {hasFeatureAccess('advanced_terminal') ? <TerminalSquare size={14}/> : <Lock size={12} className="text-zinc-600" />} TTY
+                  {hasFeatureAccess('advanced_terminal') ? <TerminalSquare size={14}/> : <Lock size={12} className="text-zinc-600" />} Execute
                 </button>
               </div>
 
               {extractedTargets.length > 0 && viewMode === 'chat' && (
                 <div className="hidden xl:flex items-center gap-2 ml-2 pl-3 border-l border-white/10 shrink-0">
-                  <span className={`text-[9px] ${THEME_MAP[uiTheme].text} uppercase tracking-widest font-bold`}>Targets</span>
+                  <span className={`text-[9px] ${THEME_MAP[uiTheme].text} uppercase tracking-widest font-bold`}>References</span>
                   {extractedTargets.slice(0,3).map((target, idx) => (
                     <span 
                       key={idx} 
@@ -1397,10 +1355,10 @@ export function HexicalConsole() {
                 {showProfileMenu && (
                   <div className="absolute top-full right-0 mt-2 w-64 bg-[#111116] border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-fade-in z-[100]">
                     <div className="p-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider border-b border-white/5">
-                      Active Agent Override
+                      Engineering capability
                     </div>
                     <div className="p-1">
-                      {SECURITY_PROFILES.map(profile => {
+                      {ENGINEERING_PROFILES.map(profile => {
                         const canAccessProfile = hasFeatureAccess(profile.reqFeature);
                         return (
                           <button 
@@ -1411,7 +1369,7 @@ export function HexicalConsole() {
                                 setShowProfileMenu(false);
                               } else {
                                 toast.error(`${profile.name} locked.`, {
-                                  description: "Requires advanced matrix license. Defaulting to Recon Engine."
+                                  description: "Requires the appropriate engineering capability. Defaulting to Repository Intelligence."
                                 });
                                 setActiveProfileId('recon'); 
                                 setShowProfileMenu(false);
@@ -1457,14 +1415,14 @@ export function HexicalConsole() {
             
             {viewMode === 'recon' && (
               <div className="p-4 md:p-6 h-full relative">
-                {!hasFeatureAccess('core_heuristics') && <LockedFeatureOverlay featureName="Reconnaissance Engine" />}
+                {!hasFeatureAccess('core_heuristics') && <LockedFeatureOverlay featureName="Repository Intelligence" />}
                 <div className={!hasFeatureAccess('core_heuristics') ? 'blur-md pointer-events-none' : ''}><ReconDashboard targets={extractedTargets} theme={uiTheme} /></div>
               </div>
             )}
             
             {viewMode === 'graph' && (
               <div className="p-4 md:p-6 h-full relative">
-                {!hasFeatureAccess('interactive_topology') && <LockedFeatureOverlay featureName="Interactive Topology Graph" />}
+                {!hasFeatureAccess('interactive_topology') && <LockedFeatureOverlay featureName="Change Impact Analysis" />}
                 <div className={`w-full h-full ${!hasFeatureAccess('interactive_topology') ? 'blur-md pointer-events-none' : ''}`}>
                   <AttackGraphVisualizer graph={activeGraph} theme={uiTheme} />
                 </div>
@@ -1473,7 +1431,7 @@ export function HexicalConsole() {
 
             {viewMode === 'payloads' && (
               <div className="p-4 md:p-6 h-full relative">
-                {!hasFeatureAccess('core_heuristics') && <LockedFeatureOverlay featureName="Advanced Payload Mutator" />}
+                {!hasFeatureAccess('core_heuristics') && <LockedFeatureOverlay featureName="Engineering Utilities" />}
                 <div className={!hasFeatureAccess('core_heuristics') ? 'blur-md pointer-events-none' : ''}><PayloadMutator theme={uiTheme} /></div>
               </div>
             )}
@@ -1488,7 +1446,7 @@ export function HexicalConsole() {
             {viewMode === 'ast' && <div className="p-4 md:p-6 h-full"><ASTVisualizer theme={uiTheme} codePayload={lastUserPayload} /></div>}
             {viewMode === 'terminal' && (
               <div className="p-4 md:p-6 h-full relative">
-                {!hasFeatureAccess('advanced_terminal') && <LockedFeatureOverlay featureName="Advanced TTY Sandbox" />}
+                {!hasFeatureAccess('advanced_terminal') && <LockedFeatureOverlay featureName="Execution Sandbox" />}
                 <div className={`mx-auto h-full max-w-5xl ${!hasFeatureAccess('advanced_terminal') ? 'blur-md pointer-events-none' : ''}`}>
                   <AdvancedTerminal logs={systemLogs} theme={uiTheme} onCommand={handleTerminalCommand} />
                 </div>
@@ -1543,11 +1501,11 @@ export function HexicalConsole() {
                   <div className="flex items-center gap-2 mb-2 px-4 pt-3">
                     <div className={`flex items-center gap-1.5 text-[10px] uppercase tracking-widest font-semibold px-2 py-1 rounded border ${THEME_MAP[uiTheme].bg} ${THEME_MAP[uiTheme].text} ${THEME_MAP[uiTheme].border}`}>
                       <Crosshair size={10} /> 
-                      Scope:
+                      Authorized scope:
                     </div>
                     <input 
                       type="text" 
-                      placeholder="e.g. optimizely.com or vercel.app" 
+                      placeholder="e.g. approved repository, service, or environment"
                       value={targetScope} 
                       onChange={(e) => setTargetScope(e.target.value)} 
                       className="bg-transparent text-xs text-zinc-300 placeholder:text-zinc-600 outline-none flex-1 font-mono" 
@@ -1685,15 +1643,15 @@ export function HexicalConsole() {
                          <GitMerge size={12}/> Multi-Agent Swarm Consensus
                        </span>
                        <div className="p-3 bg-rose-500/5 border border-rose-500/20 rounded-xl relative overflow-hidden group">
-                         <div className="absolute top-0 right-0 bg-rose-500/20 text-rose-400 text-[8px] px-2 py-0.5 rounded-bl-lg font-bold">RED TEAM (OFFENSIVE)</div>
+                         <div className="absolute top-0 right-0 bg-rose-500/20 text-rose-400 text-[8px] px-2 py-0.5 rounded-bl-lg font-bold">ADVERSARIAL REVIEW</div>
                          <div className="font-mono text-rose-300/80 mb-2 leading-relaxed mt-2">"{activeTraceMessage.swarmConsensus.redTeam.logic}"</div>
                          <div className="flex items-center justify-between bg-black/40 p-2 rounded border border-rose-500/10">
-                           <span className="text-rose-400/50">Exploit Confidence</span>
+                           <span className="text-rose-400/50">Issue Hypothesis Confidence</span>
                            <span className="text-rose-400 font-bold">{activeTraceMessage.swarmConsensus.redTeam.confidence}%</span>
                          </div>
                        </div>
                        <div className="p-3 bg-cyan-500/5 border border-cyan-500/20 rounded-xl relative overflow-hidden group">
-                         <div className="absolute top-0 right-0 bg-cyan-500/20 text-cyan-400 text-[8px] px-2 py-0.5 rounded-bl-lg font-bold">BLUE TEAM (DEFENSIVE)</div>
+                         <div className="absolute top-0 right-0 bg-cyan-500/20 text-cyan-400 text-[8px] px-2 py-0.5 rounded-bl-lg font-bold">SAFEGUARD REVIEW</div>
                          <div className="font-mono text-cyan-300/80 mb-2 leading-relaxed mt-2">"{activeTraceMessage.swarmConsensus.blueTeam.mitigation}"</div>
                          <div className="flex items-center justify-between bg-black/40 p-2 rounded border border-cyan-500/10">
                            <span className="text-cyan-400/50">Calculated Risk Level</span>

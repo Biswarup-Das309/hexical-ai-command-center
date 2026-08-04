@@ -16,8 +16,8 @@ export const ReconDashboard = ({ targets, theme }: { targets: string[]; theme: A
       <div className="flex items-center gap-3 mb-6">
         <Network className={`size-6 ${THEME_MAP[theme].text}`} />
         <div>
-          <h2 className="text-2xl font-medium text-white tracking-tight">Recon Dashboard</h2>
-          <p className="text-sm text-zinc-400 max-w-xl">Attack surface mapping, target enumeration, and asset analysis for the current session.</p>
+          <h2 className="text-2xl font-medium text-white tracking-tight">Repository Intelligence</h2>
+          <p className="text-sm text-zinc-400 max-w-xl">Project context, extracted references, and investigation scope for the current session.</p>
         </div>
       </div>
       
@@ -25,11 +25,11 @@ export const ReconDashboard = ({ targets, theme }: { targets: string[]; theme: A
         <div className="bg-[#111116] border border-white/10 rounded-2xl p-6 shadow-inner">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <p className="text-xs uppercase tracking-widest text-zinc-500 font-semibold">Discovered Targets</p>
-              <h3 className="text-xl font-semibold text-white mt-2">{targets.length} entities</h3>
+              <p className="text-xs uppercase tracking-widest text-zinc-500 font-semibold">Extracted context</p>
+              <h3 className="text-xl font-semibold text-white mt-2">{targets.length} references</h3>
             </div>
             <span className={`text-[10px] uppercase tracking-widest font-bold ${THEME_MAP[theme].text}`}>
-              Live Scan
+              Session context
             </span>
           </div>
           <div className="space-y-3">
@@ -40,7 +40,7 @@ export const ReconDashboard = ({ targets, theme }: { targets: string[]; theme: A
               </div>
             )) : (
               <div className="rounded-2xl border border-dashed border-white/10 bg-white/5 p-6 text-sm text-zinc-500 text-center">
-                No targets have been extracted from the current payload yet.
+                No project references have been extracted from the current engineering goal yet.
               </div>
             )}
           </div>
@@ -72,9 +72,9 @@ export const ReconDashboard = ({ targets, theme }: { targets: string[]; theme: A
           <div className="bg-[#111116] border border-white/10 rounded-2xl p-6 shadow-inner">
             <p className="text-xs uppercase tracking-widest text-zinc-500 font-semibold mb-3">Session Notes</p>
             <ul className="space-y-2 text-sm text-zinc-300">
-              <li className="rounded-2xl bg-white/5 p-3">Switch to <span className="text-white">Payloads</span> for encoded injection vectors.</li>
-              <li className="rounded-2xl bg-white/5 p-3">Use <span className="text-white">Topology</span> to visualize attack flow.</li>
-              <li className="rounded-2xl bg-white/5 p-3">Activate <span className="text-white">Trace Logs</span> for execution diagnostics.</li>
+              <li className="rounded-2xl bg-white/5 p-3">Use <span className="text-white">Code</span> to inspect submitted source context.</li>
+              <li className="rounded-2xl bg-white/5 p-3">Use <span className="text-white">Impact</span> when a result includes a graph.</li>
+              <li className="rounded-2xl bg-white/5 p-3">Open <span className="text-white">Trace Logs</span> to inspect returned evidence.</li>
             </ul>
           </div>
         </div>

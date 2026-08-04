@@ -303,27 +303,27 @@ export default function SettingsPage() {
                 <h2 className="text-xl font-semibold text-white flex items-center gap-2">
                   <Webhook className="text-cyan-400" size={20}/> External Integrations
                 </h2>
-                <p className="text-sm text-muted-foreground mb-6">Link your vulnerability intelligence outputs directly to external platforms.</p>
+                <p className="text-sm text-muted-foreground mb-6">External integrations are not connected in this release. Connection controls remain unavailable until a server-backed integration is shipped.</p>
               </div>
 
               <div className="grid gap-4">
                 <div className="p-5 rounded-xl border border-white/5 bg-white/[0.02] flex items-center justify-between group hover:border-white/10 transition-colors">
                   <div className="space-y-1">
-                    <h3 className="font-semibold text-white">HackerOne Automation</h3>
-                    <p className="text-xs text-muted-foreground">Pipe generated exploit reports directly to your H1 drafts.</p>
+                    <h3 className="font-semibold text-white">Evidence export integrations</h3>
+                    <p className="text-xs text-muted-foreground">Planned server-backed export for engineering evidence and remediation records.</p>
                   </div>
-                  <button className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-bold tracking-wide transition-colors">
-                    CONNECT
+                  <button disabled className="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-xs font-bold tracking-wide text-zinc-500 cursor-not-allowed">
+                    NOT AVAILABLE
                   </button>
                 </div>
 
                 <div className="p-5 rounded-xl border border-white/5 bg-white/[0.02] flex items-center justify-between group hover:border-white/10 transition-colors">
                   <div className="space-y-1">
-                    <h3 className="font-semibold text-white">Bugcrowd Webhooks</h3>
-                    <p className="text-xs text-muted-foreground">Sync target scope domains automatically from Bugcrowd briefs.</p>
+                    <h3 className="font-semibold text-white">Project context integrations</h3>
+                    <p className="text-xs text-muted-foreground">Planned server-backed project context synchronization. No repository connection is active.</p>
                   </div>
-                  <button className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-bold tracking-wide transition-colors">
-                    CONNECT
+                  <button disabled className="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-xs font-bold tracking-wide text-zinc-500 cursor-not-allowed">
+                    NOT AVAILABLE
                   </button>
                 </div>
               </div>

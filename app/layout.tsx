@@ -19,13 +19,13 @@ const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://hexical.ai'
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: 'HEXICAL AI // Command Center',
+    default: 'HEXICAL AI // Engineering Command Center',
     template: '%s // HEXICAL AI',
   },
   description:
-    'Hexical AI — a hybrid intelligence engine. Cyber-elegant command center HUD for routing logic across local and global compute nodes.',
+    'Hexical AI is an engineering command center for investigating problems, planning work, coordinating agents, executing safely, and verifying results.',
   applicationName: 'Hexical AI',
-  keywords: ['Hexical AI', 'command center', 'hybrid intelligence', 'compute routing', 'HUD dashboard'],
+  keywords: ['Hexical AI', 'engineering command center', 'repository intelligence', 'agent coordination', 'verified engineering'],
   authors: [{ name: 'Hexical AI' }],
   formatDetection: { telephone: false, email: false, address: false },
   icons: {
@@ -38,16 +38,16 @@ export const metadata: Metadata = {
     type: 'website',
     url: SITE_URL,
     siteName: 'Hexical AI',
-    title: 'HEXICAL AI // Command Center',
+    title: 'HEXICAL AI // Engineering Command Center',
     description:
-      'A hybrid intelligence engine — cyber-elegant HUD for routing logic across local and global compute nodes.',
+      'Investigate engineering problems, plan approved work, coordinate agents, execute safely, and verify results.',
     images: [{ url: '/og-image.png', width: 1200, height: 630, alt: 'Hexical AI Command Center' }],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'HEXICAL AI // Command Center',
+    title: 'HEXICAL AI // Engineering Command Center',
     description:
-      'A hybrid intelligence engine — cyber-elegant HUD for routing logic across local and global compute nodes.',
+      'Investigate engineering problems, plan approved work, coordinate agents, execute safely, and verify results.',
     images: ['/og-image.png'],
   },
   robots: {

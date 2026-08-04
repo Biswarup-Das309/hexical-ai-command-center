@@ -31,10 +31,10 @@ export function CommandInput({ onSubmit, busy, onStop, activeTier = 'free' }: Co
   
   const getPlaceholderText = () => {
     switch (normalizedTier) {
-      case 'pro': return "Command Multi-Agent Swarm (Unlimited Logic)..."
-      case 'plus': return "Input vulnerability target parameters..."
-      case 'go': return "Run rapid heuristic scan..."
-      default: return "Ask Hexical AI... (Basic Engine)"
+      case 'pro': return "Describe an engineering goal for the coordinated agent swarm..."
+      case 'plus': return "Describe a repository problem, change, or validation request..."
+      case 'go': return "Investigate an engineering problem..."
+      default: return "Describe what you want to investigate..."
     }
   }
 
@@ -106,7 +106,7 @@ export function CommandInput({ onSubmit, busy, onStop, activeTier = 'free' }: Co
       {normalizedTier === 'free' && value.length > 50 && (
         <div className="absolute -top-8 right-2 flex items-center gap-1.5 text-[10px] text-amber-500 font-mono animate-fade-in bg-amber-500/10 px-2 py-1 rounded border border-amber-500/20 backdrop-blur-md">
           <ShieldAlert size={12} />
-          <span>Heavy payload detected. Upgrade recommended.</span>
+          <span>Large engineering context detected. Upgrade recommended.</span>
         </div>
       )}
 
@@ -125,7 +125,7 @@ export function CommandInput({ onSubmit, busy, onStop, activeTier = 'free' }: Co
           onBlur={() => setFocused(false)}
           disabled={busy}
           placeholder={getPlaceholderText()}
-          aria-label="Command input"
+          aria-label="Engineering goal"
           autoComplete="off"
           spellCheck={false}
           className={`min-w-0 flex-1 bg-transparent font-mono text-sm placeholder:text-muted-foreground/50 focus:outline-none disabled:opacity-50 resize-none overflow-y-auto leading-[1.5rem] py-0 self-center transition-colors ${
@@ -143,7 +143,7 @@ export function CommandInput({ onSubmit, busy, onStop, activeTier = 'free' }: Co
           {busy ? (
             <><Square className="size-3.5 fill-current" /> Stop</>
           ) : (
-            <><CornerDownLeft className="size-3.5" /> Execute</>
+            <><CornerDownLeft className="size-3.5" /> Investigate</>
           )}
         </button>
       </div>
