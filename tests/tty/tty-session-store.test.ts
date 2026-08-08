@@ -547,6 +547,25 @@ test('refreshes counter and execution-window TTLs while leaving the durable inde
   assert.equal(redis.ttlSeconds(indexKey), -1)
 })
 
+test('terminal cleanup removes only the session-indexed admission jobs and idempotency records', async () => {
+  const { redis, store, session } = await createFixture()
+  const jobsKey = `tty:session:${session.sessionId}:jobs`
+  const idempotenciesKey = `tty:session:${session.sessionId}:idempotencies`
+  const jobKey = 'tty:job:job-1'
+  const idempotencyKey = `tty:admission:idempotency:${session.ownerUserId}:${session.sessionId}:key-1`
+
+  await redis.sadd(jobsKey, 'job-1')
+  await redis.sadd(idempotenciesKey, idempotencyKey)
+  await redis.set(jobKey, '{"status":"queued"}')
+  await redis.set(idempotencyKey, '{"job":"job-1"}')
+  await store.terminateSession(session.sessionId, session.ownerUserId, 'user_requested')
+
+  assert.equal(await redis.get(jobKey), null)
+  assert.equal(await redis.get(idempotencyKey), null)
+  assert.deepEqual(await redis.smembers(jobsKey), [])
+  assert.deepEqual(await redis.smembers(idempotenciesKey), [])
+})
+
 test('prunes stale index members after core storage expiration', async () => {
   const { redis, store, principal, session } = await createFixture({
     maxSessionDurationMs: 1_500,
@@ -577,4 +596,31 @@ test('browser-safe projection excludes trusted owner and usage fields', async ()
     lastActiveAt: session.lastActiveAt,
     limits: session.limits
   })
+})
+
+test('worker-aware execution metadata exposes attribution without lease secrets', async () => {
+  const { redis, store, principal, session } = await createFixture()
+  const executionId = createTTYExecutionId()
+  const workerId = 'worker-a'
+  await redis.sadd(`tty:session:${session.sessionId}:jobs`, executionId)
+  await redis.set(`tty:job:${executionId}`, JSON.stringify({
+    executionId,
+    sessionId: session.sessionId,
+    ownerUserId: principal.userId,
+    status: 'leased',
+    lease: {
+      workerId,
+      token: 'do-not-return',
+      leaseId: 'lease-1',
+      claimedAtMs: TEST_NOW,
+      renewedAtMs: TEST_NOW + 500,
+      expiresAtMs: TEST_NOW + 30_000,
+      maxExpiresAtMs: TEST_NOW + 300_000
+    }
+  }))
+  const metadata = await store.getWorkerExecutionMetadata(session.sessionId, principal.userId)
+  assert.equal(metadata.length, 1)
+  assert.equal(metadata[0].workerId, workerId)
+  assert.equal(metadata[0].leaseId, 'lease-1')
+  assert.equal(JSON.stringify(metadata).includes('do-not-return'), false)
 })
