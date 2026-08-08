@@ -59,3 +59,7 @@ Job execution, lease claims, coordinator integration, output streaming, lease re
 ## Phase B scope checkpoint
 
 Milestone 3B adds `TTYWorkerPoller` as a discovery-only service. It performs an immediate queue read, applies bounded exponential idle backoff with configurable jitter, exposes polling metrics, catches queue errors without terminating the service, and shuts down without leaving timers or active polling loops. The queue adapter returns only pending execution IDs; no execution payload is inspected and no lease or runtime operation is invoked.
+
+## Phase C scope checkpoint
+
+Milestone 3C adds `TTYWorkerClaimService` on top of the existing atomic lease manager and worker lease observer. It claims each discovered execution at most once, tracks secret-free ownership metadata, records conflicts and stale leases, recovers expired leases without an immediate re-claim, and exposes the claim layer to the poller through its pending-ID callback. Job execution and coordinator integration remain out of scope.

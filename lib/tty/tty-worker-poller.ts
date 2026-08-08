@@ -57,6 +57,8 @@ export interface TTYWorkerPollerStatus {
 
 export interface TTYWorkerPollerDependencies {
   readonly queue: PendingExecutionQueue
+  /** Optional discovery hook. It receives IDs only; it never receives job payloads. */
+  readonly onPendingExecutionIds?: (executionIds: readonly string[]) => Promise<unknown> | unknown
   readonly baseIntervalMs?: number
   readonly maxIntervalMs?: number
   readonly jitterMs?: number
@@ -233,6 +235,14 @@ export class TTYWorkerPoller {
       } else {
         this.consecutiveIdlePolls += 1
         this.currentIntervalMs = this.backoffInterval(this.consecutiveIdlePolls)
+      }
+      if (pendingCount > 0 && this.dependencies.onPendingExecutionIds) {
+        try {
+          await this.dependencies.onPendingExecutionIds(pendingExecutionIds)
+        } catch (error) {
+          this.lastError = errorMessage(error)
+          this.logger.error('pending_execution_handler_error', { error: this.lastError })
+        }
       }
     } catch (error) {
       this.pollsPerformed += 1
