@@ -30,11 +30,15 @@ export async function GET(request: Request, context: { params: Promise<{ executi
     if (requestedSessionIdRaw !== null && !UUID_PATTERN.test(requestedSessionIdRaw)) return jsonFailure(400, 'INVALID_SESSION_ID', 'The session identifier is invalid.')
 
     const manager = createTTYStreamManagerForRequest()
+    const queryLastEventId = new URL(request.url).searchParams.get('lastEventId')
     const result = await manager.open({
       userId,
       executionId,
       requestedSessionId: requestedSessionIdRaw === null ? undefined : requestedSessionIdRaw as TTYSessionId,
-      lastEventId: request.headers.get('Last-Event-ID'),
+      // EventSource cannot set arbitrary headers.  The browser hook uses the
+      // bounded query cursor on reconnect; native EventSource clients still
+      // use Last-Event-ID when available.
+      lastEventId: request.headers.get('Last-Event-ID') ?? queryLastEventId,
       signal: request.signal
     })
     result.response.headers.set('X-Correlation-ID', correlationId)

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   IllegalTTYExecutionTransitionError,
+  canRecoverTTYExecutionState,
   canTransitionTTYExecutionState,
   createQueuedTTYExecutionState,
   isTerminalTTYExecutionState,
@@ -80,5 +81,11 @@ test('state machine rejects skipping lease ownership and rejects mutation after 
     () => transitionTTYExecutionState(cancelled, 'running', '2026-08-08T10:00:00.200Z'),
     IllegalTTYExecutionTransitionError
   )
+})
+
+test('requeue is recovery-only and never part of ordinary execution transitions', () => {
+  assert.equal(canTransitionTTYExecutionState('running', 'queued'), false)
+  assert.equal(canRecoverTTYExecutionState('running', 'queued'), true)
+  assert.equal(canRecoverTTYExecutionState('succeeded', 'queued'), false)
 })
 

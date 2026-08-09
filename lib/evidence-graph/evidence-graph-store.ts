@@ -39,23 +39,44 @@ const ENTITY_UPSERT_SCRIPT = `-- hexical:evidence-graph:entity-upsert
 local created = redis.call('SET', KEYS[1], ARGV[1], 'NX')
 if created then
   redis.call('SET', KEYS[2], ARGV[2], 'NX')
-  redis.call('ZADD', KEYS[3], ARGV[3], ARGV[2])
-  redis.call('ZADD', KEYS[4], ARGV[3], ARGV[2])
-  return 1
 end
+-- Re-add indexes even when the entity object already existed.  This repairs
+-- an index lost during a partial Redis restore without duplicating members.
+redis.call('ZADD', KEYS[3], ARGV[3], ARGV[2])
+redis.call('ZADD', KEYS[4], ARGV[3], ARGV[2])
+if created then return 1 end
 return 0`
+
+// The investigation root is the one mutable graph entity.  Entity and edge
+// observations remain immutable, but the root must be repaired after a Redis
+// restore and its title/status must follow the durable investigation record.
+const INVESTIGATION_ROOT_UPSERT_SCRIPT = `-- hexical:evidence-graph:investigation-root-upsert
+local created = redis.call('SET', KEYS[1], ARGV[1], 'NX')
+if created then
+  redis.call('SET', KEYS[2], ARGV[2], 'NX')
+end
+redis.call('ZADD', KEYS[3], ARGV[3], ARGV[2])
+redis.call('ZADD', KEYS[4], ARGV[3], ARGV[2])
+if not created then
+  redis.call('SET', KEYS[1], ARGV[1])
+end
+return 1`
 
 const EDGE_UPSERT_SCRIPT = `-- hexical:evidence-graph:edge-upsert
 local created = redis.call('SET', KEYS[1], ARGV[1], 'NX')
-if created then
-  redis.call('ZADD', KEYS[2], ARGV[3], ARGV[2])
-  redis.call('ZADD', KEYS[3], ARGV[3], ARGV[2])
-  redis.call('ZADD', KEYS[4], ARGV[3], ARGV[2])
-  redis.call('ZADD', KEYS[5], ARGV[3], ARGV[2])
-  redis.call('ZADD', KEYS[6], ARGV[3], ARGV[2])
-  return 1
-end
+-- Re-add all directional/filter indexes on every replay-safe upsert.
+redis.call('ZADD', KEYS[2], ARGV[3], ARGV[2])
+redis.call('ZADD', KEYS[3], ARGV[3], ARGV[2])
+redis.call('ZADD', KEYS[4], ARGV[3], ARGV[2])
+redis.call('ZADD', KEYS[5], ARGV[3], ARGV[2])
+redis.call('ZADD', KEYS[6], ARGV[3], ARGV[2])
+if created then return 1 end
 return 0`
+
+const LAST_UPDATED_MAX_SCRIPT = `-- hexical:evidence-graph:last-updated-max
+local current = redis.call('GET', KEYS[1])
+if not current or ARGV[1] > current then redis.call('SET', KEYS[1], ARGV[1]) end
+return 1`
 
 export interface EvidenceGraphRedis {
   readonly get: <T = unknown>(key: string) => Promise<T | null>
@@ -130,15 +151,8 @@ export class EvidenceGraphStore {
 
   async ensureInvestigation(ownerUserId: string, investigation: Pick<InvestigationRecord, 'investigationId' | 'title' | 'status'>): Promise<EvidenceGraphEntityId | null> {
     const context = await this.authorizedInvestigation(ownerUserId, investigation.investigationId)
-    if (!context) return null
-    const result = await this.upsertEntityInternal(investigation.investigationId, {
-      type: 'investigation',
-      canonicalKey: investigation.investigationId,
-      label: investigation.title,
-      value: investigation.title,
-      metadata: { status: investigation.status, parser: 'system' }
-    }, null, new Date().toISOString())
-    return result.id
+    if (!context || context.status === 'deleted' || context.investigationId !== investigation.investigationId) return null
+    return this.ensureInvestigationRoot(investigation)
   }
 
   async upsertObservations(ownerUserId: string, investigationId: InvestigationId, observations: readonly EvidenceGraphObservation[]): Promise<{ readonly entitiesCreated: number; readonly relationshipsCreated: number }> {
@@ -215,7 +229,10 @@ export class EvidenceGraphStore {
         })
       }
     }
-    if (observations.length > 0) await this.redis.set(this.lastUpdatedKey(investigationId), observations.at(-1)!.timestamp)
+    if (observations.length > 0) {
+      const latest = observations.reduce((current, observation) => observation.timestamp > current ? observation.timestamp : current, observations[0]!.timestamp)
+      await this.redis.eval<number>(LAST_UPDATED_MAX_SCRIPT, [this.lastUpdatedKey(investigationId)], [latest])
+    }
     return { entitiesCreated, relationshipsCreated }
   }
 
@@ -232,6 +249,10 @@ export class EvidenceGraphStore {
   async summary(ownerUserId: string, investigationId: InvestigationId): Promise<EvidenceGraphSummary | null> {
     const investigation = await this.authorizedInvestigation(ownerUserId, investigationId)
     if (!investigation || investigation.status === 'deleted') return null
+    // Summary is the first graph request made by the workspace.  It must be
+    // self-healing even when no execution has produced observations yet or a
+    // Redis restore removed only the graph objects.
+    await this.ensureInvestigationRoot(investigation)
     const [entityCount, relationshipCount, entityCounts, relationshipCounts, lastUpdatedAt] = await Promise.all([
       this.redis.zcard(graphEntityIndexKey(investigationId)),
       this.redis.zcard(graphEdgeIndexKey(investigationId)),
@@ -332,6 +353,28 @@ export class EvidenceGraphStore {
       this.logger.error('evidence_graph.entity_upsert_failed', { investigationId, entityType: candidate.type })
       throw error
     }
+  }
+
+  private async ensureInvestigationRoot(investigation: Pick<InvestigationRecord, 'investigationId' | 'title' | 'status'>): Promise<EvidenceGraphEntityId> {
+    const id = graphEntityId(investigation.investigationId, 'investigation', investigation.investigationId)
+    const entity: StoredEntity = {
+      id,
+      investigationId: investigation.investigationId,
+      type: 'investigation',
+      canonicalKey: normalizeGraphKey(investigation.investigationId),
+      label: investigation.title.slice(0, 500),
+      value: investigation.title,
+      metadata: { status: investigation.status, parser: 'system' },
+      createdAt: new Date().toISOString(),
+      sourceExecutionId: null
+    }
+    await this.redis.eval<number>(INVESTIGATION_ROOT_UPSERT_SCRIPT, [
+      graphEntityKey(investigation.investigationId, id),
+      graphEntityLookupKey(investigation.investigationId, 'investigation', investigation.investigationId),
+      graphEntityIndexKey(investigation.investigationId),
+      graphEntityTypeIndexKey(investigation.investigationId, 'investigation')
+    ], [JSON.stringify(entity), id, String(score(entity.createdAt))])
+    return id
   }
 
   private async upsertEdgeInternal(investigationId: InvestigationId, edge: { readonly source: EvidenceGraphEntityId; readonly target: EvidenceGraphEntityId; readonly relationship: EvidenceGraphRelationship; readonly executionId: string; readonly timestamp: string; readonly confidence: number; readonly metadata: EvidenceGraphMetadata; readonly dedupeKey: string }): Promise<number> {

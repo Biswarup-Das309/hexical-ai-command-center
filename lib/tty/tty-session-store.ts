@@ -100,19 +100,12 @@
  *                                             which prunes entries whose
  *                                             session is no longer live.
  *
- * RACE-SAFETY DESIGN CHOICE: this module deliberately builds every
- * atomicity guarantee from single-command Redis primitives (SET NX,
- * INCR, DECR, ZADD, ZREMRANGEBYSCORE, ZCARD — each atomic individually)
- * rather than a Lua EVAL script or a MULTI/pipeline transaction. The one
- * property that genuinely requires cross-instance atomicity — "a
- * terminated/expired session can never be revived" — is achieved via the
- * SET-NX terminal latch above, which is sufficient on its own without
- * needing a broader transaction. Usage counters (active executions,
- * queue depth) are read via GET immediately before a policy decision and
- * mutated via INCR/DECR immediately after — the same soft-consistency,
- * TOCTOU-tolerant posture this codebase already accepts for its other
- * usage counters (see RATE_LIMITS / MESSAGE_QUOTA_LIMITS in
- * lib/hexical/types.ts), not a correctness gap introduced by this file.
+ * RACE-SAFETY DESIGN CHOICE: lifecycle latches use SET NX, while the
+ * one-active-session invariant uses a short Redis EVAL transaction over the
+ * owner index, session core, and idle status keys. Usage counters
+ * (active executions, queue depth) remain atomic INCR/DECR counters and are
+ * clamped during cleanup, matching the soft-consistency posture used by the
+ * other quota counters in this codebase.
  * ============================================================================
  */
 
@@ -159,6 +152,35 @@ const TERMINAL_RECORD_RETENTION_SECS = 24 * 60 * 60
  * from a session's own idle/duration limits to avoid an extra Redis read
  * on every single accounting call. */
 const EXECUTION_COUNTER_TTL_SECS = 24 * 60 * 60
+
+const CREATE_ONE_ACTIVE_SESSION_SCRIPT = `-- tty-session:create-one-active
+local active = redis.call('GET', KEYS[1])
+local candidates = {}
+if active then table.insert(candidates, active) end
+for _, member in ipairs(redis.call('SMEMBERS', KEYS[2])) do
+  if not active or member ~= active then table.insert(candidates, member) end
+end
+for _, sessionId in ipairs(candidates) do
+  local coreKey = 'tty:session:' .. sessionId .. ':core'
+  local statusKey = 'tty:session:' .. sessionId .. ':status'
+  local terminalKey = 'tty:session:' .. sessionId .. ':terminal'
+  if redis.call('EXISTS', coreKey) == 1 and redis.call('EXISTS', statusKey) == 1 and redis.call('EXISTS', terminalKey) == 0 then
+    redis.call('SET', KEYS[1], sessionId, 'EX', ARGV[4])
+    return {0, sessionId}
+  end
+  redis.call('SREM', KEYS[2], sessionId)
+  if active == sessionId then redis.call('DEL', KEYS[1]) end
+end
+redis.call('SET', KEYS[3], ARGV[2], 'EX', ARGV[4])
+redis.call('SET', KEYS[4], ARGV[3], 'EX', ARGV[5])
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[4])
+redis.call('SADD', KEYS[2], ARGV[1])
+return {1, ARGV[1]}`
+
+const CLEAR_ACTIVE_SESSION_SCRIPT = `-- tty-session:clear-active
+if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('DEL', KEYS[1]) end
+redis.call('SREM', KEYS[2], ARGV[1])
+return 1`
 
 // ============================================================================
 // 2. ERRORS / LOGGING
@@ -262,6 +284,9 @@ export class TTYSessionStore {
   }
   private userIndexKey(userId: string): string {
     return `${USER_INDEX_KEY_PREFIX}${userId}:sessions`
+  }
+  private activeSessionKey(userId: string): string {
+    return `${USER_INDEX_KEY_PREFIX}${userId}:active-session`
   }
 
   // --------------------------------------------------------------------
@@ -387,6 +412,7 @@ export class TTYSessionStore {
         this.redis.del(this.idempotenciesKey(sessionId)),
         ...(jobIds.length > 0 ? [this.redis.del(...jobIds.map(id => `tty:job:${id}`))] : []),
         ...(idempotencyKeys.length > 0 ? [this.redis.del(...idempotencyKeys)] : []),
+        this.redis.eval(CLEAR_ACTIVE_SESSION_SCRIPT, [this.activeSessionKey(ownerUserId), this.userIndexKey(ownerUserId)], [sessionId]),
         this.redis.srem(this.userIndexKey(ownerUserId), sessionId),
         ...workerLeases.flatMap(lease => [
           this.redis.srem(ttyWorkerActiveLeasesKey(lease.workerId), lease.executionId),
@@ -438,8 +464,12 @@ export class TTYSessionStore {
   }
 
   private async isSessionLive(sessionId: TTYSessionId): Promise<boolean> {
-    const [core, terminal] = await Promise.all([this.readCore(sessionId), this.readTerminalRecord(sessionId)])
-    if (core === null || terminal !== null) return false
+    const [core, terminal, status] = await Promise.all([this.readCore(sessionId), this.readTerminalRecord(sessionId), this.readStatusRecord(sessionId)])
+    // The status key is the authoritative idle lease.  Looking only at the
+    // absolute core TTL leaves expired sessions in the owner's active index
+    // and can block replacement-session creation until another request happens
+    // to discover the expiry.
+    if (core === null || terminal !== null || status === null) return false
     return Date.now() - new Date(core.createdAt).getTime() <= core.limits.maxSessionDurationMs
   }
 
@@ -541,23 +571,30 @@ export class TTYSessionStore {
 
     let created: string | null
     try {
-      created = await this.redis.set(this.coreKey(sessionId), JSON.stringify(core), {
-        nx: true,
-        ex: this.toTtlSeconds(input.limits.maxSessionDurationMs)
-      })
+      const result = await this.redis.eval<unknown[]>(CREATE_ONE_ACTIVE_SESSION_SCRIPT, [
+        this.activeSessionKey(input.principal.userId),
+        this.userIndexKey(input.principal.userId),
+        this.coreKey(sessionId),
+        this.statusKey(sessionId)
+      ], [
+        sessionId,
+        JSON.stringify(core),
+        JSON.stringify({ status: 'active', lastActiveAt: nowIso } satisfies PersistedStatusRecord),
+        String(this.toTtlSeconds(input.limits.maxSessionDurationMs)),
+        String(this.toTtlSeconds(input.limits.maxSessionIdleMs))
+      ])
+      if (!Array.isArray(result) || typeof result[0] !== 'number' || typeof result[1] !== 'string') throw new Error('Invalid session creation result.')
+      if (result[0] === 0) {
+        const existing = await this.getSession(result[1] as TTYSessionId, input.principal.userId)
+        if (existing && (existing.status === 'active' || existing.status === 'idle')) return existing
+        throw new Error('The active session changed during creation.')
+      }
+      created = 'OK'
     } catch (error) {
       throw new TTYSessionStoreError('Failed to persist new TTY session core record.', error)
     }
     if (created === null) {
       throw new TTYSessionStoreError(`TTY session id collision for '${sessionId}'; refusing to overwrite.`)
-    }
-
-    await this.writeStatusRecord(sessionId, { status: 'active', lastActiveAt: nowIso }, input.limits.maxSessionIdleMs)
-
-    try {
-      await this.redis.sadd(this.userIndexKey(input.principal.userId), sessionId)
-    } catch (error) {
-      this.logger.warn('Failed to index new TTY session under its owner.', { sessionId, error })
     }
 
     const usage = await this.getUsageSnapshot(sessionId, input.principal.userId)

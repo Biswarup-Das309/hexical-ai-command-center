@@ -255,6 +255,38 @@ class FakeRedis {
     return this.requireCollection<FakeSortedCollection>(key, 'sorted')?.members.size ?? 0
   }
 
+  async eval(script: string, keys: string[], args: string[]): Promise<unknown> {
+    if (script.includes('tty-session:create-one-active')) {
+      const activeEntry = this.entryFor(keys[0]!)
+      const active = activeEntry && typeof activeEntry.value === 'string' ? activeEntry.value : null
+      const indexed = [...(this.requireCollection<FakeSetMemberCollection>(keys[1]!, 'set')?.members ?? new Set<string>())]
+      const candidates = [...new Set([...(active ? [active] : []), ...indexed])]
+      for (const sessionId of candidates) {
+        const core = this.entryFor(`tty:session:${sessionId}:core`)
+        const status = this.entryFor(`tty:session:${sessionId}:status`)
+        const terminal = this.entryFor(`tty:session:${sessionId}:terminal`)
+        if (core !== null && status !== null && terminal === null) {
+          void this.set(keys[0]!, sessionId, { ex: Number(args[3]) })
+          return [0, sessionId]
+        }
+        void this.srem(keys[1]!, sessionId)
+        if (active === sessionId) void this.del(keys[0]!)
+      }
+      void this.set(keys[2]!, args[1], { ex: Number(args[3]) })
+      void this.set(keys[3]!, args[2], { ex: Number(args[4]) })
+      void this.set(keys[0]!, args[0], { ex: Number(args[3]) })
+      void this.sadd(keys[1]!, args[0])
+      return [1, args[0]]
+    }
+    if (script.includes('tty-session:clear-active')) {
+      const active = await this.get<string>(keys[0]!)
+      if (active === args[0]) void this.del(keys[0]!)
+      void this.srem(keys[1]!, args[0])
+      return 1
+    }
+    throw new Error(`Unsupported script: ${script.slice(0, 80)}`)
+  }
+
   ttlSeconds(key: string): number {
     const entry = this.entryFor(key)
     if (entry === null) return -2
@@ -348,6 +380,18 @@ test('creates trusted state with expected Redis TTLs and typed round-trip', asyn
 
   const loaded = await store.getSession(session.sessionId, principal.userId)
   assert.deepEqual(loaded, session)
+})
+
+test('concurrent session creation is idempotent per owner and keeps one active session', async () => {
+  const fixture = startFixture()
+  const [first, second] = await Promise.all([
+    fixture.store.createSession({ principal: fixture.principal, limits: fixture.sessionLimits }),
+    fixture.store.createSession({ principal: fixture.principal, limits: fixture.sessionLimits })
+  ])
+
+  assert.equal(first.sessionId, second.sessionId)
+  assert.equal(await fixture.store.countActiveSessionsForUser(fixture.principal.userId), 1)
+  assert.deepEqual(await fixture.redis.smembers(userIndexKey(fixture.principal.userId)), [first.sessionId])
 })
 
 test('isolates owner-bound reads and lifecycle mutations', async () => {
@@ -577,6 +621,16 @@ test('prunes stale index members after core storage expiration', async () => {
   assert.equal(await store.countActiveSessionsForUser(principal.userId), 0)
   assert.deepEqual(await redis.smembers(indexKey), [])
   assert.equal(await store.getSession(session.sessionId, principal.userId), null)
+})
+
+test('prunes idle-expired sessions from the active owner index before replacement creation', async () => {
+  const { redis, store, principal, session } = await createFixture({ maxSessionIdleMs: 1_000, maxSessionDurationMs: 60_000 })
+  const indexKey = userIndexKey(principal.userId)
+
+  mock.timers.tick(1_001)
+  assert.equal(await store.countActiveSessionsForUser(principal.userId), 0)
+  assert.deepEqual(await redis.smembers(indexKey), [])
+  assert.equal((await store.getSession(session.sessionId, principal.userId))?.status, 'expired')
 })
 
 test('browser-safe projection excludes trusted owner and usage fields', async () => {

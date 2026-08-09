@@ -21,7 +21,7 @@ export interface TTYExecutionAdmissionApiDependencies {
   readonly resolveTier: (userId: string) => Promise<Tier>
   readonly getSession: (sessionId: TTYSessionId, ownerUserId: string) => Promise<InternalTTYSession | null>
   readonly admission: TTYExecutionAdmission
-  readonly startExecution?: (executionId: TTYQueuedJob['executionId'], sessionId: TTYSessionId, options?: { readonly correlationId?: string }) => Promise<{ readonly accepted: boolean }>
+  readonly startExecution?: (executionId: TTYQueuedJob['executionId'], sessionId: TTYSessionId, options?: { readonly correlationId?: string }) => Promise<{ readonly accepted: boolean; readonly state?: string | null; readonly reason?: string }>
 }
 
 function response(body: unknown, status: number): Response {
@@ -72,11 +72,26 @@ export function createTTYExecutionAdmissionApi(dependencies: TTYExecutionAdmissi
           return failure(result.reason, status)
         }
         log.info('tty.execution.admitted', { executionId: result.job.executionId, sessionId: result.job.sessionId, duplicate: result.duplicate, correlationId })
+        let activationPending = false
         if (dependencies.startExecution) {
           const started = await dependencies.startExecution(result.job.executionId, result.job.sessionId, { correlationId })
-          if (!started.accepted) return response({ ok: false, code: 'EXECUTION_NOT_STARTED', message: 'The execution could not be started.' }, 503)
+          if (!started.accepted) {
+            // Admission is durable before activation.  A transient web-worker
+            // failure must not turn a valid queued job into a false 503 or
+            // force the browser to submit a duplicate execution.  The worker
+            // plane can claim the queued job, while the state/reason fields
+            // make the delayed activation observable.
+            activationPending = true
+            log.warn('tty.execution.activation_pending', {
+              executionId: result.job.executionId,
+              sessionId: result.job.sessionId,
+              state: started.state ?? 'queued',
+              reason: started.reason ?? 'activation_rejected',
+              correlationId
+            })
+          }
         }
-        return response({ ok: true, job: toBrowserSafeJob(result.job), duplicate: result.duplicate }, result.duplicate ? 200 : 202)
+        return response({ ok: true, job: toBrowserSafeJob(result.job), duplicate: result.duplicate, ...(activationPending ? { activationPending: true } : {}) }, result.duplicate ? 200 : 202)
       } catch {
         return failure('internal_error', 500)
       }

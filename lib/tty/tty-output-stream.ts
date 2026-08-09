@@ -42,6 +42,20 @@ const MAX_OUTPUT_EVENT_DATA_BYTES = 64 * 1024
 const MAX_PENDING_EVENTS = 256
 const EVENT_TYPES: readonly TTYOutputEventType[] = ['stdout', 'stderr', 'state', 'metric', 'completion']
 
+const APPEND_OUTPUT_SCRIPT = `
+-- hexical:tty-output-append
+local sequence = redis.call('INCR', KEYS[2])
+redis.call('XADD', KEYS[1], '*',
+  'eventId', ARGV[1],
+  'sequence', tostring(sequence),
+  'timestamp', ARGV[2],
+  'executionId', ARGV[3],
+  'sessionId', ARGV[4],
+  'type', ARGV[5],
+  'data', ARGV[6])
+return sequence
+`
+
 function isOutputEventType(value: unknown): value is TTYOutputEventType {
   return typeof value === 'string' && EVENT_TYPES.includes(value as TTYOutputEventType)
 }
@@ -95,6 +109,12 @@ function serializedDataBytes(data: TTYOutputEventData): number {
   return Buffer.byteLength(JSON.stringify(data), 'utf8')
 }
 
+function parseSequence(value: unknown): number {
+  const sequence = Number(Array.isArray(value) ? value[0] : value)
+  if (!Number.isSafeInteger(sequence) || sequence <= 0) throw new Error('Invalid TTY output sequence.')
+  return sequence
+}
+
 export class TTYOutputStreamManager {
   private readonly pending = new Map<TTYExecutionId, PendingState>()
   private readonly maxPendingEvents: number
@@ -112,25 +132,18 @@ export class TTYOutputStreamManager {
     const currentCount = (this.pending.get(input.executionId)?.count ?? 0) + 1
     const operation = (async () => {
       await currentPrevious
-      const sequence = Number(await this.redis.incr(ttyExecutionOutputSequenceKey(input.executionId)))
-      if (!Number.isSafeInteger(sequence) || sequence <= 0) throw new Error('Invalid TTY output sequence.')
+      const eventId = crypto.randomUUID()
+      const timestamp = input.timestamp ?? new Date().toISOString()
+      const data = Object.freeze({ ...input.data })
+      const sequence = parseSequence(await this.redis.eval(APPEND_OUTPUT_SCRIPT, [ttyExecutionOutputStreamKey(input.executionId), ttyExecutionOutputSequenceKey(input.executionId)], [eventId, timestamp, input.executionId, input.sessionId, input.type, JSON.stringify(data)]))
       const event: TTYOutputEvent = Object.freeze({
-        eventId: crypto.randomUUID(),
+        eventId,
         sequence,
-        timestamp: input.timestamp ?? new Date().toISOString(),
+        timestamp,
         executionId: input.executionId,
         sessionId: input.sessionId,
         type: input.type,
-        data: Object.freeze({ ...input.data })
-      })
-      await this.redis.xadd(ttyExecutionOutputStreamKey(input.executionId), '*', {
-        eventId: event.eventId,
-        sequence: String(event.sequence),
-        timestamp: event.timestamp,
-        executionId: event.executionId,
-        sessionId: event.sessionId,
-        type: event.type,
-        data: JSON.stringify(event.data)
+        data
       })
       return event
     })()

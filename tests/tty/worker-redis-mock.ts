@@ -85,6 +85,32 @@ export class WorkerRedisMock {
 
   async eval(_script: string, keys: string[], args: string[]): Promise<unknown> {
     const script = _script
+    if (script.includes('tty-live-publish')) {
+      const sequence = await this.incr(keys[1]!)
+      await this.xadd(keys[0]!, '*', {
+        eventId: args[0]!,
+        sequence: String(sequence),
+        timestamp: args[1]!,
+        executionId: args[2]!,
+        sessionId: args[3]!,
+        type: args[4]!,
+        payload: args[5]!
+      })
+      return sequence
+    }
+    if (script.includes('tty-output-append')) {
+      const sequence = await this.incr(keys[1]!)
+      await this.xadd(keys[0]!, '*', {
+        eventId: args[0]!,
+        sequence: String(sequence),
+        timestamp: args[1]!,
+        executionId: args[2]!,
+        sessionId: args[3]!,
+        type: args[4]!,
+        data: args[5]!
+      })
+      return sequence
+    }
     if (script.includes('tty-execution-state-transition')) {
       const raw = this.values.get(keys[0])
       if (args[0] === '__missing__') {

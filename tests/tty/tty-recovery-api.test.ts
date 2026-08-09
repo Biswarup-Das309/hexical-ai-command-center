@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import { TTYExecutionApi } from '../../lib/tty/tty-execution-api'
 import { TTYRecoveryManager } from '../../lib/tty/tty-recovery'
-import { createQueuedTTYExecutionState, transitionTTYExecutionState } from '../../lib/tty/tty-execution-state'
+import { createQueuedTTYExecutionState, recoverTTYExecutionState, transitionTTYExecutionState } from '../../lib/tty/tty-execution-state'
 import { TTYOutputStreamManager } from '../../lib/tty/tty-output-stream'
 import { ttyExecutionActiveIndexKey, ttyExecutionRuntimeKey, ttyExecutionStateKey } from '../../lib/tty/tty-worker-keys'
 import type { TTYExecutionId, TTYSessionId } from '../../lib/tty/tty-types'
@@ -39,7 +39,7 @@ test('recovery scans the active index, cleans an orphan, and delegates state mut
 
   const result = await recovery.reconcile(async id => {
     assert.equal(id, executionId)
-    return transitionTTYExecutionState(running, 'queued', '2026-08-08T10:00:00.030Z', { workerId: null, leaseId: null, completionReason: 'worker_crash_recovered' })
+    return recoverTTYExecutionState(running, '2026-08-08T10:00:00.030Z', { workerId: null, leaseId: null, completionReason: 'worker_crash_recovered' })
   })
   assert.deepEqual(result, { scanned: 1, cleaned: 1, recovered: 1, failed: 0 })
   assert.deepEqual(cleaned, [{ pid: 12_345, cwd: 'C:/runtime/execution-1' }])

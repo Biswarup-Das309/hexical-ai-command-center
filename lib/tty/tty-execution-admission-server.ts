@@ -40,6 +40,11 @@ export function createTTYAdmissionApiForRequest(options: { readonly activate?: b
     resolveTier: getUserTier,
     getSession: (sessionId, ownerUserId) => store.getSession(sessionId, ownerUserId),
     admission,
-    ...(options.activate === false ? {} : { startExecution: activateTTYExecution })
+    ...(options.activate === false ? {} : {
+      startExecution: async (executionId: string, sessionId: string, activationOptions?: { readonly correlationId?: string }) => {
+        const result = await activateTTYExecution(executionId, sessionId, activationOptions)
+        return { accepted: result.accepted, state: result.state?.state ?? null, reason: result.reason }
+      }
+    })
   })
 }

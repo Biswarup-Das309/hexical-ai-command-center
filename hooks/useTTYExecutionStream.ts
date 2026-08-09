@@ -61,6 +61,8 @@ export function useTTYExecutionStream({
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const mountedRef = useRef(false)
   const completedRef = useRef(false)
+  const onExecutionNotFoundRef = useRef(onExecutionNotFound)
+  onExecutionNotFoundRef.current = onExecutionNotFound
 
   const flush = useCallback(() => {
     flushTimerRef.current = null
@@ -104,8 +106,8 @@ export function useTTYExecutionStream({
     setLastEventId(null)
     setConnectionState('error')
     setError('No active execution')
-    onExecutionNotFound?.()
-  }, [onExecutionNotFound])
+    onExecutionNotFoundRef.current?.()
+  }, [])
 
   const scheduleConnect = useCallback((delayMs: number) => {
     if (!mountedRef.current || !enabled || !executionId || completedRef.current) return
@@ -122,7 +124,8 @@ export function useTTYExecutionStream({
     if (!mountedRef.current || !enabled || !executionId || completedRef.current || typeof EventSource === 'undefined') return
     closeSource()
     setConnectionState('connecting')
-    const url = buildTTYStreamUrl(executionId, sessionId)
+    const replayCursor = fullReplayRef.current ? null : lastSequenceRef.current > 0 ? lastSequenceRef.current : null
+    const url = buildTTYStreamUrl(executionId, sessionId, replayCursor)
     const attempt = connectionAttemptRef.current + 1
     connectionAttemptRef.current = attempt
     const validation = new AbortController()

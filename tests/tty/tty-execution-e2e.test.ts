@@ -28,13 +28,14 @@ const session: InternalTTYSession = {
 }
 
 test('real coordinator and process runtime execute an argv command with isolated output streams', async () => {
-  const redis = new WorkerRedisMock()
-  const rootDir = join(process.cwd(), `.tmp-tty-e2e-${process.pid}`)
-  const runtime = new TTYProcessRuntime({ rootDir })
-  const file = process.execPath
-  const command = basename(file).toLowerCase().replace(/\.exe$/, '')
-  const argv = [file, '-e', "process.stdout.write('e2e-out'); process.stderr.write('e2e-err')"]
-  const job: TTYLeasedJob = {
+  for (let iteration = 0; iteration < 100; iteration += 1) {
+    const redis = new WorkerRedisMock()
+    const rootDir = join(process.cwd(), `.tmp-tty-e2e-${process.pid}-${iteration}`)
+    const runtime = new TTYProcessRuntime({ rootDir })
+    const file = process.execPath
+    const command = basename(file).toLowerCase().replace(/\.exe$/, '')
+    const argv = [file, '-e', "process.stdout.write('e2e-out'); process.stderr.write('e2e-err')"]
+    const job: TTYLeasedJob = {
     executionId,
     sessionId,
     ownerUserId: session.ownerUserId,
@@ -47,14 +48,14 @@ test('real coordinator and process runtime execute an argv command with isolated
     resource: { maxExecutionDurationMs: session.limits.maxExecutionDurationMs, maxOutputBytes: session.limits.maxOutputBytesPerExecution },
     attempt: 1,
     lease: { workerId, token: 'e2e-secret-token', leaseId: 'e2e-safe-lease' as never, claimedAtMs: Date.now(), renewedAtMs: Date.now(), expiresAtMs: Date.now() + 60_000, maxExpiresAtMs: Date.now() + 300_000 }
-  }
-  const leases: TTYExecutionLeaseOperations = {
+    }
+    const leases: TTYExecutionLeaseOperations = {
     claim: async () => ({ claimed: true, job }),
     renew: async () => ({ renewed: true, job }),
     complete: async () => ({ completed: true, job }),
     recover: async () => ({ recovered: true, job: { ...job, status: 'queued' } as never })
-  }
-  const coordinator = new TTYExecutionCoordinator({
+    }
+    const coordinator = new TTYExecutionCoordinator({
     redis: redis as never,
     workerId,
     sessionStore: { getSession: async () => session, recordExecutionStarted: async () => undefined, recordExecutionFinished: async () => undefined },
@@ -64,20 +65,21 @@ test('real coordinator and process runtime execute an argv command with isolated
     outputStream: new TTYOutputStreamManager(redis as never),
     commandAllowlist: { diagnostic: [command] },
     leaseRenewIntervalMs: 1_000
-  })
+    })
 
-  try {
-    const result = await coordinator.run(executionId, sessionId)
-    assert.equal(result.accepted, true)
-    if (!result.accepted) return
-    assert.equal(result.state.state, 'succeeded')
-    assert.equal(result.state.stdoutBytes, 7)
-    assert.equal(result.state.stderrBytes, 7)
-    const output = await new TTYOutputStreamManager(redis as never).read(executionId)
-    assert.equal(output.some(event => event.type === 'stdout' && event.data.text === 'e2e-out'), true)
-    assert.equal(output.some(event => event.type === 'stderr' && event.data.text === 'e2e-err'), true)
-  } finally {
-    await rm(rootDir, { recursive: true, force: true })
+    try {
+      const result = await coordinator.run(executionId, sessionId)
+      assert.equal(result.accepted, true)
+      if (!result.accepted) return
+      assert.equal(result.state.state, 'succeeded')
+      assert.equal(result.state.stdoutBytes, 7)
+      assert.equal(result.state.stderrBytes, 7)
+      const output = await new TTYOutputStreamManager(redis as never).read(executionId)
+      assert.equal(output.some(event => event.type === 'stdout' && event.data.text === 'e2e-out'), true)
+      assert.equal(output.some(event => event.type === 'stderr' && event.data.text === 'e2e-err'), true)
+    } finally {
+      await rm(rootDir, { recursive: true, force: true })
+    }
   }
 })
 

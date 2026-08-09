@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { createQueuedTTYExecutionState, transitionTTYExecutionState, type TTYExecutionStateRecord } from '../../lib/tty/tty-execution-state'
+import { createQueuedTTYExecutionState, recoverTTYExecutionState, transitionTTYExecutionState, type TTYExecutionStateRecord } from '../../lib/tty/tty-execution-state'
 import { TTYRecoveryManager, type TTYRecoveryReconcileResult } from '../../lib/tty/tty-recovery'
 import { TTYWorkerRecoveryService, type TTYWorkerRecoveryLogger } from '../../lib/tty/tty-worker-recovery'
 import { ttyExecutionActiveIndexKey, ttyExecutionRuntimeKey, ttyExecutionStateKey, ttyWorkerActiveLeaseIndexKey } from '../../lib/tty/tty-worker-keys'
@@ -95,7 +95,7 @@ function createService(options: {
       getState: async () => options.state ?? leasedState(),
       recoverExecution: async id => {
         coordinatorCalls.push(id)
-        return options.recoverState ?? transitionTTYExecutionState(leasedState(id), 'queued', '2026-08-09T10:00:00.010Z', { workerId: null, leaseId: null, completionReason: 'worker_crash_recovered' })
+        return options.recoverState ?? recoverTTYExecutionState(leasedState(id), '2026-08-09T10:00:00.010Z', { workerId: null, leaseId: null, completionReason: 'worker_crash_recovered' })
       }
     },
     observer: { getLeaseObservation: async () => options.observation ?? null },
@@ -122,7 +122,7 @@ test('restart recovery reconciles orphan processes before scheduling the next sc
     orphanRecovery,
     coordinator: {
       getState: async () => running,
-      recoverExecution: async () => transitionTTYExecutionState(running, 'queued', '2026-08-09T10:00:00.010Z', { workerId: null, leaseId: null, completionReason: 'worker_crash_recovered' })
+      recoverExecution: async () => recoverTTYExecutionState(running, '2026-08-09T10:00:00.010Z', { workerId: null, leaseId: null, completionReason: 'worker_crash_recovered' })
     },
     observer: { getLeaseObservation: async () => null },
     intervalMs: 1_000,
@@ -256,7 +256,7 @@ test('stress scan is deterministic for one hundred lease index members', async (
       getState: async id => leasedState(id),
       recoverExecution: async id => {
         recovered.push(id)
-        return transitionTTYExecutionState(leasedState(id), 'queued', '2026-08-09T10:00:00.010Z', { workerId: null, leaseId: null, completionReason: 'worker_crash_recovered' })
+        return recoverTTYExecutionState(leasedState(id), '2026-08-09T10:00:00.010Z', { workerId: null, leaseId: null, completionReason: 'worker_crash_recovered' })
       }
     },
     observer: { getLeaseObservation: async id => staleObservation(id) },

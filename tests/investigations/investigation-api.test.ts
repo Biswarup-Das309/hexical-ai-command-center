@@ -192,7 +192,36 @@ test('execution attachment rebinds a stale investigation session before admissio
   assert.equal((await store.get(OWNER, investigationId as never))?.executions[0]?.sessionId, replacementSessionId)
 })
 
-test('investigation persists its execution attachment before coordinator activation and withholds failed starts', async () => {
+test('execution attachment retries once when the session disappears after ensure', async () => {
+  const store = new InvestigationStore(new FakeInvestigationRedis())
+  const api = createInvestigationApi({ authenticate: async () => OWNER, getStore: () => store })
+  const created = await api.create(request('POST', '/api/investigations', { title: 'Missing session recovery' }))
+  const investigationId = String(((await read(created)).investigation as Record<string, unknown>).investigationId)
+  const replacementSessionId = '00000000-0000-4000-8000-000000000915'
+  let admissions = 0
+  let ensures = 0
+  const executionApi = createInvestigationExecutionApi({
+    authenticate: async () => OWNER,
+    getStore: () => store,
+    ensureSession: async () => {
+      ensures += 1
+      return new Response(JSON.stringify({ ok: true, session: { sessionId: replacementSessionId, status: 'active' }, sessionId: replacementSessionId }), { status: 200 })
+    },
+    admitExecution: async (_request, sessionId) => {
+      admissions += 1
+      if (admissions === 1) return new Response(JSON.stringify({ ok: false, code: 'SESSION_NOT_FOUND', message: 'The session expired.' }), { status: 404 })
+      return new Response(JSON.stringify({ ok: true, duplicate: false, job: { executionId: EXECUTION_ID, sessionId, status: 'queued' } }), { status: 202 })
+    },
+    startExecution: async () => ({ accepted: true })
+  })
+
+  const response = await executionApi.attach(request('POST', `/api/investigations/${investigationId}/executions`, { sessionId: SESSION_ID, input: 'echo hello', idempotencyKey: 'investigation-idempotency-5' }), investigationId)
+  assert.equal(response.status, 202)
+  assert.equal(ensures, 2)
+  assert.equal(admissions, 2)
+})
+
+test('investigation persists its execution attachment before coordinator activation and returns delayed activation', async () => {
   const store = new InvestigationStore(new FakeInvestigationRedis())
   const api = createInvestigationApi({ authenticate: async () => OWNER, getStore: () => store })
   const created = await api.create(request('POST', '/api/investigations', { title: 'Activation ordering' }))
@@ -209,9 +238,12 @@ test('investigation persists its execution attachment before coordinator activat
   })
 
   const response = await executionApi.attach(request('POST', `/api/investigations/${investigationId}/executions`, { sessionId: SESSION_ID, input: 'echo hello', idempotencyKey: 'investigation-idempotency-3' }), investigationId)
-  assert.equal(response.status, 503)
+  assert.equal(response.status, 202)
   assert.equal(persistedBeforeStart, true)
-  assert.deepEqual(await read(response), { ok: false, code: 'EXECUTION_NOT_STARTED', message: 'The execution could not be started.' })
+  const body = await read(response)
+  assert.equal(body.ok, true)
+  assert.equal(body.activationPending, true)
+  assert.equal((body.execution as Record<string, unknown>).executionId, EXECUTION_ID)
 })
 
 test('investigation session lifecycle is owner-scoped, durable, reusable, and terminable', async () => {

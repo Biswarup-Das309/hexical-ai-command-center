@@ -9,6 +9,7 @@ import {
   parseTTYStreamEvent,
   type TTYStreamCompletionPayload,
   type TTYStreamEvent,
+  type TTYStreamEventId,
   type TTYStreamEventInput,
   type TTYStreamErrorCode
 } from './tty-stream-types'
@@ -17,6 +18,7 @@ export interface TTYStreamRedis {
   incr(key: string): Promise<number>
   xadd(key: string, id: '*', fields: Record<string, unknown>): Promise<unknown>
   xrange(key: string, start: string, end: string, count?: number): Promise<unknown>
+  eval(script: string, keys: readonly string[], args: readonly string[]): Promise<unknown>
   xtrim?(key: string, options: { readonly strategy: 'MAXLEN'; readonly threshold: number; readonly exactness?: '~' | '=' }): Promise<unknown>
 }
 
@@ -69,6 +71,20 @@ const DEFAULT_BUFFERED_EVENTS = 256
 const DEFAULT_REPLAY_EVENTS = 512
 const DEFAULT_REDIS_POLL_MS = 250
 
+const PUBLISH_LIVE_EVENT_SCRIPT = `
+-- hexical:tty-live-publish
+local sequence = redis.call('INCR', KEYS[2])
+redis.call('XADD', KEYS[1], '*',
+  'eventId', ARGV[1],
+  'sequence', tostring(sequence),
+  'timestamp', ARGV[2],
+  'executionId', ARGV[3],
+  'sessionId', ARGV[4],
+  'type', ARGV[5],
+  'payload', ARGV[6])
+return sequence
+`
+
 function asFieldMap(value: unknown): RedisStreamFieldMap | null {
   if (Array.isArray(value)) {
     const result: RedisStreamFieldMap = {}
@@ -114,6 +130,12 @@ function terminalState(value: unknown): TTYTerminalExecutionState {
   return typeof value === 'string' && isTTYExecutionState(value) && isTerminalTTYExecutionState(value) ? value : 'failed'
 }
 
+function parseSequence(value: unknown): number {
+  const sequence = Number(Array.isArray(value) ? value[0] : value)
+  if (!Number.isSafeInteger(sequence) || sequence <= 0) throw new Error('TTY live stream sequence allocation failed.')
+  return sequence
+}
+
 function asCompletionPayload(data: Record<string, unknown>): TTYStreamCompletionPayload {
   return {
     state: terminalState(data.state),
@@ -156,13 +178,11 @@ export class TTYStreamBroker {
 
   async publish(input: TTYStreamPublishInput): Promise<TTYStreamEvent> {
     return this.serialized(input.executionId, async () => {
-      const sequence = await this.nextSequence(input.executionId)
-      const event = createTTYStreamEvent({ ...input, sequence })
+      const event = await this.createAndPersist(input)
       const buffer = this.bufferFor(input.executionId)
       buffer.events.push(event)
       while (buffer.events.length > this.maxBufferedEvents) buffer.events.shift()
       if (event.type === 'completion') buffer.completed = true
-      await this.persist(event)
       buffer.lastNotifiedSequence = Math.max(buffer.lastNotifiedSequence, event.sequence)
       for (const subscriber of buffer.subscribers.values()) {
         try {
@@ -283,42 +303,31 @@ export class TTYStreamBroker {
     }
   }
 
-  private async nextSequence(executionId: TTYExecutionId): Promise<number> {
-    const localNext = (this.localSequences.get(executionId) ?? 0) + 1
-    if (!this.redis) {
-      this.localSequences.set(executionId, localNext)
-      return localNext
+  private async createAndPersist(input: TTYStreamPublishInput): Promise<TTYStreamEvent> {
+    const eventId = crypto.randomUUID() as TTYStreamEventId
+    const timestamp = input.timestamp ?? this.now().toISOString()
+    // Validate the payload before touching Redis. Sequence 1 is only a
+    // validation placeholder; the durable sequence is assigned below.
+    createTTYStreamEvent({ ...input, eventId, timestamp, sequence: 1 })
+
+    const sequence = this.redis
+      ? parseSequence(await this.redis.eval(PUBLISH_LIVE_EVENT_SCRIPT, [ttyExecutionLiveStreamKey(input.executionId), ttyExecutionLiveSequenceKey(input.executionId)], [eventId, timestamp, input.executionId, input.sessionId, input.type, JSON.stringify(input.payload)]))
+      : this.nextLocalSequence(input.executionId)
+    const event = createTTYStreamEvent({ ...input, eventId, timestamp, sequence })
+    if (this.redis) {
+      try {
+        await this.redis.xtrim?.(ttyExecutionLiveStreamKey(event.executionId), { strategy: 'MAXLEN', threshold: this.maxReplayEvents, exactness: '~' })
+      } catch {
+        // Trimming is housekeeping; the event and its cursor are already durable.
+      }
     }
-    try {
-      const redisNext = await this.redis.incr(ttyExecutionLiveSequenceKey(executionId))
-      const sequence = Math.max(localNext, redisNext)
-      this.localSequences.set(executionId, sequence)
-      return sequence
-    } catch {
-      this.localSequences.set(executionId, localNext)
-      return localNext
-    }
+    return event
   }
 
-  private async persist(event: TTYStreamEvent): Promise<void> {
-    if (!this.redis) return
-    try {
-      const serialized = JSON.stringify(event)
-      await this.redis.xadd(ttyExecutionLiveStreamKey(event.executionId), '*', {
-        event: serialized,
-        eventId: event.eventId,
-        sequence: String(event.sequence),
-        timestamp: event.timestamp,
-        executionId: event.executionId,
-        sessionId: event.sessionId,
-        type: event.type,
-        payload: JSON.stringify(event.payload)
-      })
-      await this.redis.xtrim?.(ttyExecutionLiveStreamKey(event.executionId), { strategy: 'MAXLEN', threshold: this.maxReplayEvents, exactness: '~' })
-    } catch {
-      // Live delivery remains available from the bounded hot buffer. Replay
-      // reports unavailable when neither Redis nor that buffer can recover it.
-    }
+  private nextLocalSequence(executionId: TTYExecutionId): number {
+    const localNext = (this.localSequences.get(executionId) ?? 0) + 1
+    this.localSequences.set(executionId, localNext)
+    return localNext
   }
 
   private async readPersisted(executionId: TTYExecutionId): Promise<{ events: TTYStreamEvent[]; failed: boolean }> {

@@ -34,7 +34,8 @@ export function createInvestigationRedis(redis: Redis): InvestigationRedis {
     zrange: <T extends unknown[]>(key: string, min: number, max: number, options: { readonly rev?: boolean; readonly offset: number; readonly count: number }) => redis.zrange<T>(key, min, max, options),
     zrem: (key, member) => redis.zrem(key, member),
     xadd: (key, id, fields) => redis.xadd(key, id, fields),
-    xrange: (key, start, end, count) => count === undefined ? redis.xrange(key, start, end) : redis.xrange(key, start, end, count)
+    xrange: (key, start, end, count) => count === undefined ? redis.xrange(key, start, end) : redis.xrange(key, start, end, count),
+    eval: <T>(script: string, keys: readonly string[], args: readonly string[]) => redis.eval<unknown[]>(script, [...keys], [...args]).then(value => value as T)
   }
 }
 
@@ -95,6 +96,9 @@ export function createInvestigationExecutionApiForRequest() {
     getStore: () => store,
     ensureSession: (request, investigationId) => sessionApi.ensure(request, investigationId),
     admitExecution: (request, sessionId) => createTTYAdmissionApiForRequest({ activate: false }).admit(request, sessionId),
-    startExecution: (executionId, sessionId, options) => activateTTYExecution(executionId, sessionId, options)
+    startExecution: async (executionId, sessionId, options) => {
+      const result = await activateTTYExecution(executionId, sessionId, options)
+      return { accepted: result.accepted, state: result.state?.state ?? null, reason: result.reason }
+    }
   })
 }

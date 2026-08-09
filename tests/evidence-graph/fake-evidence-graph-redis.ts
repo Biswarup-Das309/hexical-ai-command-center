@@ -41,19 +41,33 @@ export class FakeEvidenceGraphRedis {
   }
 
   async eval<T = unknown>(script: string, keys: readonly string[], args: readonly string[]): Promise<T> {
-    if (script.includes('entity-upsert')) {
-      if (this.values.has(keys[0]!)) return 0 as T
+    if (script.includes('investigation-root-upsert')) {
       this.values.set(keys[0]!, args[0]!)
       if (!this.values.has(keys[1]!)) this.values.set(keys[1]!, args[1]!)
       await this.zadd(keys[2]!, { score: Number(args[2]), member: args[1]! })
       await this.zadd(keys[3]!, { score: Number(args[2]), member: args[1]! })
       return 1 as T
     }
-    if (script.includes('edge-upsert')) {
-      if (this.values.has(keys[0]!)) return 0 as T
-      this.values.set(keys[0]!, args[0]!)
-      for (const key of keys.slice(1)) await this.zadd(key, { score: Number(args[2]), member: args[1]! })
+    if (script.includes('last-updated-max')) {
+      const current = this.values.get(keys[0]!)
+      if (!current || args[0]! > current) this.values.set(keys[0]!, args[0]!)
       return 1 as T
+    }
+    if (script.includes('entity-upsert')) {
+      const created = !this.values.has(keys[0]!)
+      if (created) {
+        this.values.set(keys[0]!, args[0]!)
+        if (!this.values.has(keys[1]!)) this.values.set(keys[1]!, args[1]!)
+      }
+      await this.zadd(keys[2]!, { score: Number(args[2]), member: args[1]! })
+      await this.zadd(keys[3]!, { score: Number(args[2]), member: args[1]! })
+      return (created ? 1 : 0) as T
+    }
+    if (script.includes('edge-upsert')) {
+      const created = !this.values.has(keys[0]!)
+      if (created) this.values.set(keys[0]!, args[0]!)
+      for (const key of keys.slice(1)) await this.zadd(key, { score: Number(args[2]), member: args[1]! })
+      return (created ? 1 : 0) as T
     }
   throw new Error('Unknown graph script')
   }

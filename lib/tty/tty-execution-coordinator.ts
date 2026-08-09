@@ -13,9 +13,11 @@ import { log, withSpan } from '@/lib/hexical/telemetry'
 
 import {
   TTY_EXECUTION_STATES,
+  canRecoverTTYExecutionState,
   canTransitionTTYExecutionState,
   createQueuedTTYExecutionState,
   isTerminalTTYExecutionState,
+  recoverTTYExecutionState,
   transitionTTYExecutionState,
   type TTYExecutionStatePatch,
   type TTYExecutionStateRecord,
@@ -321,13 +323,13 @@ export class TTYExecutionCoordinator {
       }
       return current
     }
-    if (!canTransitionTTYExecutionState(current.state, 'queued')) return current
+    if (!canRecoverTTYExecutionState(current.state, 'queued')) return current
     const queued = await this.transitionWithoutContext(current, 'queued', {
       workerId: null,
       leaseId: null,
       failureCode: null,
       completionReason: 'worker_crash_recovered'
-    })
+    }, true)
     await this.safeAppendState(queued)
     if (this.dependencies.audit) {
       try {
@@ -582,10 +584,13 @@ export class TTYExecutionCoordinator {
     return operation
   }
 
-  private async transitionWithoutContext(current: TTYExecutionStateRecord, next: TTYExecutionStateRecord['state'], patch: TTYExecutionStatePatch): Promise<TTYExecutionStateRecord> {
+  private async transitionWithoutContext(current: TTYExecutionStateRecord, next: TTYExecutionStateRecord['state'], patch: TTYExecutionStatePatch, recovery = false): Promise<TTYExecutionStateRecord> {
     if (current.state === next || isTerminalTTYExecutionState(current.state)) return current
-    if (!canTransitionTTYExecutionState(current.state, next)) return current
-    const candidate = transitionTTYExecutionState(current, next, this.now().toISOString(), safeRecordPatch(patch))
+    if (recovery && !canRecoverTTYExecutionState(current.state, next)) return current
+    if (!recovery && !canTransitionTTYExecutionState(current.state, next)) return current
+    const candidate = recovery
+      ? recoverTTYExecutionState(current, this.now().toISOString(), safeRecordPatch(patch))
+      : transitionTTYExecutionState(current, next, this.now().toISOString(), safeRecordPatch(patch))
     return (await this.casState(current.executionId, current.state, candidate)) ?? current
   }
 

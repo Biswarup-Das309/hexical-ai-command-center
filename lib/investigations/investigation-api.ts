@@ -46,7 +46,7 @@ export interface InvestigationSessionApiDependencies extends InvestigationApiDep
 export interface InvestigationExecutionApiDependencies extends InvestigationApiDependencies {
   readonly admitExecution: (request: Request, sessionId: string) => Promise<Response>
   readonly ensureSession?: (request: Request, investigationId: string) => Promise<Response>
-  readonly startExecution?: (executionId: string, sessionId: string, options?: { readonly correlationId?: string }) => Promise<{ readonly accepted: boolean }>
+  readonly startExecution?: (executionId: string, sessionId: string, options?: { readonly correlationId?: string }) => Promise<{ readonly accepted: boolean; readonly state?: string | null; readonly reason?: string }>
 }
 
 function json(body: unknown, status: number): Response {
@@ -276,7 +276,7 @@ export function createInvestigationSessionApi(dependencies: InvestigationSession
           const existingResponse = await dependencies.getTTYSession(emptyRequest(request.url, 'GET'), existingSessionId)
           const existingBody: unknown = await existingResponse.json().catch(() => null)
           const existing = sessionFromResponse(existingBody)
-          if (existingResponse.ok && existing?.status === 'active') return json({ ok: true, investigation: publicRecord(hydration.investigation), sessionId: existing.sessionId, reused: true }, 200)
+          if (existingResponse.ok && existing && (existing.status === 'active' || existing.status === 'idle')) return json({ ok: true, investigation: publicRecord(hydration.investigation), sessionId: existing.sessionId, reused: true }, 200)
           if (existingResponse.status >= 500) return failure(503, 'SESSION_UNAVAILABLE', 'The execution session could not be restored.')
           await store.clearSession(user, investigationId)
         }
@@ -363,7 +363,14 @@ export function createInvestigationExecutionApi(dependencies: InvestigationExecu
         let admitted = await dependencies.admitExecution(admissionRequest(), sessionId)
         let admittedBody: unknown = await admitted.json().catch(() => null)
         const admittedCode = typeof admittedBody === 'object' && admittedBody !== null && 'code' in admittedBody && typeof admittedBody.code === 'string' ? admittedBody.code : null
-        if (admitted.status === 409 && admittedCode === 'SESSION_TERMINATED' && dependencies.ensureSession) {
+        // A session can expire between the ensure read and the atomic
+        // admission script.  Both terminal and missing-session outcomes are
+        // recoverable once; anything else must remain fail-closed.
+        const recoverableSessionFailure = dependencies.ensureSession && (
+          (admitted.status === 409 && admittedCode === 'SESSION_TERMINATED') ||
+          (admitted.status === 404 && admittedCode === 'SESSION_NOT_FOUND')
+        )
+        if (recoverableSessionFailure) {
           const recoveryFailure = await ensureAttachedSession()
           if (recoveryFailure) return recoveryFailure
           admitted = await dependencies.admitExecution(admissionRequest(), sessionId)
@@ -376,11 +383,26 @@ export function createInvestigationExecutionApi(dependencies: InvestigationExecu
         const attached = await dependencies.getStore().attachExecution(user, investigationId, { executionId: body.job.executionId, sessionId })
         if (!attached) return failure(404, 'NOT_FOUND', 'Investigation not found.')
         log.info('investigation.execution.attached', { investigationId, executionId: body.job.executionId, sessionId, duplicate: body.duplicate === true, correlationId })
+        let activationPending = false
         if (dependencies.startExecution) {
           const started = await dependencies.startExecution(body.job.executionId, sessionId, { correlationId })
-          if (!started.accepted) return failure(503, 'EXECUTION_NOT_STARTED', 'The execution could not be started.')
+          if (!started.accepted) {
+            // The investigation attachment and TTY admission are already
+            // durable.  Return the queued execution instead of a misleading
+            // 503 that invites a duplicate submission; a worker can claim it
+            // once the transient activation failure clears.
+            activationPending = true
+            log.warn('investigation.execution.activation_pending', {
+              investigationId,
+              executionId: body.job.executionId,
+              sessionId,
+              state: started.state ?? 'queued',
+              reason: started.reason ?? 'activation_rejected',
+              correlationId
+            })
+          }
         }
-        return json({ ok: true, investigationId, execution: attached, job: body.job, duplicate: body.duplicate === true }, admitted.status)
+        return json({ ok: true, investigationId, execution: attached, job: body.job, duplicate: body.duplicate === true, ...(activationPending ? { activationPending: true } : {}) }, admitted.status)
       } catch {
         return failure(500, 'INTERNAL_ERROR', 'The execution could not be attached to the investigation.')
       }

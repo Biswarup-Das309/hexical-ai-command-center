@@ -131,6 +131,7 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
   const createInFlightRef = useRef(false)
   const mutationQueueRef = useRef(Promise.resolve())
   const sessionProvisionRef = useRef<Promise<string | null> | null>(null)
+  const sessionProvisionInvestigationRef = useRef<string | null>(null)
 
   const fetchInvestigation = useCallback(async (id: string, query = ''): Promise<InvestigationWorkspaceData> => {
     const body = await requestJson<{ ok: true } & InvestigationWorkspaceData>(`/api/investigations/${id}${query}`)
@@ -307,7 +308,7 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
 
   const ensureSession = useCallback(async (): Promise<string | null> => {
     if (!resolvedInvestigationId) return null
-    if (sessionProvisionRef.current) return sessionProvisionRef.current
+    if (sessionProvisionRef.current && sessionProvisionInvestigationRef.current === resolvedInvestigationId) return sessionProvisionRef.current
 
     let sessionId: string | null = null
     setSessionFailure(null)
@@ -319,6 +320,7 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
       setSessionFailure(null)
     }).then(() => sessionId)
     sessionProvisionRef.current = provision
+    sessionProvisionInvestigationRef.current = resolvedInvestigationId
     try {
       return await provision
     } catch (cause) {
@@ -329,7 +331,10 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
       setError(failure.message)
       throw cause
     } finally {
-      if (sessionProvisionRef.current === provision) sessionProvisionRef.current = null
+      if (sessionProvisionRef.current === provision) {
+        sessionProvisionRef.current = null
+        sessionProvisionInvestigationRef.current = null
+      }
     }
   }, [queueMutation, resolvedInvestigationId])
 

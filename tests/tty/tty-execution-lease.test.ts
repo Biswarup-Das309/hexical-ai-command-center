@@ -68,7 +68,12 @@ class LeaseRedisContractMock {
 
     if (args.length === 8) {
       if (job.status !== 'queued') return [0, 'not_queued']
-      if (!this.sessionLive || this.terminal) return [0, 'session_terminated']
+      if (!this.sessionLive || this.terminal) {
+        this.queue = Math.max(0, this.queue - 1)
+        this.active = Math.max(0, this.active - 1)
+        this.job = null
+        return [0, 'session_terminated']
+      }
       const attempt = (job.attempt ?? 0) + 1
       if (attempt > Number(args[3])) return [0, 'attempts_exhausted']
       this.queue = Math.max(0, this.queue - 1)
@@ -158,6 +163,9 @@ test('missing, already leased, wrong session, and terminated jobs fail closed', 
   const terminated = new LeaseRedisContractMock()
   terminated.terminal = true
   assert.deepEqual(await manager(terminated, 'worker-a').claim(executionId, sessionId), { claimed: false, reason: 'session_terminated' })
+  assert.equal(terminated.job, null)
+  assert.equal(terminated.queue, 0)
+  assert.equal(terminated.active, 0)
 })
 
 test('only the matching worker and lease token can renew or release', async () => {

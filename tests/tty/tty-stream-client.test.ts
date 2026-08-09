@@ -28,6 +28,7 @@ function event(sequence: number, type: 'stdout' | 'completion' = 'stdout') {
 
 test('client builds the browser-safe SSE URL and parses event frames', () => {
   assert.equal(buildTTYStreamUrl('exec/1', 'session 1'), '/api/tty/executions/exec%2F1/stream?sessionId=session%201')
+  assert.equal(buildTTYStreamUrl('exec/1', 'session 1', 42), '/api/tty/executions/exec%2F1/stream?sessionId=session%201&lastEventId=42')
   const parsed = parseTTYStreamMessage(JSON.stringify(event(1)))
   assert.equal(parsed?.sequence, 1)
   assert.equal(parseTTYStreamMessage('{"type":"stdout"}'), null)

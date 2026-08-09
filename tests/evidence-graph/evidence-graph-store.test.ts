@@ -91,3 +91,11 @@ test('handles a large bounded entity set without unbounded query responses', asy
   assert.equal(summary?.entitiesByType.domain, 10_000)
   assert.equal(page?.entities.length, 100)
 })
+
+test('summary repairs a missing graph root before returning an empty investigation view', async () => {
+  const { investigation, graphStore } = await fixture()
+  const summary = await graphStore.summary(OWNER, investigation.investigationId)
+  assert.equal(summary?.entityCount, 1)
+  assert.equal(summary?.entitiesByType.investigation, 1)
+  assert.equal(summary?.relationshipCount, 0)
+})

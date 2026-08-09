@@ -77,7 +77,11 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
   const bookmarks = useMemo(() => workspace.data?.bookmarks.filter(bookmark => bookmark.executionId === activeExecutionId).map(toTTYBookmark) ?? [], [activeExecutionId, workspace.data?.bookmarks])
   const candidates = useMemo<readonly TTYEvidenceCandidate[]>(() => workspace.data?.timeline.filter(event => event.executionId === activeExecutionId && (event.type === 'stdout' || event.type === 'stderr')).slice(-8).map(event => ({ sequence: event.sequence ?? 0, lineNumber: null, kind: event.type === 'stderr' ? 'error' : 'output', label: event.type, excerpt: String(event.payload.text ?? '') })) ?? [], [activeExecutionId, workspace.data?.timeline])
 
-  const activeSessionId = workspace.data?.investigation.ttySessionId ?? sessionId ?? null
+  // Once the investigation has hydrated, its persisted binding is
+  // authoritative.  Falling back to a stale prop after the server has
+  // cleared the session made the UI claim "session attached" while admission
+  // correctly rejected the old session.
+  const activeSessionId = workspace.data ? workspace.data.investigation.ttySessionId : sessionId ?? null
   const executionSessionId = workspace.data?.executions.find(execution => execution.executionId === activeExecutionId)?.sessionId ?? activeSessionId
   const sessionFailure = workspace.sessionFailure
 

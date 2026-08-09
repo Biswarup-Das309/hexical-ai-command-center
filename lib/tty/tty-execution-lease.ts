@@ -105,7 +105,20 @@ if not raw then return {0, 'missing_job'} end
 local job = cjson.decode(raw)
 if job.status ~= 'queued' then return {0, 'not_queued'} end
 if job.sessionId ~= ARGV[8] then return {0, 'session_terminated'} end
-if redis.call('EXISTS', KEYS[4]) == 1 or redis.call('EXISTS', KEYS[2]) == 0 or redis.call('EXISTS', KEYS[3]) == 0 then return {0, 'session_terminated'} end
+if redis.call('EXISTS', KEYS[4]) == 1 or redis.call('EXISTS', KEYS[2]) == 0 or redis.call('EXISTS', KEYS[3]) == 0 then
+  -- A lazy idle expiry has no terminate request to clean queued jobs.  Once
+  -- the matching worker observes the dead session, remove the job and repair
+  -- both admission counters atomically so it cannot remain orphaned forever.
+  redis.call('DECR', KEYS[5])
+  if tonumber(redis.call('GET', KEYS[5]) or '0') < 0 then redis.call('SET', KEYS[5], '0') end
+  redis.call('EXPIRE', KEYS[5], ARGV[7])
+  redis.call('DECR', KEYS[6])
+  if tonumber(redis.call('GET', KEYS[6]) or '0') < 0 then redis.call('SET', KEYS[6], '0') end
+  redis.call('EXPIRE', KEYS[6], ARGV[7])
+  redis.call('DEL', KEYS[1])
+  redis.call('SREM', KEYS[9], job.executionId)
+  return {0, 'session_terminated'}
+end
 local attempt = tonumber(job.attempt or '0') + 1
 if attempt > tonumber(ARGV[4]) then return {0, 'attempts_exhausted'} end
 local now = tonumber(ARGV[3])
@@ -265,7 +278,7 @@ export class TTYExecutionLeaseManager {
       const leaseId = this.leaseId()
       if (leaseId === token) return { claimed: false, reason: 'internal_error' }
       const credential = JSON.stringify({ token, leaseId })
-      const result = parseResult(await this.redis.eval(CLAIM_SCRIPT, [ttyExecutionJobKey(executionId), workerSessionKey(sessionId, 'core'), workerSessionKey(sessionId, 'status'), workerSessionKey(sessionId, 'terminal'), workerSessionKey(sessionId, 'queue-depth'), ttyWorkerActiveLeasesKey(this.workerId), ttyWorkerActiveLeaseIndexKey()], [this.workerId, credential, String(now), String(TTY_MAX_LEASE_ATTEMPTS), String(TTY_LEASE_DURATION_MS), String(TTY_MAX_LEASE_DURATION_MS), String(JOB_TTL_SECONDS), sessionId]))
+      const result = parseResult(await this.redis.eval(CLAIM_SCRIPT, [ttyExecutionJobKey(executionId), workerSessionKey(sessionId, 'core'), workerSessionKey(sessionId, 'status'), workerSessionKey(sessionId, 'terminal'), workerSessionKey(sessionId, 'queue-depth'), workerSessionKey(sessionId, 'active-executions'), ttyWorkerActiveLeasesKey(this.workerId), ttyWorkerActiveLeaseIndexKey(), workerSessionKey(sessionId, 'jobs')], [this.workerId, credential, String(now), String(TTY_MAX_LEASE_ATTEMPTS), String(TTY_LEASE_DURATION_MS), String(TTY_MAX_LEASE_DURATION_MS), String(JOB_TTL_SECONDS), sessionId]))
       if (result[0] !== 1) return { claimed: false, reason: claimReason(result[1]) }
       const job = JSON.parse(result[1]) as TTYLeasedJob
       await this.notify(() => this.dependencies.observer?.observeLeaseClaimed(job))

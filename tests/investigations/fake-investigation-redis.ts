@@ -98,4 +98,85 @@ export class FakeInvestigationRedis {
     const entries = (this.streams.get(key) ?? []).filter(entry => exclusive ? Number(entry.id.split('-')[0]) > minimum : Number(entry.id.split('-')[0]) >= minimum)
     return entries.slice(0, count ?? entries.length).map(entry => [entry.id, Object.entries(entry.fields).flat()])
   }
+
+  async eval(script: string, keys: readonly string[], args: readonly string[]): Promise<unknown> {
+    const readRecord = (key: string): Record<string, unknown> | null => {
+      const raw = this.values.get(key)
+      if (!raw) return null
+      try {
+        const parsed: unknown = JSON.parse(raw)
+        return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null
+      } catch {
+        return null
+      }
+    }
+    if (script.includes('hexical:investigation:patch')) {
+      const current = readRecord(keys[0]!)
+      if (!current || current.ownerUserId !== args[0] || current.status === 'deleted') return [0, 'missing']
+      if (args[1] === '1') current.title = args[2]
+      if (args[3] === '1') current.description = args[4]
+      if (args[5] === '1') current.status = args[6]
+      current.updatedAt = args[7]
+      current.archivedAt = current.status === 'archived' ? current.archivedAt ?? args[7] : null
+      const serialized = JSON.stringify(current)
+      this.values.set(keys[0]!, serialized)
+      return [1, serialized]
+    }
+    if (script.includes('hexical:investigation:delete')) {
+      const current = readRecord(keys[0]!)
+      if (!current || current.ownerUserId !== args[0] || current.status === 'deleted') return [0, 'missing']
+      current.status = 'deleted'
+      current.updatedAt = args[1]
+      current.archivedAt = current.archivedAt ?? args[1]
+      const serialized = JSON.stringify(current)
+      this.values.set(keys[0]!, serialized)
+      await this.zrem(keys[1]!, String(current.investigationId))
+      await this.del(keys[2]!)
+      return [1, serialized]
+    }
+    if (script.includes('hexical:investigation:attach-session')) {
+      const current = readRecord(keys[0]!)
+      if (!current || current.ownerUserId !== args[0] || current.status === 'deleted') return [0, 'missing']
+      if (typeof current.ttySessionId === 'string' && current.ttySessionId.length > 0) return [2, JSON.stringify(current)]
+      const bound = this.values.get(keys[1]!) ?? args[1]
+      this.values.set(keys[1]!, bound)
+      current.ttySessionId = bound
+      current.updatedAt = args[2]
+      const serialized = JSON.stringify(current)
+      this.values.set(keys[0]!, serialized)
+      return [1, serialized]
+    }
+    if (script.includes('hexical:investigation:clear-session')) {
+      const current = readRecord(keys[0]!)
+      if (!current || current.ownerUserId !== args[0] || current.status === 'deleted') return [0, 'missing']
+      if (typeof current.ttySessionId !== 'string' || current.ttySessionId.length === 0) return [1, JSON.stringify(current)]
+      if (current.ttySessionId !== args[1]) return [2, JSON.stringify(current)]
+      current.ttySessionId = null
+      current.updatedAt = args[2]
+      const serialized = JSON.stringify(current)
+      this.values.set(keys[0]!, serialized)
+      await this.del(keys[1]!)
+      return [1, serialized]
+    }
+    if (script.includes('hexical:investigation:attach-execution')) {
+      const current = readRecord(keys[0]!)
+      if (!current || current.ownerUserId !== args[0] || current.status === 'deleted') return [0, 'missing']
+      const existing = this.values.get(keys[1]!)
+      if (existing) return [2, existing]
+      this.values.set(keys[1]!, args[1]!)
+      await this.zadd(keys[2]!, { score: Number(args[3]), member: args[2]! })
+      await this.incr(keys[3]!)
+      return [1, args[1]]
+    }
+    if (script.includes('hexical:investigation:update-execution')) {
+      const current = readRecord(keys[0]!)
+      if (!current || current.ownerUserId !== args[0] || current.status === 'deleted') return [0, 'missing']
+      const existing = this.values.get(keys[1]!)
+      if (!existing) return [0, 'missing']
+      if (existing !== args[1]) return [2, existing]
+      this.values.set(keys[1]!, args[2]!)
+      return [1, args[2]]
+    }
+    throw new Error(`Unsupported script: ${script.slice(0, 80)}`)
+  }
 }

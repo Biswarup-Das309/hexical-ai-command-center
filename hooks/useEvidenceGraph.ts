@@ -56,16 +56,20 @@ export function useEvidenceGraph(investigationId: string | null): UseEvidenceGra
   const refreshRequestRef = useRef(0)
   const refreshAbortRef = useRef<AbortController | null>(null)
 
+  const clearGraphData = useCallback(() => {
+    setSummary(null)
+    setEntities([])
+    setSelectedEntity(null)
+    setConnected(null)
+    setSelectedType(null)
+  }, [])
+
   const refresh = useCallback(async () => {
     if (!investigationId) {
       refreshRequestRef.current += 1
       refreshAbortRef.current?.abort()
       refreshAbortRef.current = null
-      setSummary(null)
-      setEntities([])
-      setSelectedEntity(null)
-      setConnected(null)
-      setSelectedType(null)
+      clearGraphData()
       setError(null)
       return
     }
@@ -81,13 +85,9 @@ export function useEvidenceGraph(investigationId: string | null): UseEvidenceGra
       setError(null)
     } catch (cause) {
       if (requestId !== refreshRequestRef.current || (cause instanceof DOMException && cause.name === 'AbortError')) return
-      if (cause instanceof EvidenceGraphRequestError && cause.status === 404) {
-        setSummary(null)
-        setEntities([])
-        setSelectedEntity(null)
-        setConnected(null)
-        setSelectedType(null)
-      }
+      // A failed refresh must not leave counts from a previous investigation
+      // or a previous authorization state visible beside the error banner.
+      clearGraphData()
       setError(cause instanceof Error ? cause.message : 'The evidence graph could not be loaded.')
     } finally {
       if (requestId === refreshRequestRef.current) {
@@ -95,7 +95,7 @@ export function useEvidenceGraph(investigationId: string | null): UseEvidenceGra
         setLoading(false)
       }
     }
-  }, [investigationId])
+  }, [clearGraphData, investigationId])
 
   const selectType = useCallback(async (type: EvidenceGraphEntityType) => {
     if (!investigationId) return
@@ -108,6 +108,9 @@ export function useEvidenceGraph(investigationId: string | null): UseEvidenceGra
       setConnected(null)
       setError(null)
     } catch (cause) {
+      setEntities([])
+      setSelectedEntity(null)
+      setConnected(null)
       setError(cause instanceof Error ? cause.message : 'The graph entities could not be loaded.')
     } finally {
       setLoading(false)
@@ -126,6 +129,8 @@ export function useEvidenceGraph(investigationId: string | null): UseEvidenceGra
       setConnected(connectedResult)
       setError(null)
     } catch (cause) {
+      setSelectedEntity(null)
+      setConnected(null)
       setError(cause instanceof Error ? cause.message : 'The connected graph data could not be loaded.')
     } finally {
       setLoading(false)
@@ -133,11 +138,7 @@ export function useEvidenceGraph(investigationId: string | null): UseEvidenceGra
   }, [investigationId])
 
   useEffect(() => {
-    setSummary(null)
-    setEntities([])
-    setSelectedEntity(null)
-    setConnected(null)
-    setSelectedType(null)
+    clearGraphData()
     setError(null)
     void refresh()
     if (!investigationId) return
@@ -145,7 +146,7 @@ export function useEvidenceGraph(investigationId: string | null): UseEvidenceGra
       if (document.visibilityState !== 'hidden') void refresh()
     }, 5_000)
     return () => window.clearInterval(timer)
-  }, [investigationId, refresh])
+  }, [clearGraphData, investigationId, refresh])
 
   return { summary, entities, selectedEntity, connected, selectedType, loading, error, selectType, selectEntity, refresh }
 }

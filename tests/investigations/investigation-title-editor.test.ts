@@ -27,8 +27,9 @@ test('workspace and graph clear stale data after owner or investigation loss', a
 
   assert.match(workspace, /cause\.code === 'NOT_FOUND' \|\| cause\.code === 'UNAUTHENTICATED'/)
   assert.match(workspace, /setData\(null\)/)
-  assert.match(graph, /cause instanceof EvidenceGraphRequestError && cause\.status === 404/)
   assert.match(graph, /setSummary\(null\)/)
+  assert.match(graph, /A failed refresh must not leave counts/)
+  assert.match(graph, /clearGraphData\(\)/)
   assert.match(graph, /refreshAbortRef\.current\?\.abort\(\)/)
 })
 
@@ -65,7 +66,7 @@ test('workspace validates the persisted session before every execution so termin
   ])
 
   assert.match(workspace, /const attachedSessionId = await workspace\.ensureSession\(\)/)
-  assert.match(workspace, /workspace\.data\?\.investigation\.ttySessionId \?\? sessionId/)
+  assert.match(workspace, /const activeSessionId = workspace\.data \? workspace\.data\.investigation\.ttySessionId : sessionId \?\? null/)
   assert.doesNotMatch(hook, /if \(data\?\.investigation\.ttySessionId\) return data\.investigation\.ttySessionId/)
 })
 
@@ -74,4 +75,12 @@ test('terminated execution streams clear stale browser state', async () => {
 
   assert.match(stream, /code === 'SESSION_NOT_ACTIVE' \|\| code === 'SESSION_NOT_FOUND'/)
   assert.match(stream, /handleExecutionNotFound\(\)/)
+})
+
+test('stream recovery does not reconnect merely because the parent callback identity changed', async () => {
+  const stream = await source('hooks/useTTYExecutionStream.ts')
+
+  assert.match(stream, /const onExecutionNotFoundRef = useRef\(onExecutionNotFound\)/)
+  assert.match(stream, /onExecutionNotFoundRef\.current\?\.\(\)/)
+  assert.match(stream, /\}, \[\]\)/)
 })

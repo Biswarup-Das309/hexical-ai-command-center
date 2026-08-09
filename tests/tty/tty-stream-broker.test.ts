@@ -83,3 +83,19 @@ test('a Redis-backed subscriber receives events published by another broker inst
   viewer.close()
   assert.deepEqual(received, [1])
 })
+
+test('a Redis sequence outage fails closed instead of inventing an instance-local cursor', async () => {
+  const redis = {
+    incr: async () => { throw new Error('redis unavailable') },
+    xadd: async () => { throw new Error('redis unavailable') },
+    xrange: async () => [],
+    eval: async () => { throw new Error('redis unavailable') }
+  }
+  const broker = new TTYStreamBroker(redis)
+  const { executionId, sessionId } = ids()
+  await assert.rejects(
+    broker.publish({ executionId, sessionId, type: 'stdout', payload: { text: 'must not fork', byteLength: 13 } }),
+    /redis unavailable/
+  )
+  assert.equal(broker.subscriberCount(executionId), 0)
+})

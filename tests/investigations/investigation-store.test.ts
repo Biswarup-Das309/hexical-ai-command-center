@@ -138,6 +138,17 @@ test('a fresh store instance rehydrates persisted execution state after a worker
   assert.equal(hydrated?.executions[0]?.executionId, executionId)
 })
 
+test('execution history refuses to resurrect a terminal execution', async () => {
+  const investigations = store()
+  const created = await investigations.create(OWNER, { title: 'Terminal state guard', description: '' }, FIXED_TIME)
+  const executionId = '00000000-0000-4000-8000-000000000905'
+  await investigations.attachExecution(OWNER, created.investigationId, { executionId, sessionId: SESSION_ID, attachedAt: FIXED_TIME })
+  await investigations.updateExecution(OWNER, created.investigationId, executionId, 'succeeded', { updatedAt: '2026-08-09T10:00:02.000Z' })
+  const replayed = await investigations.updateExecution(OWNER, created.investigationId, executionId, 'queued', { updatedAt: '2026-08-09T10:00:03.000Z' })
+  assert.equal(replayed?.state, 'succeeded')
+  assert.equal((await investigations.get(OWNER, created.investigationId))?.executions[0]?.state, 'succeeded')
+})
+
 test('timeline synchronization is idempotent across reconnects', async () => {
   const investigations = store()
   const created = await investigations.create(OWNER, { title: 'Reconnect replay', description: '' }, FIXED_TIME)
