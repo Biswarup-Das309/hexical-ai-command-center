@@ -88,9 +88,12 @@ export function createInvestigationSessionApiForRequest() {
 
 export function createInvestigationExecutionApiForRequest() {
   const redis = createRedis()
+  const store = new InvestigationStore(createInvestigationRedis(redis))
+  const sessionApi = createInvestigationSessionApiForRequest()
   return createInvestigationExecutionApi({
     authenticate: async () => (await auth()).userId ?? null,
-    getStore: () => new InvestigationStore(createInvestigationRedis(redis)),
+    getStore: () => store,
+    ensureSession: (request, investigationId) => sessionApi.ensure(request, investigationId),
     admitExecution: (request, sessionId) => createTTYAdmissionApiForRequest({ activate: false }).admit(request, sessionId),
     startExecution: activateTTYExecution
   })

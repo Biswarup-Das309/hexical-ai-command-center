@@ -157,6 +157,41 @@ test('investigation execution attachment composes with the frozen admission boun
   assert.equal(admissions, 1)
 })
 
+test('execution attachment rebinds a stale investigation session before admission and retries one termination race', async () => {
+  const store = new InvestigationStore(new FakeInvestigationRedis())
+  const api = createInvestigationApi({ authenticate: async () => OWNER, getStore: () => store })
+  const created = await api.create(request('POST', '/api/investigations', { title: 'Session recovery' }))
+  const investigationId = String(((await read(created)).investigation as Record<string, unknown>).investigationId)
+  const oldSessionId = SESSION_ID
+  const replacementSessionId = '00000000-0000-4000-8000-000000000913'
+  let ensureCalls = 0
+  const admittedSessionIds: string[] = []
+  let admissionCalls = 0
+  const executionApi = createInvestigationExecutionApi({
+    authenticate: async () => OWNER,
+    getStore: () => store,
+    ensureSession: async () => {
+      ensureCalls += 1
+      return new Response(JSON.stringify({ ok: true, session: { sessionId: replacementSessionId, status: 'active' }, sessionId: replacementSessionId }), { status: 200 })
+    },
+    admitExecution: async (_request, sessionId) => {
+      admittedSessionIds.push(sessionId)
+      admissionCalls += 1
+      if (admissionCalls === 1) return new Response(JSON.stringify({ ok: false, code: 'SESSION_TERMINATED', message: 'The session ended.' }), { status: 409 })
+      return new Response(JSON.stringify({ ok: true, duplicate: false, job: { executionId: EXECUTION_ID, sessionId, status: 'queued' } }), { status: 202 })
+    },
+    startExecution: async () => ({ accepted: true })
+  })
+
+  const response = await executionApi.attach(request('POST', `/api/investigations/${investigationId}/executions`, { sessionId: oldSessionId, input: 'echo hello', idempotencyKey: 'investigation-idempotency-4' }), investigationId)
+  assert.equal(response.status, 202)
+  assert.equal(ensureCalls, 2)
+  assert.equal(admissionCalls, 2)
+  assert.deepEqual(admittedSessionIds, [replacementSessionId, replacementSessionId])
+  assert.equal((await read(response)).execution instanceof Object, true)
+  assert.equal((await store.get(OWNER, investigationId as never))?.executions[0]?.sessionId, replacementSessionId)
+})
+
 test('investigation persists its execution attachment before coordinator activation and withholds failed starts', async () => {
   const store = new InvestigationStore(new FakeInvestigationRedis())
   const api = createInvestigationApi({ authenticate: async () => OWNER, getStore: () => store })
@@ -215,4 +250,31 @@ test('investigation session lifecycle is owner-scoped, durable, reusable, and te
   assert.equal((await sessionApi.terminate(request('DELETE', `/api/investigations/${investigationId}/session`), investigationId)).status, 200)
   assert.equal(terminated, true)
   assert.equal((await store.get(OWNER, investigationId as never))?.investigation.ttySessionId, null)
+})
+
+test('investigation session ensure replaces a remotely terminated attached session without refresh', async () => {
+  const store = new InvestigationStore(new FakeInvestigationRedis())
+  let user: string | null = OWNER
+  const api = createInvestigationApi({ authenticate: async () => user, getStore: () => store })
+  const created = await api.create(request('POST', '/api/investigations', { title: 'Automatic rebind' }))
+  const investigationId = String(((await read(created)).investigation as Record<string, unknown>).investigationId)
+  let sessionCreates = 0
+  const replacementId = '00000000-0000-4000-8000-000000000914'
+  const sessionApi = createInvestigationSessionApi({
+    authenticate: async () => user,
+    getStore: () => store,
+    createTTYSession: async () => {
+      sessionCreates += 1
+      return new Response(JSON.stringify({ ok: true, session: { sessionId: replacementId, status: 'active' } }), { status: 201 })
+    },
+    getTTYSession: async () => new Response(JSON.stringify({ ok: true, session: { sessionId: SESSION_ID, status: 'terminated' } }), { status: 200 }),
+    terminateTTYSession: async () => new Response(JSON.stringify({ ok: true }), { status: 200 })
+  })
+
+  await store.attachSession(OWNER, investigationId as never, SESSION_ID)
+  const rebound = await sessionApi.ensure(request('POST', `/api/investigations/${investigationId}/session`), investigationId)
+  assert.equal(rebound.status, 201)
+  assert.equal(sessionCreates, 1)
+  assert.equal((await read(rebound)).sessionId, replacementId)
+  assert.equal((await store.get(OWNER, investigationId as never))?.investigation.ttySessionId, replacementId)
 })

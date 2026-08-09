@@ -44,3 +44,14 @@ test('workspace turns a failed session attach into a visible retryable license s
   assert.match(workspace, /sessionFailure\.code === 'CAPABILITY_LOCKED'/)
   assert.match(workspace, /Retry session/)
 })
+
+test('workspace validates the persisted session before every execution so terminated sessions can rebind automatically', async () => {
+  const [workspace, hook] = await Promise.all([
+    source('components/workspace/PersistentInvestigationWorkspace.tsx'),
+    source('hooks/useInvestigationWorkspace.ts')
+  ])
+
+  assert.match(workspace, /const attachedSessionId = await workspace\.ensureSession\(\)/)
+  assert.match(workspace, /workspace\.data\?\.investigation\.ttySessionId \?\? sessionId/)
+  assert.doesNotMatch(hook, /if \(data\?\.investigation\.ttySessionId\) return data\.investigation\.ttySessionId/)
+})

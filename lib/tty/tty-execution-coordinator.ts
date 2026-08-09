@@ -158,6 +158,23 @@ function commandName(file: string): string {
   return name.endsWith('.exe') ? name.slice(0, -4) : name
 }
 
+const VIRTUAL_SESSION_UTILITIES: Readonly<Record<string, string>> = Object.freeze({
+  clear: '\u001b[2J\u001b[H',
+  help: 'Approved session utilities: clear echo exit help history ls pwd status whoami.\n',
+  history: 'Command history is preserved in the investigation timeline.\n',
+  status: 'Session is active.\n',
+  exit: 'Use the session control to terminate this investigation session.\n'
+})
+
+function processSpec(argv: readonly [string, ...string[]]): { readonly file: string; readonly args: readonly string[] } {
+  const output = VIRTUAL_SESSION_UTILITIES[commandName(argv[0])]
+  if (output === undefined) return { file: argv[0], args: argv.slice(1) }
+  return {
+    file: process.execPath,
+    args: ['-e', `process.stdout.write(${JSON.stringify(output)})`]
+  }
+}
+
 function isExecutionStateActive(state: string): boolean {
   return state === 'starting' || state === 'running' || state === 'streaming'
 }
@@ -414,12 +431,13 @@ export class TTYExecutionCoordinator {
     }
 
     try {
+      const spec = processSpec(argv)
       context.handle = await this.dependencies.processRuntime.start({
         executionId: context.executionId,
         sessionId: context.sessionId,
         workerId: this.dependencies.workerId,
-        file: argv[0],
-        args: argv.slice(1),
+        file: spec.file,
+        args: spec.args,
         env: {}
       })
       const metadata = this.dependencies.processRuntime.getMetadata(context.handle)

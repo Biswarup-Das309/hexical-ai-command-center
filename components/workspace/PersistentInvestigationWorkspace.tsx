@@ -77,7 +77,8 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
   const bookmarks = useMemo(() => workspace.data?.bookmarks.filter(bookmark => bookmark.executionId === activeExecutionId).map(toTTYBookmark) ?? [], [activeExecutionId, workspace.data?.bookmarks])
   const candidates = useMemo<readonly TTYEvidenceCandidate[]>(() => workspace.data?.timeline.filter(event => event.executionId === activeExecutionId && (event.type === 'stdout' || event.type === 'stderr')).slice(-8).map(event => ({ sequence: event.sequence ?? 0, lineNumber: null, kind: event.type === 'stderr' ? 'error' : 'output', label: event.type, excerpt: String(event.payload.text ?? '') })) ?? [], [activeExecutionId, workspace.data?.timeline])
 
-  const activeSessionId = sessionId ?? workspace.data?.executions.find(execution => execution.executionId === activeExecutionId)?.sessionId ?? workspace.data?.investigation.ttySessionId ?? null
+  const activeSessionId = workspace.data?.investigation.ttySessionId ?? sessionId ?? null
+  const executionSessionId = workspace.data?.executions.find(execution => execution.executionId === activeExecutionId)?.sessionId ?? activeSessionId
   const sessionFailure = workspace.sessionFailure
 
   const saveMetadata = async () => {
@@ -162,7 +163,7 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
     setSubmittingExecution(true)
     setExecutionError(null)
     try {
-      const attachedSessionId = activeSessionId ?? await workspace.ensureSession()
+      const attachedSessionId = await workspace.ensureSession()
       if (!attachedSessionId) throw new Error('No execution session is attached to this investigation.')
       const executionId = await workspace.attachExecution({ sessionId: attachedSessionId, input, idempotencyKey: crypto.randomUUID() })
       if (!executionId) throw new Error('The execution could not be attached.')
@@ -212,6 +213,7 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
         <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-wider">
           <span className={workspace.loading ? 'text-amber-300' : 'text-emerald-300'} aria-live="polite">{workspace.loading ? 'hydrating' : 'hydrated'}</span>
           <span className={investigation.status === 'archived' ? 'text-amber-300' : 'text-emerald-300'}>{investigation.status}</span>
+          {activeSessionId && <button type="button" onClick={() => void terminateSession()} className="text-zinc-500 hover:text-rose-300"><Square className="mr-1 inline size-3" />Terminate session</button>}
           <button type="button" onClick={() => void saveMetadata()} disabled={savingMetadata} className="rounded border border-white/10 px-2 py-1 text-zinc-400 hover:border-cyan-400/40 hover:text-cyan-200 disabled:opacity-50" title="Save investigation metadata"><Save className="mr-1 inline size-3" />{savingMetadata ? 'Saving' : 'Save'}</button>
           {investigation.status === 'active' ? <button type="button" onClick={() => void archiveInvestigation()} className="rounded border border-white/10 px-2 py-1 text-zinc-400 hover:border-amber-400/40 hover:text-amber-200"><Archive className="mr-1 inline size-3" />Archive</button> : <button type="button" onClick={() => void restoreInvestigation()} className="rounded border border-white/10 px-2 py-1 text-zinc-400 hover:border-emerald-400/40 hover:text-emerald-200"><RefreshCw className="mr-1 inline size-3" />Restore</button>}
           <button type="button" onClick={() => void createInvestigation()} className="rounded border border-cyan-400/30 px-2 py-1 text-cyan-200 hover:bg-cyan-400/10"><FilePlus2 className="mr-1 inline size-3" />New</button>
@@ -227,7 +229,7 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
 
       <EvidenceGraphPanel investigationId={investigation.investigationId} />
 
-      {showExecution ? <InvestigationWorkspace executionId={activeExecutionId} sessionId={activeSessionId ?? undefined} command={investigation.title} history={history} onSelectHistory={selectExecution} onExecute={execute} onCancel={terminateSession} onRestart={() => execute(investigation.title)} onExecutionNotFound={clearStaleExecution} initialBookmarks={bookmarks} onBookmarkAdded={bookmark => workspace.addBookmark({ executionId: bookmark.executionId, sequence: bookmark.sequence, lineNumber: bookmark.lineNumber, kind: bookmark.kind, label: bookmark.label, excerpt: bookmark.excerpt })} /> : <section className="mx-auto grid max-w-5xl gap-4 p-6 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)]">
+      {showExecution ? <InvestigationWorkspace executionId={activeExecutionId} sessionId={executionSessionId ?? undefined} command={investigation.title} history={history} onSelectHistory={selectExecution} onExecute={execute} onCancel={terminateSession} onRestart={() => execute(investigation.title)} onExecutionNotFound={clearStaleExecution} initialBookmarks={bookmarks} onBookmarkAdded={bookmark => workspace.addBookmark({ executionId: bookmark.executionId, sequence: bookmark.sequence, lineNumber: bookmark.lineNumber, kind: bookmark.kind, label: bookmark.label, excerpt: bookmark.excerpt })} /> : <section className="mx-auto grid max-w-5xl gap-4 p-6 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)]">
         <div className="rounded-lg border border-white/10 bg-black/20 p-4">
           <div className="mb-4 rounded border border-cyan-400/20 bg-cyan-400/[0.03] p-3"><div className="mb-2 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.2em] text-cyan-300"><span>Execute in investigation</span>{activeSessionId && <button type="button" onClick={() => void terminateSession()} className="text-zinc-500 hover:text-rose-300"><Square className="mr-1 inline size-3" />Terminate session</button>}</div><textarea value={executionInput} onChange={event => setExecutionInput(event.target.value)} onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); void execute(executionInput) } }} disabled={!activeSessionId || submittingExecution} aria-label="Investigation execution command" placeholder={activeSessionId ? 'Enter an approved command. Ctrl+Enter runs it.' : sessionFailure?.message ?? 'Attaching investigation session…'} className="min-h-20 w-full rounded border border-white/10 bg-black/30 p-2 font-mono text-xs text-zinc-200 outline-none disabled:cursor-not-allowed disabled:opacity-60" /><button type="button" onClick={() => void execute(executionInput)} disabled={!activeSessionId || submittingExecution || !executionInput.trim()} className="mt-2 rounded border border-cyan-400/30 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-cyan-200 hover:bg-cyan-400/10 disabled:opacity-50"><Play className="mr-1 inline size-3" />{submittingExecution ? 'Queueing' : 'Execute'}</button>{executionError && <p role="alert" className="mt-2 font-mono text-[10px] text-rose-300">{executionError}</p>}</div>
           <div className="mb-3 font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-400">Investigation timeline</div>

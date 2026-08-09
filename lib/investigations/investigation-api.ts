@@ -43,6 +43,7 @@ export interface InvestigationSessionApiDependencies extends InvestigationApiDep
 
 export interface InvestigationExecutionApiDependencies extends InvestigationApiDependencies {
   readonly admitExecution: (request: Request, sessionId: string) => Promise<Response>
+  readonly ensureSession?: (request: Request, investigationId: string) => Promise<Response>
   readonly startExecution?: (executionId: string, sessionId: string) => Promise<{ readonly accepted: boolean }>
 }
 
@@ -336,21 +337,43 @@ export function createInvestigationExecutionApi(dependencies: InvestigationExecu
         const investigation = await dependencies.getStore().get(user, investigationId, { executionLimit: 1, timelineLimit: 1 })
         if (!investigation) return failure(404, 'NOT_FOUND', 'Investigation not found.')
 
-        const admissionRequest = new Request(request.url, {
+        let sessionId = parsed.data.sessionId
+        const ensureAttachedSession = async (): Promise<Response | null> => {
+          if (!dependencies.ensureSession) return null
+          const ensured = await dependencies.ensureSession(new Request(request.url, { method: 'POST' }), investigationId)
+          const ensuredBody: unknown = await ensured.json().catch(() => null)
+          if (!ensured.ok) return json(ensuredBody ?? { ok: false, code: 'SESSION_UNAVAILABLE', message: 'The execution session could not be restored.' }, ensured.status)
+          const session = sessionFromResponse(ensuredBody)
+          if (!session || (session.status !== 'active' && session.status !== 'idle')) return failure(503, 'SESSION_UNAVAILABLE', 'The execution session could not be restored.')
+          sessionId = session.sessionId
+          return null
+        }
+
+        const ensuredFailure = await ensureAttachedSession()
+        if (ensuredFailure) return ensuredFailure
+
+        const admissionRequest = () => new Request(request.url, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ input: parsed.data.input, idempotencyKey: parsed.data.idempotencyKey })
         })
-        const admitted = await dependencies.admitExecution(admissionRequest, parsed.data.sessionId)
-        const admittedBody: unknown = await admitted.json().catch(() => null)
+        let admitted = await dependencies.admitExecution(admissionRequest(), sessionId)
+        let admittedBody: unknown = await admitted.json().catch(() => null)
+        const admittedCode = typeof admittedBody === 'object' && admittedBody !== null && 'code' in admittedBody && typeof admittedBody.code === 'string' ? admittedBody.code : null
+        if (admitted.status === 409 && admittedCode === 'SESSION_TERMINATED' && dependencies.ensureSession) {
+          const recoveryFailure = await ensureAttachedSession()
+          if (recoveryFailure) return recoveryFailure
+          admitted = await dependencies.admitExecution(admissionRequest(), sessionId)
+          admittedBody = await admitted.json().catch(() => null)
+        }
         if (admitted.status < 200 || admitted.status >= 300) return json(admittedBody ?? { ok: false, code: 'EXECUTION_NOT_ADMITTED', message: 'The execution was not admitted.' }, admitted.status)
         if (typeof admittedBody !== 'object' || admittedBody === null) return failure(502, 'INVALID_ADMISSION_RESPONSE', 'The execution admission response was invalid.')
         const body = admittedBody as { ok?: boolean; duplicate?: boolean; job?: { executionId?: string; sessionId?: string } }
-        if (!body.ok || !body.job?.executionId || body.job.sessionId !== parsed.data.sessionId) return failure(502, 'INVALID_ADMISSION_RESPONSE', 'The execution admission response was invalid.')
-        const attached = await dependencies.getStore().attachExecution(user, investigationId, { executionId: body.job.executionId, sessionId: parsed.data.sessionId })
+        if (!body.ok || !body.job?.executionId || body.job.sessionId !== sessionId) return failure(502, 'INVALID_ADMISSION_RESPONSE', 'The execution admission response was invalid.')
+        const attached = await dependencies.getStore().attachExecution(user, investigationId, { executionId: body.job.executionId, sessionId })
         if (!attached) return failure(404, 'NOT_FOUND', 'Investigation not found.')
         if (dependencies.startExecution) {
-          const started = await dependencies.startExecution(body.job.executionId, parsed.data.sessionId)
+          const started = await dependencies.startExecution(body.job.executionId, sessionId)
           if (!started.accepted) return failure(503, 'EXECUTION_NOT_STARTED', 'The execution could not be started.')
         }
         return json({ ok: true, investigationId, execution: attached, job: body.job, duplicate: body.duplicate === true }, admitted.status)

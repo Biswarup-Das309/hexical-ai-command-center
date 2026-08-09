@@ -100,7 +100,11 @@ class ControlledRuntime {
 
 class FakeLeases {
   readonly completed: Array<{ token: string; state: string }> = []
-  constructor(private readonly completion: TTYLeaseCompleteResult = { completed: true, job: undefined as never }) {}
+  constructor(
+    private readonly completion: TTYLeaseCompleteResult = { completed: true, job: undefined as never },
+    private readonly jobKind: 'diagnostic' | 'session_utility' = 'diagnostic',
+    private readonly jobArgv: readonly string[] = ['debug', '--safe-flag']
+  ) {}
 
   async claim(_executionId: TTYExecutionId, _sessionId: TTYSessionId) {
     return {
@@ -109,12 +113,12 @@ class FakeLeases {
         executionId,
         sessionId,
         ownerUserId: session.ownerUserId,
-        kind: 'diagnostic' as const,
+        kind: this.jobKind,
         status: 'leased' as const,
         createdAt: session.createdAt,
         admittedAt: session.createdAt,
         authorizationScopeId: null,
-        argv: ['debug', '--safe-flag'],
+        argv: this.jobArgv,
         resource: { maxExecutionDurationMs: session.limits.maxExecutionDurationMs, maxOutputBytes: session.limits.maxOutputBytesPerExecution },
         attempt: 1,
         lease: { workerId, token: 'secret-renewal-token', leaseId: 'opaque-lease-id' as never, claimedAtMs: 1_000, renewedAtMs: 1_000, expiresAtMs: Date.now() + 60_000, maxExpiresAtMs: Date.now() + 300_000 }
@@ -177,6 +181,18 @@ test('coordinator runs a leased job through streaming to success without persist
   assert.equal(runtime.started[0]?.file, 'debug')
   assert.deepEqual(runtime.started[0]?.args, ['--safe-flag'])
   assert.equal(runtime.cleaned.length, 1)
+})
+
+test('coordinator executes non-process session utilities through a trusted virtual runtime', async () => {
+  const runtime = new ControlledRuntime()
+  const leases = new FakeLeases({ completed: true, job: undefined as never }, 'session_utility', ['history', '--ignored'])
+  const coordinator = new TTYExecutionCoordinator(dependencies(runtime, leases))
+  const result = await coordinator.run(executionId, sessionId)
+
+  assert.equal(result.accepted, true)
+  if (result.accepted) assert.equal(result.state.state, 'succeeded')
+  assert.equal(runtime.started[0]?.file, process.execPath)
+  assert.deepEqual(runtime.started[0]?.args.slice(0, 1), ['-e'])
 })
 
 test('coordinator cancellation stops the owned process and is idempotent', async () => {

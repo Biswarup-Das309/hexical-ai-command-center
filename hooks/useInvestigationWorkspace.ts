@@ -297,7 +297,6 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
 
   const ensureSession = useCallback(async (): Promise<string | null> => {
     if (!resolvedInvestigationId) return null
-    if (data?.investigation.ttySessionId) return data.investigation.ttySessionId
     if (sessionProvisionRef.current) return sessionProvisionRef.current
 
     let sessionId: string | null = null
@@ -322,7 +321,7 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
     } finally {
       if (sessionProvisionRef.current === provision) sessionProvisionRef.current = null
     }
-  }, [data?.investigation.ttySessionId, queueMutation, resolvedInvestigationId])
+  }, [queueMutation, resolvedInvestigationId])
 
   const terminateSession = useCallback(async () => {
     if (!resolvedInvestigationId) return
