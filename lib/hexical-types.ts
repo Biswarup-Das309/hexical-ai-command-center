@@ -13,6 +13,7 @@
 import { z } from 'zod';
 
 export type UserTargetId = string & { readonly __brand: unique symbol };
+export type UserId = string & { readonly __brand: unique symbol };
 export type WorkspaceId = string & { readonly __brand: unique symbol };
 export type ProjectId = string & { readonly __brand: unique symbol };
 export type ScanId = string & { readonly __brand: unique symbol };

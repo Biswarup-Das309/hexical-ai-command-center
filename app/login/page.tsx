@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { createSupabaseClient } from '@/lib/supabase';
 import { Loader2 } from 'lucide-react';
 
+const supabase = createSupabaseClient();
+
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');

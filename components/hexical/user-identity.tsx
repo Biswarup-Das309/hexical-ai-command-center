@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react'
 import { createSupabaseClient } from '@/lib/supabase'
 import { LogOut, User } from 'lucide-react'
 
+const supabase = createSupabaseClient()
+
 export function UserIdentity() {
   const [user, setUser] = useState<any>(null)
 

@@ -293,7 +293,7 @@ function getStructuralSignature(node: unknown): string {
 }
 
 function getFindingSignature(f: Finding): string {
-  return `${f.id}:${f.risk || 'UNKNOWN'}:${f.likelihood || 'UNKNOWN'}:${f.fixConfidence ?? 0}`;
+  return `${f.id}:${f.risk || 'UNKNOWN'}:${f.likelihood || 'UNKNOWN'}:${f.boxConfidence ?? 0}`;
 }
 
 function checkFindingsDelta(oldFindings: Finding[], newFindings: Finding[]): boolean {

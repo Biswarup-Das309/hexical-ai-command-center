@@ -69,7 +69,7 @@ import {
     Timestamped,
     Timestamp,
     VersionNumber
-} from "./memory";
+} from "../memory";
 
 /* =============================================================================
  * Global Constants

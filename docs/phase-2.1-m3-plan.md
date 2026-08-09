@@ -81,3 +81,9 @@ Milestone 3E adds `TTYWorkerExecutor` as the single-concurrency execution loop. 
 Startup performs one recovery scan before polling. Shutdown stops discovery, requests idempotent worker cancellation, waits for the active run, and then releases polling resources. A lease loss stops the coordinator runtime and preserves the coordinator's expired state for recovery; coordinator/runtime failures are recorded without exposing payloads or lease tokens. No autoscaling, distributed scheduling, or parallel execution is introduced.
 
 See [`tty-worker-execution.md`](./tty-worker-execution.md) for architecture, lifecycle, ownership, failure modes, recovery behavior, metrics, security, and operational guidance.
+
+## Phase 2.1 release-hardening checkpoint
+
+Release hardening closes repository-wide TypeScript drift, restores missing declared UI dependencies, checks the typed Supabase persistence boundary, and adds a reproducible `verify:tty-release` gate. The operational runbook defines canary rollout, graceful rollback, monitoring, fault injection, and troubleshooting without changing the frozen TTY Runtime v1 contracts.
+
+See [`phase-2.1-release-hardening.md`](./phase-2.1-release-hardening.md) for deployment, rollback, monitoring, fault-injection, and operational procedures.
