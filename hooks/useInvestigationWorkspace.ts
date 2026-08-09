@@ -33,6 +33,7 @@ export interface UseInvestigationWorkspaceResult {
   readonly data: InvestigationWorkspaceData | null
   readonly loading: boolean
   readonly error: string | null
+  readonly sessionFailure: InvestigationSessionFailure | null
   readonly create: (input?: { readonly title?: string; readonly description?: string }) => Promise<string | null>
   readonly refresh: () => Promise<void>
   readonly loadMoreTimeline: () => Promise<void>
@@ -48,6 +49,11 @@ export interface UseInvestigationWorkspaceResult {
   readonly deleteNote: (noteId: string) => Promise<void>
   readonly addBookmark: (bookmark: Omit<InvestigationBookmark, 'bookmarkId' | 'createdAt'>) => Promise<void>
   readonly attachExecution: (input: { readonly sessionId: string; readonly input: string; readonly idempotencyKey: string }) => Promise<string | null>
+}
+
+export interface InvestigationSessionFailure {
+  readonly code: string
+  readonly message: string
 }
 
 const DEFAULT_STORAGE_KEY = 'hexical:workspace:active-investigation'
@@ -71,12 +77,20 @@ function rememberId(key: string, id: string | null): void {
   }
 }
 
+class InvestigationRequestError extends Error {
+  constructor(message: string, readonly code: string) {
+    super(message)
+    this.name = 'InvestigationRequestError'
+  }
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, cache: 'no-store', headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) } })
   const body: unknown = await response.json().catch(() => null)
   if (!response.ok) {
     const message = typeof body === 'object' && body !== null && 'message' in body && typeof body.message === 'string' ? body.message : 'The investigation request failed.'
-    throw new Error(message)
+    const code = typeof body === 'object' && body !== null && 'code' in body && typeof body.code === 'string' ? body.code : 'REQUEST_FAILED'
+    throw new InvestigationRequestError(message, code)
   }
   return body as T
 }
@@ -112,6 +126,7 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
   const [data, setData] = useState<InvestigationWorkspaceData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [sessionFailure, setSessionFailure] = useState<InvestigationSessionFailure | null>(null)
   const loadRequestRef = useRef(0)
   const createInFlightRef = useRef(false)
   const mutationQueueRef = useRef(Promise.resolve())
@@ -179,6 +194,7 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
       if (resolvedInvestigationId !== investigationId) {
         setData(null)
         setError(null)
+        setSessionFailure(null)
       }
       void load(resolvedInvestigationId)
     }
@@ -285,17 +301,23 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
     if (sessionProvisionRef.current) return sessionProvisionRef.current
 
     let sessionId: string | null = null
+    setSessionFailure(null)
     const provision = queueMutation(async () => {
       const response = await requestJson<{ ok: true; investigation: PublicInvestigation; sessionId: string }>(`/api/investigations/${resolvedInvestigationId}/session`, { method: 'POST' })
       sessionId = response.sessionId
       setData(current => current ? { ...current, investigation: { ...current.investigation, ...response.investigation } } : current)
       setError(null)
+      setSessionFailure(null)
     }).then(() => sessionId)
     sessionProvisionRef.current = provision
     try {
       return await provision
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The execution session could not be attached.')
+      const failure: InvestigationSessionFailure = cause instanceof InvestigationRequestError
+        ? { code: cause.code, message: cause.message }
+        : { code: 'SESSION_UNAVAILABLE', message: cause instanceof Error ? cause.message : 'The execution session could not be attached.' }
+      setSessionFailure(failure)
+      setError(failure.message)
       throw cause
     } finally {
       if (sessionProvisionRef.current === provision) sessionProvisionRef.current = null
@@ -372,5 +394,5 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
     return executionId
   }, [load, queueMutation, resolvedInvestigationId])
 
-  return useMemo(() => ({ investigationId: resolvedInvestigationId, data, loading, error, create, refresh, loadMoreTimeline, loadMoreExecutions, rename, archive, restore, remove, ensureSession, terminateSession, addNote, editNote, deleteNote, addBookmark, attachExecution }), [addBookmark, addNote, archive, attachExecution, create, data, deleteNote, editNote, ensureSession, error, loadMoreExecutions, loadMoreTimeline, refresh, remove, rename, resolvedInvestigationId, restore, loading, terminateSession])
+  return useMemo(() => ({ investigationId: resolvedInvestigationId, data, loading, error, sessionFailure, create, refresh, loadMoreTimeline, loadMoreExecutions, rename, archive, restore, remove, ensureSession, terminateSession, addNote, editNote, deleteNote, addBookmark, attachExecution }), [addBookmark, addNote, archive, attachExecution, create, data, deleteNote, editNote, ensureSession, error, loadMoreExecutions, loadMoreTimeline, refresh, remove, rename, resolvedInvestigationId, restore, loading, sessionFailure, terminateSession])
 }

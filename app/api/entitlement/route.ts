@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { createClient } from '@supabase/supabase-js';
+import { resolveWorkspaceEntitlement, type WorkspaceEntitlementProfile } from '@/lib/workspace-entitlement';
 
 export const dynamic = 'force-dynamic'; // never cache this
 
@@ -35,17 +36,11 @@ export async function GET() {
     return NextResponse.json({ tier: 'free', active: false });
   }
 
-  const isExpired = profile.current_period_end
-    ? new Date(profile.current_period_end) < new Date()
-    : true;
-
-  const effectiveTier = profile.subscription_status === 'active' && !isExpired
-    ? profile.tier
-    : 'free';
+  const entitlement = resolveWorkspaceEntitlement(profile as WorkspaceEntitlementProfile);
 
   return NextResponse.json({
-    tier: effectiveTier,
-    active: effectiveTier !== 'free' && effectiveTier !== 'guest',
-    current_period_end: profile.current_period_end,
+    tier: entitlement.tier,
+    active: entitlement.active,
+    current_period_end: entitlement.currentPeriodEnd,
   });
 }
