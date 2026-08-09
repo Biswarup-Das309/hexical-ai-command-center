@@ -13,7 +13,10 @@ import { ttyExecutionStateKey } from '@/lib/tty/tty-worker-keys'
 import { activateTTYExecution } from '@/lib/tty/tty-execution-activator-server'
 import { createInvestigationApi, createInvestigationExecutionApi, createInvestigationSessionApi } from './investigation-api'
 import { InvestigationExecutionSynchronizer } from './investigation-execution-sync'
+import { createInvestigationLogger } from './investigation-logger'
 import { InvestigationStore, type InvestigationRedis } from './investigation-store'
+
+const investigationLogger = createInvestigationLogger()
 
 export function createRedis(): Redis {
   const url = process.env.UPSTASH_REDIS_REST_URL
@@ -34,8 +37,7 @@ export function createInvestigationRedis(redis: Redis): InvestigationRedis {
     zrange: <T extends unknown[]>(key: string, min: number, max: number, options: { readonly rev?: boolean; readonly offset: number; readonly count: number }) => redis.zrange<T>(key, min, max, options),
     zrem: (key, member) => redis.zrem(key, member),
     xadd: (key, id, fields) => redis.xadd(key, id, fields),
-    xrange: (key, start, end, count) => count === undefined ? redis.xrange(key, start, end) : redis.xrange(key, start, end, count),
-    eval: <T>(script: string, keys: readonly string[], args: readonly string[]) => redis.eval<unknown[]>(script, [...keys], [...args]).then(value => value as T)
+    xrange: (key, start, end, count) => count === undefined ? redis.xrange(key, start, end) : redis.xrange(key, start, end, count)
   }
 }
 
@@ -71,7 +73,8 @@ export function createInvestigationApiForRequest() {
     terminateInvestigationSession: async sessionId => {
       const response = await lifecycle.terminate(new Request(`http://localhost/api/tty/sessions/${sessionId}`, { method: 'DELETE' }), sessionId as never)
       if (!response.ok) throw new Error('TTY session termination failed.')
-    }
+    },
+    logger: investigationLogger
   })
 }
 
@@ -83,22 +86,18 @@ export function createInvestigationSessionApiForRequest() {
     getStore: () => store,
     createTTYSession: request => lifecycle.create(request),
     getTTYSession: (request, sessionId) => lifecycle.get(request, sessionId as never),
-    terminateTTYSession: (request, sessionId) => lifecycle.terminate(request, sessionId as never)
+    terminateTTYSession: (request, sessionId) => lifecycle.terminate(request, sessionId as never),
+    logger: investigationLogger
   })
 }
 
 export function createInvestigationExecutionApiForRequest() {
   const redis = createRedis()
-  const store = new InvestigationStore(createInvestigationRedis(redis))
-  const sessionApi = createInvestigationSessionApiForRequest()
   return createInvestigationExecutionApi({
     authenticate: async () => (await auth()).userId ?? null,
-    getStore: () => store,
-    ensureSession: (request, investigationId) => sessionApi.ensure(request, investigationId),
+    getStore: () => new InvestigationStore(createInvestigationRedis(redis)),
     admitExecution: (request, sessionId) => createTTYAdmissionApiForRequest({ activate: false }).admit(request, sessionId),
-    startExecution: async (executionId, sessionId, options) => {
-      const result = await activateTTYExecution(executionId, sessionId, options)
-      return { accepted: result.accepted, state: result.state?.state ?? null, reason: result.reason }
-    }
+    startExecution: activateTTYExecution,
+    logger: investigationLogger
   })
 }

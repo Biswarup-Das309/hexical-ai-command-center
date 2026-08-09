@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
-import { log, requestCorrelationId } from '@/lib/hexical/telemetry'
-
+import { NOOP_INVESTIGATION_LOGGER, newRequestId, type InvestigationLogger } from './investigation-logger'
+import { resolveCanonicalInvestigation } from './investigation-resolver'
 import type { InvestigationStore } from './investigation-store'
 import type {
   InvestigationBookmark,
@@ -28,13 +28,14 @@ const NO_STORE_HEADERS = {
   'Content-Type': 'application/json'
 } as const
 
-type Store = Pick<InvestigationStore, 'create' | 'list' | 'get' | 'patch' | 'delete' | 'attachSession' | 'clearSession' | 'recordBookmark' | 'recordNote' | 'updateNote' | 'deleteNote' | 'attachExecution'>
+type Store = Pick<InvestigationStore, 'create' | 'list' | 'get' | 'patch' | 'delete' | 'attachSession' | 'clearSession' | 'recordBookmark' | 'recordNote' | 'updateNote' | 'deleteNote' | 'attachExecution' | 'diagnoseAbsence'>
 
 export interface InvestigationApiDependencies {
   readonly authenticate: () => Promise<string | null>
   readonly getStore: () => Store
   readonly synchronize?: (ownerUserId: string, investigationId: InvestigationId) => Promise<void>
   readonly terminateInvestigationSession?: (sessionId: string) => Promise<void>
+  readonly logger?: InvestigationLogger
 }
 
 export interface InvestigationSessionApiDependencies extends InvestigationApiDependencies {
@@ -45,8 +46,7 @@ export interface InvestigationSessionApiDependencies extends InvestigationApiDep
 
 export interface InvestigationExecutionApiDependencies extends InvestigationApiDependencies {
   readonly admitExecution: (request: Request, sessionId: string) => Promise<Response>
-  readonly ensureSession?: (request: Request, investigationId: string) => Promise<Response>
-  readonly startExecution?: (executionId: string, sessionId: string, options?: { readonly correlationId?: string }) => Promise<{ readonly accepted: boolean; readonly state?: string | null; readonly reason?: string }>
+  readonly startExecution?: (executionId: string, sessionId: string) => Promise<{ readonly accepted: boolean }>
 }
 
 function json(body: unknown, status: number): Response {
@@ -149,8 +149,20 @@ export function createInvestigationApi(dependencies: InvestigationApiDependencie
         if (parsedExecutionLimit !== undefined && (!Number.isSafeInteger(parsedExecutionLimit) || parsedExecutionLimit < 1 || parsedExecutionLimit > 50)) return failure(400, 'INVALID_PAGINATION', 'The execution page size is invalid.')
         if (timelineCursor !== null && !/^\d+-\d+$/.test(timelineCursor)) return failure(400, 'INVALID_PAGINATION', 'The timeline cursor is invalid.')
         if (executionCursor !== null && !/^\d+$/.test(executionCursor)) return failure(400, 'INVALID_PAGINATION', 'The execution cursor is invalid.')
+        const requestId = newRequestId()
+        const logger = dependencies.logger ?? NOOP_INVESTIGATION_LOGGER
         await dependencies.synchronize?.(user, investigationId)
-        const hydration = await dependencies.getStore().get(user, investigationId, { timelineCursor, timelineLimit: parsedTimelineLimit, executionCursor, executionLimit: parsedExecutionLimit })
+        const hydration = await resolveCanonicalInvestigation(
+          dependencies.getStore(),
+          user,
+          investigationId,
+          { timelineCursor, timelineLimit: parsedTimelineLimit, executionCursor, executionLimit: parsedExecutionLimit },
+          {
+            onMiss: attempt => logger.warn('investigation.hydrate_miss_retry', { requestId, investigationId, userId: user, attempt }),
+            onRecovered: attempt => logger.info('investigation.hydrate_recovered', { requestId, investigationId, userId: user, attempt })
+          }
+        )
+        if (!hydration) logger.warn('investigation.hydrate_not_found', { requestId, investigationId, userId: user })
         return hydration ? json({ ok: true, ...publicHydration(hydration) }, 200) : failure(404, 'NOT_FOUND', 'Investigation not found.')
       } catch {
         return failure(500, 'INTERNAL_ERROR', 'The investigation could not be loaded.')
@@ -261,6 +273,8 @@ function emptyRequest(url: string, method: 'GET' | 'POST' | 'DELETE'): Request {
 export function createInvestigationSessionApi(dependencies: InvestigationSessionApiDependencies) {
   return {
     async ensure(request: Request, rawId: string): Promise<Response> {
+      const requestId = newRequestId()
+      const logger = dependencies.logger ?? NOOP_INVESTIGATION_LOGGER
       try {
         const user = await requireUser(dependencies)
         if (user instanceof Response) return user
@@ -268,39 +282,88 @@ export function createInvestigationSessionApi(dependencies: InvestigationSession
         const investigationId = parseId(rawId)
         if (!investigationId) return failure(400, 'INVALID_INVESTIGATION_ID', 'The investigation identifier is invalid.')
         const store = dependencies.getStore()
-        const hydration = await store.get(user, investigationId, { timelineLimit: 1, executionLimit: 1 })
-        if (!hydration) return failure(404, 'NOT_FOUND', 'Investigation not found.')
+
+        // Canonical resolution: identical lookup + retry semantics as workspace hydration.
+        // This is what closes the split-brain where the workspace GET (issued a beat
+        // earlier, or after a retry) sees the investigation but a session POST racing
+        // close behind a create/patch does not yet observe the write.
+        const hydration = await resolveCanonicalInvestigation(
+          store,
+          user,
+          investigationId,
+          { timelineLimit: 1, executionLimit: 1 },
+          {
+            onMiss: attempt => logger.warn('investigation.session_resolve_miss_retry', { requestId, investigationId, userId: user, attempt }),
+            onRecovered: attempt => logger.info('investigation.session_resolve_recovered', { requestId, investigationId, userId: user, attempt })
+          }
+        )
+        if (!hydration) {
+          // Categorize the 404 instead of just logging that it happened. This is what turns
+          // "root cause: replica lag" from a hypothesis into something the next occurrence can
+          // actually confirm or falsify: absent/owner_mismatch/deleted are innocent, expected
+          // 404s; owner_matches_active_but_unresolved has no innocent explanation and means the
+          // retry-bounded resolver genuinely failed to see a record that demonstrably exists,
+          // is owned by this user, and is active — which would rule replica lag in (if a later
+          // read succeeds) or point at a different, real bug (if it doesn't).
+          const diagnosis = await store.diagnoseAbsence(investigationId, user)
+          const reason = !diagnosis.present ? 'absent' : !diagnosis.ownerMatches ? 'owner_mismatch' : diagnosis.status === 'deleted' ? 'deleted' : 'owner_matches_active_but_unresolved'
+          logger.warn('investigation.session_ensure_not_found', { requestId, investigationId, userId: user, reason })
+          return failure(404, 'NOT_FOUND', 'Investigation not found.')
+        }
 
         const existingSessionId = hydration.investigation.ttySessionId
         if (existingSessionId) {
+          logger.info('investigation.session_ensure_existing_reference', { requestId, investigationId, userId: user, sessionId: existingSessionId })
           const existingResponse = await dependencies.getTTYSession(emptyRequest(request.url, 'GET'), existingSessionId)
           const existingBody: unknown = await existingResponse.json().catch(() => null)
           const existing = sessionFromResponse(existingBody)
-          if (existingResponse.ok && existing && (existing.status === 'active' || existing.status === 'idle')) return json({ ok: true, investigation: publicRecord(hydration.investigation), sessionId: existing.sessionId, reused: true }, 200)
-          if (existingResponse.status >= 500) return failure(503, 'SESSION_UNAVAILABLE', 'The execution session could not be restored.')
+          if (existingResponse.ok && existing?.status === 'active') {
+            logger.info('investigation.session_ensure_reused', { requestId, investigationId, userId: user, sessionId: existing.sessionId })
+            return json({ ok: true, investigation: publicRecord(hydration.investigation), sessionId: existing.sessionId, reused: true }, 200)
+          }
+          if (existingResponse.status >= 500) {
+            logger.error('investigation.session_ensure_restore_failed', { requestId, investigationId, userId: user, sessionId: existingSessionId, status: existingResponse.status })
+            return failure(503, 'SESSION_UNAVAILABLE', 'The execution session could not be restored.')
+          }
+          // Stale index: the investigation record still points at a TTY session that no
+          // longer exists (expired, worker-recycled, or already terminated). Self-heal by
+          // clearing the reference before minting a replacement, instead of surfacing a 404.
+          logger.warn('investigation.session_ensure_stale_reference_repaired', { requestId, investigationId, userId: user, sessionId: existingSessionId, status: existingResponse.status })
           await store.clearSession(user, investigationId)
         }
 
         const createdResponse = await dependencies.createTTYSession(emptyRequest(request.url, 'POST'))
         const createdBody: unknown = await createdResponse.json().catch(() => null)
         const created = sessionFromResponse(createdBody)
-        if (!createdResponse.ok || !created) return json(createdBody ?? { ok: false, code: 'SESSION_NOT_CREATED', message: 'The execution session could not be created.' }, createdResponse.status)
+        if (!createdResponse.ok || !created) {
+          logger.error('investigation.session_ensure_create_failed', { requestId, investigationId, userId: user, status: createdResponse.status })
+          return json(createdBody ?? { ok: false, code: 'SESSION_NOT_CREATED', message: 'The execution session could not be created.' }, createdResponse.status)
+        }
+
         const attached = await store.attachSession(user, investigationId, created.sessionId)
         if (!attached) {
+          logger.error('investigation.session_ensure_attach_lost_ownership', { requestId, investigationId, userId: user, sessionId: created.sessionId })
           await dependencies.terminateTTYSession(emptyRequest(request.url, 'DELETE'), created.sessionId).catch(() => {})
           return failure(404, 'NOT_FOUND', 'Investigation not found.')
         }
         if (attached.ttySessionId !== created.sessionId) {
+          // Idempotent concurrent-create: another in-flight request won the attach race.
+          // Terminate our redundant session and hand back the surviving one.
+          logger.info('investigation.session_ensure_concurrent_create_deduped', { requestId, investigationId, userId: user, sessionId: attached.ttySessionId, discardedSessionId: created.sessionId })
           await dependencies.terminateTTYSession(emptyRequest(request.url, 'DELETE'), created.sessionId).catch(() => {})
           return json({ ok: true, investigation: publicRecord(attached), sessionId: attached.ttySessionId, reused: true }, 200)
         }
+        logger.info('investigation.session_ensure_created', { requestId, investigationId, userId: user, sessionId: created.sessionId })
         return json({ ok: true, investigation: publicRecord(attached), sessionId: created.sessionId, reused: false }, 201)
-      } catch {
+      } catch (error) {
+        logger.error('investigation.session_ensure_internal_error', { requestId, investigationId: rawId, message: error instanceof Error ? error.message : String(error) })
         return failure(500, 'INTERNAL_ERROR', 'The execution session could not be attached.')
       }
     },
 
     async terminate(request: Request, rawId: string): Promise<Response> {
+      const requestId = newRequestId()
+      const logger = dependencies.logger ?? NOOP_INVESTIGATION_LOGGER
       try {
         const user = await requireUser(dependencies)
         if (user instanceof Response) return user
@@ -308,18 +371,24 @@ export function createInvestigationSessionApi(dependencies: InvestigationSession
         const investigationId = parseId(rawId)
         if (!investigationId) return failure(400, 'INVALID_INVESTIGATION_ID', 'The investigation identifier is invalid.')
         const store = dependencies.getStore()
-        const hydration = await store.get(user, investigationId, { timelineLimit: 1, executionLimit: 1 })
-        if (!hydration) return failure(404, 'NOT_FOUND', 'Investigation not found.')
+        const hydration = await resolveCanonicalInvestigation(store, user, investigationId, { timelineLimit: 1, executionLimit: 1 })
+        if (!hydration) {
+          logger.warn('investigation.session_terminate_not_found', { requestId, investigationId, userId: user })
+          return failure(404, 'NOT_FOUND', 'Investigation not found.')
+        }
         const sessionId = hydration.investigation.ttySessionId
         if (!sessionId) return json({ ok: true, investigation: publicRecord(hydration.investigation), terminated: false }, 200)
         const terminatedResponse = await dependencies.terminateTTYSession(emptyRequest(request.url, 'DELETE'), sessionId)
         if (!terminatedResponse.ok) {
           const body: unknown = await terminatedResponse.json().catch(() => null)
+          logger.error('investigation.session_terminate_failed', { requestId, investigationId, userId: user, sessionId, status: terminatedResponse.status })
           return json(body ?? { ok: false, code: 'SESSION_NOT_TERMINATED', message: 'The execution session could not be terminated.' }, terminatedResponse.status)
         }
         const investigation = await store.clearSession(user, investigationId)
+        logger.info('investigation.session_terminated', { requestId, investigationId, userId: user, sessionId })
         return investigation ? json({ ok: true, investigation: publicRecord(investigation), terminated: true }, 200) : failure(404, 'NOT_FOUND', 'Investigation not found.')
-      } catch {
+      } catch (error) {
+        logger.error('investigation.session_terminate_internal_error', { requestId, investigationId: rawId, message: error instanceof Error ? error.message : String(error) })
         return failure(500, 'INTERNAL_ERROR', 'The execution session could not be terminated.')
       }
     }
@@ -336,73 +405,27 @@ export function createInvestigationExecutionApi(dependencies: InvestigationExecu
         if (!investigationId) return failure(400, 'INVALID_INVESTIGATION_ID', 'The investigation identifier is invalid.')
         const parsed = ATTACH_SCHEMA.safeParse(await parseJsonBody(request))
         if (!parsed.success) return failure(400, 'INVALID_INPUT', 'The execution attachment payload is invalid.')
-        const investigation = await dependencies.getStore().get(user, investigationId, { executionLimit: 1, timelineLimit: 1 })
+        const investigation = await resolveCanonicalInvestigation(dependencies.getStore(), user, investigationId, { executionLimit: 1, timelineLimit: 1 })
         if (!investigation) return failure(404, 'NOT_FOUND', 'Investigation not found.')
-        const correlationId = requestCorrelationId(request)
 
-        let sessionId = parsed.data.sessionId
-        const ensureAttachedSession = async (): Promise<Response | null> => {
-          if (!dependencies.ensureSession) return null
-          const ensured = await dependencies.ensureSession(new Request(request.url, { method: 'POST' }), investigationId)
-          const ensuredBody: unknown = await ensured.json().catch(() => null)
-          if (!ensured.ok) return json(ensuredBody ?? { ok: false, code: 'SESSION_UNAVAILABLE', message: 'The execution session could not be restored.' }, ensured.status)
-          const session = sessionFromResponse(ensuredBody)
-          if (!session || (session.status !== 'active' && session.status !== 'idle')) return failure(503, 'SESSION_UNAVAILABLE', 'The execution session could not be restored.')
-          sessionId = session.sessionId
-          return null
-        }
-
-        const ensuredFailure = await ensureAttachedSession()
-        if (ensuredFailure) return ensuredFailure
-
-        const admissionRequest = () => new Request(request.url, {
+        const admissionRequest = new Request(request.url, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', 'x-request-id': correlationId },
+          headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ input: parsed.data.input, idempotencyKey: parsed.data.idempotencyKey })
         })
-        let admitted = await dependencies.admitExecution(admissionRequest(), sessionId)
-        let admittedBody: unknown = await admitted.json().catch(() => null)
-        const admittedCode = typeof admittedBody === 'object' && admittedBody !== null && 'code' in admittedBody && typeof admittedBody.code === 'string' ? admittedBody.code : null
-        // A session can expire between the ensure read and the atomic
-        // admission script.  Both terminal and missing-session outcomes are
-        // recoverable once; anything else must remain fail-closed.
-        const recoverableSessionFailure = dependencies.ensureSession && (
-          (admitted.status === 409 && admittedCode === 'SESSION_TERMINATED') ||
-          (admitted.status === 404 && admittedCode === 'SESSION_NOT_FOUND')
-        )
-        if (recoverableSessionFailure) {
-          const recoveryFailure = await ensureAttachedSession()
-          if (recoveryFailure) return recoveryFailure
-          admitted = await dependencies.admitExecution(admissionRequest(), sessionId)
-          admittedBody = await admitted.json().catch(() => null)
-        }
+        const admitted = await dependencies.admitExecution(admissionRequest, parsed.data.sessionId)
+        const admittedBody: unknown = await admitted.json().catch(() => null)
         if (admitted.status < 200 || admitted.status >= 300) return json(admittedBody ?? { ok: false, code: 'EXECUTION_NOT_ADMITTED', message: 'The execution was not admitted.' }, admitted.status)
         if (typeof admittedBody !== 'object' || admittedBody === null) return failure(502, 'INVALID_ADMISSION_RESPONSE', 'The execution admission response was invalid.')
         const body = admittedBody as { ok?: boolean; duplicate?: boolean; job?: { executionId?: string; sessionId?: string } }
-        if (!body.ok || !body.job?.executionId || body.job.sessionId !== sessionId) return failure(502, 'INVALID_ADMISSION_RESPONSE', 'The execution admission response was invalid.')
-        const attached = await dependencies.getStore().attachExecution(user, investigationId, { executionId: body.job.executionId, sessionId })
+        if (!body.ok || !body.job?.executionId || body.job.sessionId !== parsed.data.sessionId) return failure(502, 'INVALID_ADMISSION_RESPONSE', 'The execution admission response was invalid.')
+        const attached = await dependencies.getStore().attachExecution(user, investigationId, { executionId: body.job.executionId, sessionId: parsed.data.sessionId })
         if (!attached) return failure(404, 'NOT_FOUND', 'Investigation not found.')
-        log.info('investigation.execution.attached', { investigationId, executionId: body.job.executionId, sessionId, duplicate: body.duplicate === true, correlationId })
-        let activationPending = false
         if (dependencies.startExecution) {
-          const started = await dependencies.startExecution(body.job.executionId, sessionId, { correlationId })
-          if (!started.accepted) {
-            // The investigation attachment and TTY admission are already
-            // durable.  Return the queued execution instead of a misleading
-            // 503 that invites a duplicate submission; a worker can claim it
-            // once the transient activation failure clears.
-            activationPending = true
-            log.warn('investigation.execution.activation_pending', {
-              investigationId,
-              executionId: body.job.executionId,
-              sessionId,
-              state: started.state ?? 'queued',
-              reason: started.reason ?? 'activation_rejected',
-              correlationId
-            })
-          }
+          const started = await dependencies.startExecution(body.job.executionId, parsed.data.sessionId)
+          if (!started.accepted) return failure(503, 'EXECUTION_NOT_STARTED', 'The execution could not be started.')
         }
-        return json({ ok: true, investigationId, execution: attached, job: body.job, duplicate: body.duplicate === true, ...(activationPending ? { activationPending: true } : {}) }, admitted.status)
+        return json({ ok: true, investigationId, execution: attached, job: body.job, duplicate: body.duplicate === true }, admitted.status)
       } catch {
         return failure(500, 'INTERNAL_ERROR', 'The execution could not be attached to the investigation.')
       }

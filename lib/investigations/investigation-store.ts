@@ -23,97 +23,10 @@ import type {
   InvestigationTimelineEvent,
   InvestigationTimelineEventType
 } from './investigation-types'
-import { canTransitionInvestigationExecutionState } from './investigation-types'
 
 const MAX_LIST_LIMIT = 50
 const MAX_EXECUTION_LIMIT = 50
 const MAX_TIMELINE_LIMIT = 100
-
-const PATCH_INVESTIGATION_SCRIPT = `-- hexical:investigation:patch
-local raw = redis.call('GET', KEYS[1])
-if not raw then return {0, 'missing'} end
-local current = cjson.decode(raw)
-if current.ownerUserId ~= ARGV[1] or current.status == 'deleted' then return {0, 'missing'} end
-if ARGV[2] == '1' then current.title = ARGV[3] end
-if ARGV[4] == '1' then current.description = ARGV[5] end
-if ARGV[6] == '1' then current.status = ARGV[7] end
-current.updatedAt = ARGV[8]
-if current.status == 'archived' then
-  if not current.archivedAt or current.archivedAt == cjson.null then current.archivedAt = ARGV[8] end
-else
-  current.archivedAt = cjson.null
-end
-local serialized = cjson.encode(current)
-redis.call('SET', KEYS[1], serialized)
-return {1, serialized}`
-
-const DELETE_INVESTIGATION_SCRIPT = `-- hexical:investigation:delete
-local raw = redis.call('GET', KEYS[1])
-if not raw then return {0, 'missing'} end
-local current = cjson.decode(raw)
-if current.ownerUserId ~= ARGV[1] or current.status == 'deleted' then return {0, 'missing'} end
-current.status = 'deleted'
-current.updatedAt = ARGV[2]
-if not current.archivedAt or current.archivedAt == cjson.null then current.archivedAt = ARGV[2] end
-local serialized = cjson.encode(current)
-redis.call('SET', KEYS[1], serialized)
-redis.call('ZREM', KEYS[2], current.investigationId)
-redis.call('DEL', KEYS[3])
-return {1, serialized}`
-
-const ATTACH_SESSION_SCRIPT = `-- hexical:investigation:attach-session
-local raw = redis.call('GET', KEYS[1])
-if not raw then return {0, 'missing'} end
-local current = cjson.decode(raw)
-if current.ownerUserId ~= ARGV[1] or current.status == 'deleted' then return {0, 'missing'} end
-if current.ttySessionId and current.ttySessionId ~= cjson.null then return {2, raw} end
-local bound = redis.call('GET', KEYS[2])
-if not bound then
-  bound = ARGV[2]
-  redis.call('SET', KEYS[2], bound)
-end
-current.ttySessionId = bound
-current.updatedAt = ARGV[3]
-local serialized = cjson.encode(current)
-redis.call('SET', KEYS[1], serialized)
-return {1, serialized}`
-
-const CLEAR_SESSION_SCRIPT = `-- hexical:investigation:clear-session
-local raw = redis.call('GET', KEYS[1])
-if not raw then return {0, 'missing'} end
-local current = cjson.decode(raw)
-if current.ownerUserId ~= ARGV[1] or current.status == 'deleted' then return {0, 'missing'} end
-if not current.ttySessionId or current.ttySessionId == cjson.null then return {1, raw} end
-if current.ttySessionId ~= ARGV[2] then return {2, raw} end
-current.ttySessionId = cjson.null
-current.updatedAt = ARGV[3]
-local serialized = cjson.encode(current)
-redis.call('SET', KEYS[1], serialized)
-redis.call('DEL', KEYS[2])
-return {1, serialized}`
-
-const ATTACH_EXECUTION_SCRIPT = `-- hexical:investigation:attach-execution
-local raw = redis.call('GET', KEYS[1])
-if not raw then return {0, 'missing'} end
-local current = cjson.decode(raw)
-if current.ownerUserId ~= ARGV[1] or current.status == 'deleted' then return {0, 'missing'} end
-local existing = redis.call('GET', KEYS[2])
-if existing then return {2, existing} end
-redis.call('SET', KEYS[2], ARGV[2])
-redis.call('ZADD', KEYS[3], ARGV[4], ARGV[3])
-redis.call('INCR', KEYS[4])
-return {1, ARGV[2]}`
-
-const UPDATE_EXECUTION_SCRIPT = `-- hexical:investigation:update-execution
-local raw = redis.call('GET', KEYS[1])
-if not raw then return {0, 'missing'} end
-local current = cjson.decode(raw)
-if current.ownerUserId ~= ARGV[1] or current.status == 'deleted' then return {0, 'missing'} end
-local existing = redis.call('GET', KEYS[2])
-if not existing then return {0, 'missing'} end
-if existing ~= ARGV[2] then return {2, existing} end
-redis.call('SET', KEYS[2], ARGV[3])
-return {1, ARGV[3]}`
 
 export interface InvestigationRedis {
   readonly get: <T = unknown>(key: string) => Promise<T | null>
@@ -127,7 +40,6 @@ export interface InvestigationRedis {
   readonly zrem: (key: string, member: string) => Promise<number>
   readonly xadd: (key: string, id: '*', fields: Record<string, string>) => Promise<string>
   readonly xrange: (key: string, start: string, end: string, count?: number) => Promise<unknown>
-  readonly eval: (script: string, keys: readonly string[], args: readonly string[]) => Promise<unknown>
 }
 
 interface StoredTimelineFields {
@@ -156,11 +68,6 @@ function parseJson<T>(value: unknown): T | null {
     }
   }
   return value as T
-}
-
-function scriptResult(value: unknown): { readonly code: number; readonly value: string } | null {
-  if (!Array.isArray(value) || typeof value[0] !== 'number' || typeof value[1] !== 'string') return null
-  return { code: value[0], value: value[1] }
 }
 
 function safeCursor(value: string | null | undefined): number {
@@ -380,19 +287,16 @@ export class InvestigationStore {
   async patch(ownerUserId: string, investigationId: InvestigationId, input: InvestigationPatchInput, now = new Date().toISOString()): Promise<InvestigationRecord | null> {
     const current = await this.readRecord(investigationId, ownerUserId)
     if (!current || current.status === 'deleted') return null
-    const result = scriptResult(await this.redis.eval(PATCH_INVESTIGATION_SCRIPT, [investigationRecordKey(investigationId)], [
-      ownerUserId,
-      input.title === undefined ? '0' : '1',
-      input.title ?? '',
-      input.description === undefined ? '0' : '1',
-      input.description ?? '',
-      input.status === undefined ? '0' : '1',
-      input.status ?? '',
-      now
-    ]))
-    if (!result || result.code === 0) return null
-    const next = parseJson<InvestigationRecord>(result.value)
-    if (!next) return null
+    const nextStatus = input.status ?? current.status
+    const next: InvestigationRecord = {
+      ...current,
+      title: input.title ?? current.title,
+      description: input.description ?? current.description,
+      status: nextStatus,
+      updatedAt: now,
+      archivedAt: nextStatus === 'archived' ? current.archivedAt ?? now : null
+    }
+    await this.redis.set(investigationRecordKey(investigationId), JSON.stringify(next))
     if (next.title !== current.title) {
       await this.appendTimeline(investigationId, 'investigation_renamed', { title: next.title }, { dedupeKey: `rename:${now}:${next.title}`, occurredAt: now })
     }
@@ -403,62 +307,61 @@ export class InvestigationStore {
   }
 
   async delete(ownerUserId: string, investigationId: InvestigationId, now = new Date().toISOString()): Promise<boolean> {
-    const result = scriptResult(await this.redis.eval(DELETE_INVESTIGATION_SCRIPT, [
-      investigationRecordKey(investigationId),
-      investigationOwnerIndexKey(ownerUserId),
-      investigationSessionKey(investigationId)
-    ], [ownerUserId, now]))
-    if (!result || result.code === 0) return false
+    const current = await this.readRecord(investigationId, ownerUserId)
+    if (!current || current.status === 'deleted') return false
+    const deleted: InvestigationRecord = { ...current, status: 'deleted', updatedAt: now, archivedAt: current.archivedAt ?? now }
+    await this.redis.set(investigationRecordKey(investigationId), JSON.stringify(deleted))
     await this.appendTimeline(investigationId, 'investigation_deleted', {}, { dedupeKey: `deleted:${now}`, occurredAt: now })
+    await this.redis.zrem(investigationOwnerIndexKey(ownerUserId), investigationId)
+    await this.redis.del(investigationSessionKey(investigationId))
     return true
   }
 
   async attachSession(ownerUserId: string, investigationId: InvestigationId, sessionId: string, now = new Date().toISOString()): Promise<InvestigationRecord | null> {
-    const result = scriptResult(await this.redis.eval(ATTACH_SESSION_SCRIPT, [
-      investigationRecordKey(investigationId),
-      investigationSessionKey(investigationId)
-    ], [ownerUserId, sessionId, now]))
-    if (!result || result.code === 0) return null
-    const next = parseJson<InvestigationRecord>(result.value)
-    if (!next) return null
-    if (result.code === 1 && next.ttySessionId) {
-      await this.appendTimeline(investigationId, 'session_attached', { sessionId: next.ttySessionId }, { dedupeKey: `session-attached:${next.ttySessionId}`, occurredAt: now })
-    }
-    return this.readRecord(investigationId, ownerUserId)
+    const current = await this.readRecord(investigationId, ownerUserId)
+    if (!current || current.status === 'deleted') return null
+    if (current.ttySessionId) return current
+
+    const sessionKey = investigationSessionKey(investigationId)
+    const inserted = await this.redis.set(sessionKey, sessionId, { nx: true })
+    const persistedSessionId = inserted === null ? await this.redis.get<string>(sessionKey) : sessionId
+    if (!persistedSessionId) return null
+    if (current.ttySessionId === persistedSessionId) return current
+
+    const next: InvestigationRecord = { ...current, ttySessionId: persistedSessionId, updatedAt: now }
+    await this.redis.set(investigationRecordKey(investigationId), JSON.stringify(next))
+    await this.appendTimeline(investigationId, 'session_attached', { sessionId: persistedSessionId }, { dedupeKey: `session-attached:${persistedSessionId}`, occurredAt: now })
+    return next
   }
 
   async clearSession(ownerUserId: string, investigationId: InvestigationId, now = new Date().toISOString()): Promise<InvestigationRecord | null> {
     const current = await this.readRecord(investigationId, ownerUserId)
-    if (!current || current.status === 'deleted' || !current.ttySessionId) return current
-    const result = scriptResult(await this.redis.eval(CLEAR_SESSION_SCRIPT, [
-      investigationRecordKey(investigationId),
-      investigationSessionKey(investigationId)
-    ], [ownerUserId, current.ttySessionId, now]))
-    if (!result || result.code === 0) return null
-    const next = parseJson<InvestigationRecord>(result.value)
-    if (!next) return null
-    if (result.code === 1 && current.ttySessionId !== next.ttySessionId) {
-      await this.appendTimeline(investigationId, 'session_terminated', { sessionId: current.ttySessionId }, { dedupeKey: `session-terminated:${current.ttySessionId}`, occurredAt: now })
-    }
-    return this.readRecord(investigationId, ownerUserId)
+    if (!current || current.status === 'deleted') return null
+    if (!current.ttySessionId) return current
+    const sessionId = current.ttySessionId
+    const next: InvestigationRecord = { ...current, ttySessionId: null, updatedAt: now }
+    await Promise.all([
+      this.redis.set(investigationRecordKey(investigationId), JSON.stringify(next)),
+      this.redis.del(investigationSessionKey(investigationId))
+    ])
+    await this.appendTimeline(investigationId, 'session_terminated', { sessionId }, { dedupeKey: `session-terminated:${sessionId}`, occurredAt: now })
+    return next
   }
 
   async attachExecution(ownerUserId: string, investigationId: InvestigationId, input: InvestigationExecutionAttachmentInput): Promise<InvestigationExecution | null> {
+    const investigation = await this.readRecord(investigationId, ownerUserId)
+    if (!investigation || investigation.status === 'deleted') return null
     const now = input.attachedAt ?? new Date().toISOString()
     const execution = toStoredExecution(input, now)
-    const result = scriptResult(await this.redis.eval(ATTACH_EXECUTION_SCRIPT, [
-      investigationRecordKey(investigationId),
-      investigationExecutionKey(investigationId, input.executionId),
-      investigationExecutionIndexKey(investigationId),
-      investigationCounterKey(investigationId, 'executions')
-    ], [ownerUserId, JSON.stringify(execution), input.executionId, String(Date.parse(now))]))
-    if (!result || result.code === 0) return null
-    const persisted = parseJson<InvestigationExecution>(result.value)
-    if (!persisted) return null
-    if (result.code === 1) {
-      await this.appendTimeline(investigationId, 'execution_queued', { sessionId: input.sessionId }, { executionId: input.executionId, dedupeKey: `execution-queued:${input.executionId}`, occurredAt: now })
-    }
-    return persisted
+    const created = await this.redis.set(investigationExecutionKey(investigationId, input.executionId), JSON.stringify(execution), { nx: true })
+    if (created === null) return this.readExecution(investigationId, input.executionId)
+    await Promise.all([
+      this.redis.zadd(investigationExecutionIndexKey(investigationId), { score: Date.parse(now), member: input.executionId }),
+      this.redis.incr(investigationCounterKey(investigationId, 'executions'))
+    ])
+    await this.refreshCounts(investigationId, ownerUserId)
+    await this.appendTimeline(investigationId, 'execution_queued', { sessionId: input.sessionId }, { executionId: input.executionId, dedupeKey: `execution-queued:${input.executionId}`, occurredAt: now })
+    return execution
   }
 
   async updateExecution(ownerUserId: string, investigationId: InvestigationId, executionId: string, state: InvestigationExecution['state'], fields: { readonly updatedAt?: string; readonly finishedAt?: string | null; readonly durationMs?: number | null; readonly sessionId?: string } = {}): Promise<InvestigationExecution | null> {
@@ -466,10 +369,6 @@ export class InvestigationStore {
     if (!investigation || investigation.status === 'deleted') return null
     const current = await this.readExecution(investigationId, executionId)
     if (!current) return null
-    if (!canTransitionInvestigationExecutionState(current.state, state)) {
-      this.logger.warn('investigation.execution_illegal_transition', { investigationId, executionId, from: current.state, to: state })
-      return current
-    }
     const updatedAt = fields.updatedAt ?? new Date().toISOString()
     const next: InvestigationExecution = {
       ...current,
@@ -479,18 +378,11 @@ export class InvestigationStore {
       finishedAt: fields.finishedAt === undefined ? (isTerminalState(state) ? current.finishedAt ?? updatedAt : current.finishedAt) : fields.finishedAt,
       durationMs: fields.durationMs === undefined ? current.durationMs : fields.durationMs
     }
-    const result = scriptResult(await this.redis.eval(UPDATE_EXECUTION_SCRIPT, [
-      investigationRecordKey(investigationId),
-      investigationExecutionKey(investigationId, executionId)
-    ], [ownerUserId, JSON.stringify(current), JSON.stringify(next)]))
-    if (!result || result.code === 0) return null
-    const persisted = parseJson<InvestigationExecution>(result.value)
-    if (!persisted) return null
-    if (result.code === 2) return persisted
+    await this.redis.set(investigationExecutionKey(investigationId, executionId), JSON.stringify(next))
     const eventType: InvestigationTimelineEventType = state === 'running' || state === 'streaming' ? 'execution_started' : isTerminalState(state) ? state === 'succeeded' ? 'execution_completed' : 'execution_failed' : 'execution_queued'
     const dedupeKey = eventType === 'execution_started' ? `execution-started:${executionId}` : eventType === 'execution_completed' || eventType === 'execution_failed' ? `execution-terminal:${executionId}:${state}` : state === 'queued' ? `execution-queued:${executionId}` : `execution-state:${executionId}:${state}:${updatedAt}`
     await this.appendTimeline(investigationId, eventType, { state }, { executionId, dedupeKey, occurredAt: updatedAt })
-    return persisted
+    return next
   }
 
   async recordBookmark(ownerUserId: string, investigationId: InvestigationId, bookmark: Omit<InvestigationBookmark, 'bookmarkId' | 'createdAt'>, now = new Date().toISOString()): Promise<InvestigationTimelineEvent | null> {
@@ -500,6 +392,7 @@ export class InvestigationStore {
     if (event) {
       await this.redis.zadd(investigationBookmarkIndexKey(investigationId), { score: Date.parse(now), member: JSON.stringify({ bookmarkId, ...bookmark, createdAt: now }) })
       await this.redis.incr(investigationCounterKey(investigationId, 'evidence'))
+      await this.refreshCounts(investigationId, ownerUserId)
     }
     return event
   }
@@ -571,6 +464,12 @@ export class InvestigationStore {
     return parseJson<InvestigationExecution>(await this.redis.get(investigationExecutionKey(investigationId, executionId)))
   }
 
+  private async refreshCounts(investigationId: InvestigationId, ownerUserId: string): Promise<void> {
+    const current = await this.readRecord(investigationId, ownerUserId)
+    if (!current) return
+    await this.redis.set(investigationRecordKey(investigationId), JSON.stringify(current))
+  }
+
   private async removeInvestigationKeys(investigationId: InvestigationId, ownerUserId: string): Promise<void> {
     await Promise.all([
       this.redis.del(investigationRecordKey(investigationId)),
@@ -609,5 +508,17 @@ export class InvestigationStore {
     if (!investigation || investigation.status === 'deleted') return null
     const raw = await this.redis.xrange(investigationTimelineKey(investigationId), '-', '+')
     return this.notesFromTimeline(parseTimelineEntries(raw, investigationId).map(entry => entry.event)).find(note => note.noteId === noteId) ?? null
+  }
+
+  /**
+   * Diagnostic-only read that bypasses the owner filter. Never used for authorization
+   * or returned to a client — its only purpose is to let a 404 be categorized in logs
+   * as absent / owned-by-someone-else / deleted / present-but-unresolved, so a resolver
+   * failure that has no innocent explanation (present, owned, active, still not resolved)
+   * is distinguishable in production from the explained cases.
+   */
+  async diagnoseAbsence(investigationId: InvestigationId, ownerUserId: string): Promise<{ readonly present: boolean; readonly ownerMatches: boolean; readonly status: InvestigationRecord['status'] | null }> {
+    const raw = parseJson<InvestigationRecord>(await this.redis.get(investigationRecordKey(investigationId)))
+    return raw ? { present: true, ownerMatches: raw.ownerUserId === ownerUserId, status: raw.status } : { present: false, ownerMatches: false, status: null }
   }
 }
