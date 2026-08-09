@@ -10,6 +10,7 @@ import { isTTYExecutionState, type TTYExecutionStateRecord } from '@/lib/tty/tty
 import { TTYOutputStreamManager } from '@/lib/tty/tty-output-stream'
 import { createTTYSessionStore } from '@/lib/tty/tty-session-store'
 import { ttyExecutionStateKey } from '@/lib/tty/tty-worker-keys'
+import { activateTTYExecution } from '@/lib/tty/tty-execution-activator-server'
 import { createInvestigationApi, createInvestigationExecutionApi, createInvestigationSessionApi } from './investigation-api'
 import { InvestigationExecutionSynchronizer } from './investigation-execution-sync'
 import { InvestigationStore, type InvestigationRedis } from './investigation-store'
@@ -90,6 +91,7 @@ export function createInvestigationExecutionApiForRequest() {
   return createInvestigationExecutionApi({
     authenticate: async () => (await auth()).userId ?? null,
     getStore: () => new InvestigationStore(createInvestigationRedis(redis)),
-    admitExecution: (request, sessionId) => createTTYAdmissionApiForRequest().admit(request, sessionId)
+    admitExecution: (request, sessionId) => createTTYAdmissionApiForRequest({ activate: false }).admit(request, sessionId),
+    startExecution: activateTTYExecution
   })
 }

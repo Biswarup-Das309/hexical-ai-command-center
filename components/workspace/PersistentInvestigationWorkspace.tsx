@@ -49,6 +49,7 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
   const [executionInput, setExecutionInput] = useState('')
   const [executionError, setExecutionError] = useState<string | null>(null)
   const [submittingExecution, setSubmittingExecution] = useState(false)
+  const [staleExecutionId, setStaleExecutionId] = useState<string | null>(null)
   const draftInvestigationIdRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -67,7 +68,11 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
     void workspace.ensureSession().catch(() => {})
   }, [workspace.data?.investigation.investigationId, workspace.data?.investigation.ttySessionId, workspace.ensureSession])
 
-  const activeExecutionId = requestedExecutionId ?? selectedExecutionId ?? workspace.data?.executions[0]?.executionId ?? null
+  useEffect(() => {
+    setStaleExecutionId(null)
+  }, [requestedExecutionId, workspace.data?.investigation.investigationId])
+
+  const activeExecutionId = [requestedExecutionId, selectedExecutionId, workspace.data?.executions.find(execution => execution.executionId !== staleExecutionId)?.executionId ?? null].find(id => id !== null && id !== staleExecutionId) ?? null
   const history = useMemo(() => workspace.data?.executions.map(execution => ({ executionId: execution.executionId, state: execution.state, updatedAt: execution.updatedAt, durationMs: execution.durationMs ?? undefined })) ?? [], [workspace.data?.executions])
   const bookmarks = useMemo(() => workspace.data?.bookmarks.filter(bookmark => bookmark.executionId === activeExecutionId).map(toTTYBookmark) ?? [], [activeExecutionId, workspace.data?.bookmarks])
   const candidates = useMemo<readonly TTYEvidenceCandidate[]>(() => workspace.data?.timeline.filter(event => event.executionId === activeExecutionId && (event.type === 'stdout' || event.type === 'stderr')).slice(-8).map(event => ({ sequence: event.sequence ?? 0, lineNumber: null, kind: event.type === 'stderr' ? 'error' : 'output', label: event.type, excerpt: String(event.payload.text ?? '') })) ?? [], [activeExecutionId, workspace.data?.timeline])
@@ -171,6 +176,17 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
     }
   }
 
+  const selectExecution = (nextExecutionId: string) => {
+    setStaleExecutionId(null)
+    setSelectedExecutionId(nextExecutionId)
+  }
+
+  const clearStaleExecution = () => {
+    if (activeExecutionId) setStaleExecutionId(activeExecutionId)
+    setSelectedExecutionId(null)
+    setExecutionError('No active execution')
+  }
+
   const terminateSession = async () => {
     try {
       setExecutionError(null)
@@ -211,7 +227,7 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
 
       <EvidenceGraphPanel investigationId={investigation.investigationId} />
 
-      {showExecution ? <InvestigationWorkspace executionId={activeExecutionId} sessionId={activeSessionId ?? undefined} command={investigation.title} history={history} onSelectHistory={setSelectedExecutionId} onExecute={execute} onCancel={terminateSession} onRestart={() => execute(investigation.title)} initialBookmarks={bookmarks} onBookmarkAdded={bookmark => workspace.addBookmark({ executionId: bookmark.executionId, sequence: bookmark.sequence, lineNumber: bookmark.lineNumber, kind: bookmark.kind, label: bookmark.label, excerpt: bookmark.excerpt })} /> : <section className="mx-auto grid max-w-5xl gap-4 p-6 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)]">
+      {showExecution ? <InvestigationWorkspace executionId={activeExecutionId} sessionId={activeSessionId ?? undefined} command={investigation.title} history={history} onSelectHistory={selectExecution} onExecute={execute} onCancel={terminateSession} onRestart={() => execute(investigation.title)} onExecutionNotFound={clearStaleExecution} initialBookmarks={bookmarks} onBookmarkAdded={bookmark => workspace.addBookmark({ executionId: bookmark.executionId, sequence: bookmark.sequence, lineNumber: bookmark.lineNumber, kind: bookmark.kind, label: bookmark.label, excerpt: bookmark.excerpt })} /> : <section className="mx-auto grid max-w-5xl gap-4 p-6 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)]">
         <div className="rounded-lg border border-white/10 bg-black/20 p-4">
           <div className="mb-4 rounded border border-cyan-400/20 bg-cyan-400/[0.03] p-3"><div className="mb-2 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.2em] text-cyan-300"><span>Execute in investigation</span>{activeSessionId && <button type="button" onClick={() => void terminateSession()} className="text-zinc-500 hover:text-rose-300"><Square className="mr-1 inline size-3" />Terminate session</button>}</div><textarea value={executionInput} onChange={event => setExecutionInput(event.target.value)} onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); void execute(executionInput) } }} disabled={!activeSessionId || submittingExecution} aria-label="Investigation execution command" placeholder={activeSessionId ? 'Enter an approved command. Ctrl+Enter runs it.' : sessionFailure?.message ?? 'Attaching investigation session…'} className="min-h-20 w-full rounded border border-white/10 bg-black/30 p-2 font-mono text-xs text-zinc-200 outline-none disabled:cursor-not-allowed disabled:opacity-60" /><button type="button" onClick={() => void execute(executionInput)} disabled={!activeSessionId || submittingExecution || !executionInput.trim()} className="mt-2 rounded border border-cyan-400/30 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-cyan-200 hover:bg-cyan-400/10 disabled:opacity-50"><Play className="mr-1 inline size-3" />{submittingExecution ? 'Queueing' : 'Execute'}</button>{executionError && <p role="alert" className="mt-2 font-mono text-[10px] text-rose-300">{executionError}</p>}</div>
           <div className="mb-3 font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-400">Investigation timeline</div>

@@ -43,6 +43,7 @@ export interface InvestigationSessionApiDependencies extends InvestigationApiDep
 
 export interface InvestigationExecutionApiDependencies extends InvestigationApiDependencies {
   readonly admitExecution: (request: Request, sessionId: string) => Promise<Response>
+  readonly startExecution?: (executionId: string, sessionId: string) => Promise<{ readonly accepted: boolean }>
 }
 
 function json(body: unknown, status: number): Response {
@@ -348,6 +349,10 @@ export function createInvestigationExecutionApi(dependencies: InvestigationExecu
         if (!body.ok || !body.job?.executionId || body.job.sessionId !== parsed.data.sessionId) return failure(502, 'INVALID_ADMISSION_RESPONSE', 'The execution admission response was invalid.')
         const attached = await dependencies.getStore().attachExecution(user, investigationId, { executionId: body.job.executionId, sessionId: parsed.data.sessionId })
         if (!attached) return failure(404, 'NOT_FOUND', 'Investigation not found.')
+        if (dependencies.startExecution) {
+          const started = await dependencies.startExecution(body.job.executionId, parsed.data.sessionId)
+          if (!started.accepted) return failure(503, 'EXECUTION_NOT_STARTED', 'The execution could not be started.')
+        }
         return json({ ok: true, investigationId, execution: attached, job: body.job, duplicate: body.duplicate === true }, admitted.status)
       } catch {
         return failure(500, 'INTERNAL_ERROR', 'The execution could not be attached to the investigation.')

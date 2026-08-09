@@ -82,6 +82,16 @@ export interface TTYExecutionCoordinatorRunHooks {
   readonly onLeaseLost?: (executionId: TTYExecutionId, sessionId: TTYSessionId, reason: string) => void
 }
 
+/**
+ * Optional lifecycle notification for callers that need to return as soon as
+ * the coordinator has accepted a run, while the process continues streaming.
+ * It does not alter execution state or ownership; the coordinator remains the
+ * sole authority for both.
+ */
+export interface TTYExecutionCoordinatorRunOptions {
+  readonly onAccepted?: (state: TTYExecutionStateRecord) => void
+}
+
 export interface TTYExecutionCoordinatorDependencies {
   readonly redis: Redis
   readonly workerId: TTYWorkerId
@@ -206,7 +216,7 @@ export class TTYExecutionCoordinator {
     }
   }
 
-  async run(executionId: TTYExecutionId, sessionId: TTYSessionId): Promise<TTYExecutionRunResult> {
+  async run(executionId: TTYExecutionId, sessionId: TTYSessionId, options: TTYExecutionCoordinatorRunOptions = {}): Promise<TTYExecutionRunResult> {
     const existing = await this.getState(executionId)
     if (existing && isTerminalTTYExecutionState(existing.state)) return { accepted: true, state: existing }
     if (this.contexts.has(executionId)) return { accepted: false, reason: 'already_running', state: existing }
@@ -214,7 +224,7 @@ export class TTYExecutionCoordinator {
     const context = this.createContext(executionId, sessionId)
     this.contexts.set(executionId, context)
     try {
-      return await withSpan('tty.execution.run', { executionId, sessionId, workerId: this.dependencies.workerId }, async () => this.execute(context))
+      return await withSpan('tty.execution.run', { executionId, sessionId, workerId: this.dependencies.workerId }, async () => this.execute(context, undefined, options))
     } finally {
       this.clearContext(context)
     }
@@ -343,7 +353,7 @@ export class TTYExecutionCoordinator {
     }
   }
 
-  private async execute(context: ExecutionContext, preclaimedJob?: TTYLeasedJob): Promise<TTYExecutionRunResult> {
+  private async execute(context: ExecutionContext, preclaimedJob?: TTYLeasedJob, options: TTYExecutionCoordinatorRunOptions = {}): Promise<TTYExecutionRunResult> {
     let state = await this.ensureQueued(context)
     if (state === null) return { accepted: false, reason: 'internal_error', state: null }
     if (context.cancelReason) {
@@ -362,6 +372,12 @@ export class TTYExecutionCoordinator {
     context.leaseToken = claimed.job.lease.token
     state = await this.transition(context, 'leased', { workerId: this.dependencies.workerId, leaseId: claimed.job.lease.leaseId ?? claimed.job.lease.token })
     await this.safeAppendState(state)
+    try {
+      options.onAccepted?.(state)
+    } catch {
+      // Acceptance observers are transport coordination only and must never
+      // change execution ownership or state.
+    }
     if (context.cancelReason) {
       state = await this.finalize(context, 'cancelled', { completionReason: context.cancelReason })
       return { accepted: true, state }

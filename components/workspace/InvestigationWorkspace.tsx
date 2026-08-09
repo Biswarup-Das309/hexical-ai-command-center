@@ -29,6 +29,7 @@ export interface InvestigationWorkspaceProps {
   readonly onCancel?: () => Promise<void> | void
   readonly onRestart?: () => Promise<void> | void
   readonly onExecute?: (input: string) => Promise<void> | void
+  readonly onExecutionNotFound?: () => void
   readonly initialBookmarks?: readonly TTYEvidenceBookmark[]
   readonly onBookmarkAdded?: (bookmark: TTYEvidenceBookmark) => Promise<void> | void
 }
@@ -58,6 +59,7 @@ export function InvestigationWorkspace({
   onCancel,
   onRestart,
   onExecute,
+  onExecutionNotFound,
   initialBookmarks,
   onBookmarkAdded
 }: InvestigationWorkspaceProps) {
@@ -67,7 +69,7 @@ export function InvestigationWorkspace({
   const [input, setInput] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [executionError, setExecutionError] = useState<string | null>(null)
-  const stream = useTTYExecutionStream({ executionId, sessionId, maxEvents: 20_000 })
+  const stream = useTTYExecutionStream({ executionId, sessionId, maxEvents: 20_000, onExecutionNotFound })
   const lines = useMemo(() => buildTTYTerminalLines(stream.events), [stream.events])
   const matches = useMemo(() => findTTYSearchMatches(lines, search), [lines, search])
   const state = latestState(stream.events)
@@ -157,7 +159,7 @@ export function InvestigationWorkspace({
               <ExecutionControls executionId={executionId} state={state} outputText={outputText} onCancel={onCancel} onRestart={onRestart} onClear={clear} />
             </div>
             {stream.error && <div className="rounded border border-amber-400/20 bg-amber-400/5 px-2 py-1 font-mono text-[10px] text-amber-200" role="status">{stream.error}</div>}
-            <InvestigationTerminal ref={terminalRef} events={stream.events} title="LIVE EXECUTION" status={<span className="font-mono text-[9px] uppercase tracking-widest text-zinc-600">{executionId.slice(0, 8)}</span>} className="min-h-0 flex-1" />
+            {stream.error === 'No active execution' ? <div role="status" className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-amber-400/20 bg-amber-400/[0.03] font-mono text-xs uppercase tracking-widest text-amber-200">No active execution</div> : <InvestigationTerminal ref={terminalRef} events={stream.events} title="LIVE EXECUTION" status={<span className="font-mono text-[9px] uppercase tracking-widest text-zinc-600">{executionId.slice(0, 8)}</span>} className="min-h-0 flex-1" />}
           </section>
 
           <aside className="order-3 flex min-h-0 flex-col gap-3">

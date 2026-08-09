@@ -10,8 +10,9 @@ import { verifyAuthorization } from '@/lib/hexical/authorization'
 import { TTYExecutionAdmission } from './tty-execution-admission'
 import { createTTYSessionStore } from './tty-session-store'
 import { createTTYExecutionAdmissionApi } from './tty-execution-admission-api'
+import { activateTTYExecution } from './tty-execution-activator-server'
 
-export function createTTYAdmissionApiForRequest() {
+export function createTTYAdmissionApiForRequest(options: { readonly activate?: boolean } = {}) {
   const redis = new Redis({ url: process.env.UPSTASH_REDIS_REST_URL!, token: process.env.UPSTASH_REDIS_REST_TOKEN! })
   const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
   const store = createTTYSessionStore(redis)
@@ -38,6 +39,7 @@ export function createTTYAdmissionApiForRequest() {
     authenticate: async () => (await auth()).userId ?? null,
     resolveTier: getUserTier,
     getSession: (sessionId, ownerUserId) => store.getSession(sessionId, ownerUserId),
-    admission
+    admission,
+    ...(options.activate === false ? {} : { startExecution: activateTTYExecution })
   })
 }
