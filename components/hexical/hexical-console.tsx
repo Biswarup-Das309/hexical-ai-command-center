@@ -12,6 +12,7 @@ import { toast } from 'sonner'
 import { HexicalLogo } from '@/components/hexical/hexical-logo'
 import { createSupabaseClient } from '@/lib/supabase' 
 import { useGuestLimit } from '@/hooks/use-guest-limit'
+import { useInvestigations } from '@/hooks/useInvestigations'
 import {
   inferRoute,
   type StreamMessage,
@@ -19,7 +20,8 @@ import {
   type PlanTier,
   PLAN_LIMITS
 } from '@/lib/hexical/types'
-import { ChatSidebar } from '@/components/hexical/chat-sidebar'
+import { InvestigationSidebar } from '@/components/workspace/InvestigationSidebar'
+import { PersistentInvestigationWorkspace } from '@/components/workspace/PersistentInvestigationWorkspace'
 import { DataStream } from '@/components/hexical/data-stream'
 import { CommandInput } from '@/components/hexical/command-input'
 
@@ -84,7 +86,7 @@ import {
 // =============================================================================
 // 1. EXTENDED TYPES & INTERFACES
 // =============================================================================
-type ViewMode = 'chat' | 'recon' | 'payloads' | 'terminal' | 'graph' | 'cvss' | 'bounty' | 'ast';
+type ViewMode = 'chat' | 'workspace' | 'recon' | 'payloads' | 'terminal' | 'graph' | 'cvss' | 'bounty' | 'ast';
 export type AccentTheme = 'cyan' | 'emerald' | 'rose' | 'violet' | 'amber';
 type EncodingType = 'base64' | 'url' | 'hex' | 'rot13' | 'unicode';
 type VerifyProfile = 'recon' | 'swarm' | 'exploit' | 'patch';
@@ -162,6 +164,7 @@ const DEFAULT_GUEST_NAME = 'Guest'
 const DEFAULT_GUEST_EMAIL = 'guest@hexical.ai'
 
 const PENDING_SESSION_ID = 'local_pending_session'
+const ACTIVE_INVESTIGATION_STORAGE_KEY = 'hexical:workspace:active-investigation'
 const VERIFY_ENDPOINT = '/api/verify'
 // NOTE: the flat MAX_LOGIC_CHARS = 12000 constant that used to live here was
 // the bug — it applied the same 12k ceiling to every tier, including Pro.
@@ -180,7 +183,7 @@ const PROFILE_TO_VERIFY_PROFILE: Record<string, VerifyProfile> = {
 
 const createFreshChatState = (id: string): ChatState => ({
   id,
-  title: 'New Context',
+  title: 'New Investigation',
   pinned: false,
   messages: [{ 
     id: 'init', 
@@ -502,6 +505,7 @@ export function HexicalConsole() {
   const isClerkReady = isUserLoaded && isSessionLoaded
   const { signOut, openSignIn } = useClerk() 
   const { checkLimit, recordUsage } = useGuestLimit()
+  const investigationManager = useInvestigations()
 
   // ---------------------------------------------------------------------
   // chats/activeId are owned by the reducer above. This guarantees, from
@@ -513,6 +517,16 @@ export function HexicalConsole() {
   // ---------------------------------------------------------------------
   const [chatState, dispatch] = useReducer(chatReducer, undefined, initChatMachine)
   const { chats, activeId } = chatState
+  const [activeInvestigationId, setActiveInvestigationId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null
+    try {
+      return window.localStorage.getItem(ACTIVE_INVESTIGATION_STORAGE_KEY)
+    } catch {
+      return null
+    }
+  })
+  const [workspaceRevision, setWorkspaceRevision] = useState(0)
+  const hasInitializedInvestigationSelectionRef = useRef(false)
 
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false)
   const [busy, setBusy] = useState<boolean>(false)
@@ -639,6 +653,70 @@ export function HexicalConsole() {
     logToTerminal(`[SYSTEM] Spawned isolated lazy context.`)
   }, [logToTerminal])
 
+  const selectInvestigation = useCallback((investigationId: string) => {
+    setActiveInvestigationId(investigationId)
+    try {
+      window.localStorage.setItem(ACTIVE_INVESTIGATION_STORAGE_KEY, investigationId)
+    } catch {
+      // Local storage is only a selection convenience; the server remains authoritative.
+    }
+    setShowTracePanel(false)
+    setActiveTraceMessage(null)
+    setViewMode('workspace')
+  }, [])
+
+  const handleNewInvestigation = useCallback(async () => {
+    const investigationId = await investigationManager.create({ title: 'New Investigation', description: '' })
+    if (investigationId) selectInvestigation(investigationId)
+  }, [investigationManager.create, selectInvestigation])
+
+  const handleRenameInvestigation = useCallback(async (investigationId: string, title: string, description?: string) => {
+    try {
+      await investigationManager.rename(investigationId, title, description)
+      setWorkspaceRevision(current => current + 1)
+    } catch (cause) {
+      toast.error('Could not rename investigation.', { description: cause instanceof Error ? cause.message : 'Please try again.' })
+    }
+  }, [investigationManager.rename])
+
+  const handleArchiveInvestigation = useCallback(async (investigationId: string) => {
+    try {
+      await investigationManager.archive(investigationId)
+      setWorkspaceRevision(current => current + 1)
+    } catch (cause) {
+      toast.error('Could not archive investigation.', { description: cause instanceof Error ? cause.message : 'Please try again.' })
+    }
+  }, [investigationManager.archive])
+
+  const handleRestoreInvestigation = useCallback(async (investigationId: string) => {
+    try {
+      await investigationManager.restore(investigationId)
+      setWorkspaceRevision(current => current + 1)
+    } catch (cause) {
+      toast.error('Could not restore investigation.', { description: cause instanceof Error ? cause.message : 'Please try again.' })
+    }
+  }, [investigationManager.restore])
+
+  const handleDeleteInvestigation = useCallback(async (investigationId: string) => {
+    try {
+      await investigationManager.remove(investigationId)
+      if (activeInvestigationId !== investigationId) return
+      const next = investigationManager.investigations.find(item => item.investigationId !== investigationId)?.investigationId ?? null
+      if (next) selectInvestigation(next)
+      else {
+        setActiveInvestigationId(null)
+        setViewMode('chat')
+        try {
+          window.localStorage.removeItem(ACTIVE_INVESTIGATION_STORAGE_KEY)
+        } catch {
+          // Local storage is optional.
+        }
+      }
+    } catch (cause) {
+      toast.error('Could not delete investigation.', { description: cause instanceof Error ? cause.message : 'Please try again.' })
+    }
+  }, [activeInvestigationId, investigationManager.investigations, investigationManager.remove, selectInvestigation])
+
   // ============================================================================
   // CRITICAL FIX: SECURE DELETE WITH PESSIMISTIC ROLLBACK
   // ============================================================================
@@ -687,7 +765,31 @@ export function HexicalConsole() {
 
   useEffect(() => { setIsMounted(true) }, [])
   useEffect(() => { if (window.innerWidth >= 768) setIsSidebarOpen(true) }, [])
-  
+
+  useEffect(() => {
+    if (investigationManager.loading) return
+    const preferred = activeInvestigationId && investigationManager.investigations.some(item => item.investigationId === activeInvestigationId)
+      ? activeInvestigationId
+      : investigationManager.investigations[0]?.investigationId ?? null
+    if (preferred === activeInvestigationId) {
+      if (preferred && !hasInitializedInvestigationSelectionRef.current) setViewMode('workspace')
+      hasInitializedInvestigationSelectionRef.current = true
+      return
+    }
+    setActiveInvestigationId(preferred)
+    if (preferred) {
+      try {
+        window.localStorage.setItem(ACTIVE_INVESTIGATION_STORAGE_KEY, preferred)
+      } catch {
+        // Local storage is only a selection convenience; the server remains authoritative.
+      }
+      if (!hasInitializedInvestigationSelectionRef.current) setViewMode('workspace')
+    } else if (!hasInitializedInvestigationSelectionRef.current) {
+      setViewMode('chat')
+    }
+    hasInitializedInvestigationSelectionRef.current = true
+  }, [activeInvestigationId, investigationManager.investigations, investigationManager.loading])
+
   useEffect(() => {
     if (!isClerkReady) return;
     let cancelled = false;
@@ -1270,20 +1372,25 @@ export function HexicalConsole() {
               onClick={() => setIsSidebarOpen(false)} 
             />
             <div className="fixed md:relative w-[280px] h-full border-r border-white/5 flex-shrink-0 z-50 bg-[#0a0a0c] shadow-[20px_0_50px_rgba(0,0,0,0.5)] md:shadow-none transition-transform">
-               <ChatSidebar 
-                 chats={chats} 
-                 activeId={activeId} 
+               <InvestigationSidebar
+                 investigations={investigationManager.investigations}
+                 activeId={activeInvestigationId}
                  isOpen={isSidebarOpen} 
+                 loading={investigationManager.loading}
+                 error={investigationManager.error}
+                 nextCursor={investigationManager.nextCursor}
                  userName={isAuthLoading ? "Booting..." : userName} 
                  userEmail={isAuthLoading ? "Securing..." : userEmail} 
                  avatarUrl={userAvatar} 
                  currentTier={currentTier}
                  onToggleOpen={() => setIsSidebarOpen(false)} 
-                 onSelect={(id) => dispatch({ type: 'SELECT_CHAT', id })} 
-                 onNewChat={handleNewChat} 
-                 onDeleteChat={handleDelete} 
-                 onRenameChat={handleRename} 
-                 onTogglePin={handleTogglePin} 
+                 onSelect={selectInvestigation}
+                 onNewInvestigation={() => { void handleNewInvestigation() }}
+                 onRename={handleRenameInvestigation}
+                 onArchive={handleArchiveInvestigation}
+                 onRestore={handleRestoreInvestigation}
+                 onDelete={handleDeleteInvestigation}
+                 onLoadMore={investigationManager.loadMore}
                  onSignOut={() => signOut(() => window.location.reload())} 
                  onOpenUpgrade={() => setShowUpgradeModal(true)}
                />
@@ -1310,6 +1417,7 @@ export function HexicalConsole() {
             <div className="flex-1 flex items-center overflow-x-auto no-scrollbar gap-2 shrink">
               <div className="hidden lg:flex p-1 bg-white/[0.02] border border-white/5 rounded-lg backdrop-blur-md shrink-0">
                 <button onClick={() => setViewMode('chat')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'chat' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><LayoutDashboard size={14}/> Investigate</button>
+                <button onClick={() => activeInvestigationId && setViewMode('workspace')} disabled={!activeInvestigationId} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-40 ${viewMode === 'workspace' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}><Database size={14}/> Workspace</button>
                 
                 <button onClick={() => setViewMode('graph')} className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${viewMode === 'graph' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'}`}>
                   {hasFeatureAccess('interactive_topology') ? <Workflow size={14}/> : <Lock size={12} className="text-zinc-600" />} Impact
@@ -1414,6 +1522,21 @@ export function HexicalConsole() {
           </header>
 
           <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 flex flex-col relative">
+
+            {viewMode === 'workspace' && activeInvestigationId && (
+              <div className="min-h-full overflow-y-auto">
+                <PersistentInvestigationWorkspace
+                  key={`${activeInvestigationId}:${workspaceRevision}`}
+                  investigationId={activeInvestigationId}
+                  autoCreate={false}
+                  onNewInvestigation={handleNewInvestigation}
+                  onRename={(title, description) => handleRenameInvestigation(activeInvestigationId, title, description)}
+                  onArchive={() => handleArchiveInvestigation(activeInvestigationId)}
+                  onRestore={() => handleRestoreInvestigation(activeInvestigationId)}
+                  onDelete={() => handleDeleteInvestigation(activeInvestigationId)}
+                />
+              </div>
+            )}
             
             {viewMode === 'recon' && (
               <div className="p-4 md:p-6 h-full relative">

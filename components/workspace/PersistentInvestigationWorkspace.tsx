@@ -14,6 +14,11 @@ export interface PersistentInvestigationWorkspaceProps {
   readonly autoCreate?: boolean
   readonly sessionId?: string
   readonly executionId?: string | null
+  readonly onNewInvestigation?: () => Promise<void> | void
+  readonly onRename?: (title: string, description: string) => Promise<void> | void
+  readonly onArchive?: () => Promise<void> | void
+  readonly onRestore?: () => Promise<void> | void
+  readonly onDelete?: () => Promise<void> | void
 }
 
 function toTTYBookmark(bookmark: InvestigationBookmark) {
@@ -29,7 +34,7 @@ function toTTYBookmark(bookmark: InvestigationBookmark) {
   }
 }
 
-export function PersistentInvestigationWorkspace({ investigationId, autoCreate = true, sessionId, executionId: requestedExecutionId }: PersistentInvestigationWorkspaceProps) {
+export function PersistentInvestigationWorkspace({ investigationId, autoCreate = true, sessionId, executionId: requestedExecutionId, onNewInvestigation, onRename, onArchive, onRestore, onDelete }: PersistentInvestigationWorkspaceProps) {
   const workspace = useInvestigationWorkspace({ investigationId, autoCreate })
   const [selectedExecutionId, setSelectedExecutionId] = useState<string | null>(requestedExecutionId ?? null)
   const [title, setTitle] = useState('')
@@ -43,8 +48,15 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
 
   const saveMetadata = async () => {
     if (!workspace.data) return
-    await workspace.rename(title.trim() || workspace.data.investigation.title, description)
+    const nextTitle = title.trim() || workspace.data.investigation.title
+    if (onRename) await onRename(nextTitle, description)
+    else await workspace.rename(nextTitle, description)
   }
+
+  const archiveInvestigation = async () => { if (onArchive) await onArchive(); else await workspace.archive() }
+  const restoreInvestigation = async () => { if (onRestore) await onRestore(); else await workspace.restore() }
+  const deleteInvestigation = async () => { if (onDelete) await onDelete(); else await workspace.remove() }
+  const createInvestigation = async () => { if (onNewInvestigation) await onNewInvestigation(); else await workspace.create() }
 
   const addNote = async () => {
     const body = note.trim()
@@ -67,11 +79,12 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
           <input value={description || investigation.description} onChange={event => setDescription(event.target.value)} aria-label="Investigation description" placeholder="Describe the investigation" className="mt-1 w-full bg-transparent font-mono text-[10px] text-zinc-500 outline-none" />
         </div>
         <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-wider">
+          <span className={workspace.loading ? 'text-amber-300' : 'text-emerald-300'} aria-live="polite">{workspace.loading ? 'hydrating' : 'hydrated'}</span>
           <span className={investigation.status === 'archived' ? 'text-amber-300' : 'text-emerald-300'}>{investigation.status}</span>
           <button type="button" onClick={() => void saveMetadata()} className="rounded border border-white/10 px-2 py-1 text-zinc-400 hover:border-cyan-400/40 hover:text-cyan-200" title="Save investigation metadata"><Save className="mr-1 inline size-3" />Save</button>
-          {investigation.status === 'active' ? <button type="button" onClick={() => void workspace.archive()} className="rounded border border-white/10 px-2 py-1 text-zinc-400 hover:border-amber-400/40 hover:text-amber-200"><Archive className="mr-1 inline size-3" />Archive</button> : <button type="button" onClick={() => void workspace.restore()} className="rounded border border-white/10 px-2 py-1 text-zinc-400 hover:border-emerald-400/40 hover:text-emerald-200"><RefreshCw className="mr-1 inline size-3" />Restore</button>}
-          <button type="button" onClick={() => void workspace.create()} className="rounded border border-cyan-400/30 px-2 py-1 text-cyan-200 hover:bg-cyan-400/10"><FilePlus2 className="mr-1 inline size-3" />New</button>
-          <button type="button" onClick={() => void workspace.remove()} className="rounded border border-rose-400/20 px-2 py-1 text-rose-300 hover:bg-rose-400/10" title="Delete investigation"><Trash2 className="size-3" /></button>
+          {investigation.status === 'active' ? <button type="button" onClick={() => void archiveInvestigation()} className="rounded border border-white/10 px-2 py-1 text-zinc-400 hover:border-amber-400/40 hover:text-amber-200"><Archive className="mr-1 inline size-3" />Archive</button> : <button type="button" onClick={() => void restoreInvestigation()} className="rounded border border-white/10 px-2 py-1 text-zinc-400 hover:border-emerald-400/40 hover:text-emerald-200"><RefreshCw className="mr-1 inline size-3" />Restore</button>}
+          <button type="button" onClick={() => void createInvestigation()} className="rounded border border-cyan-400/30 px-2 py-1 text-cyan-200 hover:bg-cyan-400/10"><FilePlus2 className="mr-1 inline size-3" />New</button>
+          <button type="button" onClick={() => void deleteInvestigation()} className="rounded border border-rose-400/20 px-2 py-1 text-rose-300 hover:bg-rose-400/10" title="Delete investigation"><Trash2 className="size-3" /></button>
         </div>
       </header>
 

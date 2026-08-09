@@ -59,6 +59,37 @@ test('investigation API enforces authentication, owner authorization, no-store, 
   assert.equal((await fixtureData.api.get(request('GET', `/api/investigations/${investigationId}`), investigationId)).status, 404)
 })
 
+test('investigation list pagination and lifecycle mutations remain owner-scoped', async () => {
+  const fixtureData = fixture()
+  const ids: string[] = []
+  for (const title of ['First case', 'Second case', 'Third case']) {
+    const created = await fixtureData.api.create(request('POST', '/api/investigations', { title }))
+    const body = await read(created)
+    ids.push(String((body.investigation as Record<string, unknown>).investigationId))
+  }
+
+  const firstPage = await read(await fixtureData.api.list(request('GET', '/api/investigations?limit=1')))
+  const secondPage = await read(await fixtureData.api.list(request('GET', `/api/investigations?limit=1&cursor=${String(firstPage.nextCursor)}`)))
+  const firstInvestigations = firstPage.investigations as Array<Record<string, unknown>>
+  const secondInvestigations = secondPage.investigations as Array<Record<string, unknown>>
+  assert.equal(firstInvestigations.length, 1)
+  assert.equal(secondInvestigations.length, 1)
+  assert.notEqual(String(firstInvestigations[0]?.investigationId), String(secondInvestigations[0]?.investigationId))
+
+  const archived = await fixtureData.api.patch(request('PATCH', `/api/investigations/${ids[0]}`, { status: 'archived' }), ids[0]!)
+  assert.equal(archived.status, 200)
+  const restored = await fixtureData.api.patch(request('PATCH', `/api/investigations/${ids[0]}`, { status: 'active' }), ids[0]!)
+  assert.equal(restored.status, 200)
+  const deleted = await fixtureData.api.delete(request('DELETE', `/api/investigations/${ids[1]}`), ids[1]!)
+  assert.equal(deleted.status, 200)
+
+  const visible = await read(await fixtureData.api.list(request('GET', '/api/investigations?limit=50')))
+  const visibleIds = (visible.investigations as Array<Record<string, unknown>>).map(item => String(item.investigationId))
+  assert.equal(visibleIds.includes(ids[0]!), true)
+  assert.equal(visibleIds.includes(ids[1]!), false)
+  assert.equal(visibleIds.includes(ids[2]!), true)
+})
+
 test('timeline API validates and persists notes and evidence bookmarks', async () => {
   const fixtureData = fixture()
   const created = await fixtureData.api.create(request('POST', '/api/investigations', { title: 'Timeline case' }))
