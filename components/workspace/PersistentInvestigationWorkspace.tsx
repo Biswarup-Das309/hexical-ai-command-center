@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 import { Archive, FilePlus2, RefreshCw, Save, StickyNote, Trash2 } from 'lucide-react'
 
 import type { TTYEvidenceCandidate } from '@/components/tty/EvidenceBookmarks'
+import { EvidenceGraphPanel } from '@/components/workspace/EvidenceGraphPanel'
 import { InvestigationWorkspace } from '@/components/workspace/InvestigationWorkspace'
 import { useInvestigationWorkspace } from '@/hooks/useInvestigationWorkspace'
 import type { InvestigationBookmark } from '@/lib/investigations/investigation-types'
@@ -77,6 +78,8 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
       <div className="border-b border-white/10 bg-black/20 px-4 py-2 font-mono text-[10px] text-zinc-500">
         <span className="mr-4">executions {investigation.executionCount}</span><span className="mr-4">evidence {investigation.evidenceCount}</span><span>findings {investigation.findingCount}</span>
       </div>
+
+      <EvidenceGraphPanel investigationId={investigation.investigationId} />
 
       {showExecution ? <InvestigationWorkspace executionId={activeExecutionId} sessionId={sessionId} command={investigation.title} history={history} onSelectHistory={setSelectedExecutionId} initialBookmarks={bookmarks} onBookmarkAdded={bookmark => workspace.addBookmark({ executionId: bookmark.executionId, sequence: bookmark.sequence, lineNumber: bookmark.lineNumber, kind: bookmark.kind, label: bookmark.label, excerpt: bookmark.excerpt })} /> : <section className="mx-auto grid max-w-5xl gap-4 p-6 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)]">
         <div className="rounded-lg border border-white/10 bg-black/20 p-4">

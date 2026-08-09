@@ -13,14 +13,14 @@ import { createInvestigationApi, createInvestigationExecutionApi } from './inves
 import { InvestigationExecutionSynchronizer } from './investigation-execution-sync'
 import { InvestigationStore, type InvestigationRedis } from './investigation-store'
 
-function createRedis(): Redis {
+export function createRedis(): Redis {
   const url = process.env.UPSTASH_REDIS_REST_URL
   const token = process.env.UPSTASH_REDIS_REST_TOKEN
   if (!url || !token) throw new Error('Investigation Redis configuration is missing.')
   return new Redis({ url, token })
 }
 
-function createInvestigationRedis(redis: Redis): InvestigationRedis {
+export function createInvestigationRedis(redis: Redis): InvestigationRedis {
   return {
     get: <T>(key: string) => redis.get<T>(key),
     set: (key, value, options) => options?.nx ? redis.set(key, value, { nx: true }) : redis.set(key, value),
