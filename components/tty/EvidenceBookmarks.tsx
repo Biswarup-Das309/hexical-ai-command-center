@@ -23,20 +23,26 @@ export interface TTYEvidenceCandidate {
 export interface EvidenceBookmarksProps {
   readonly executionId: string
   readonly candidates?: readonly TTYEvidenceCandidate[]
+  readonly initialBookmarks?: readonly TTYEvidenceBookmark[]
+  readonly onBookmarkAdded?: (bookmark: TTYEvidenceBookmark) => Promise<void> | void
   readonly onJump?: (candidate: TTYEvidenceBookmark) => void
   readonly className?: string
 }
 
-export function EvidenceBookmarks({ executionId, candidates = [], onJump, className = '' }: EvidenceBookmarksProps) {
+export function EvidenceBookmarks({ executionId, candidates = [], initialBookmarks, onBookmarkAdded, onJump, className = '' }: EvidenceBookmarksProps) {
   const [bookmarks, setBookmarks] = useState<readonly TTYEvidenceBookmark[]>([])
 
   useEffect(() => {
+    if (initialBookmarks !== undefined) {
+      setBookmarks(initialBookmarks)
+      return
+    }
     try {
       setBookmarks(parseTTYEvidenceBookmarks(localStorage.getItem(ttyEvidenceStorageKey(executionId)), executionId as never))
     } catch {
       setBookmarks([])
     }
-  }, [executionId])
+  }, [executionId, initialBookmarks])
 
   const persist = (next: readonly TTYEvidenceBookmark[]) => {
     setBookmarks(next)
@@ -50,7 +56,9 @@ export function EvidenceBookmarks({ executionId, candidates = [], onJump, classN
   const add = (candidate: TTYEvidenceCandidate) => {
     const existing = bookmarks.find(bookmark => bookmark.sequence === candidate.sequence && bookmark.kind === candidate.kind)
     if (existing) return
-    persist([...bookmarks, createTTYEvidenceBookmark({ executionId: executionId as never, ...candidate })])
+    const bookmark = createTTYEvidenceBookmark({ executionId: executionId as never, ...candidate })
+    persist([...bookmarks, bookmark])
+    void onBookmarkAdded?.(bookmark)
   }
 
   const remove = (id: string) => persist(bookmarks.filter(bookmark => bookmark.id !== id))
