@@ -43,6 +43,7 @@ const STATE_TTL_SECONDS = 24 * 60 * 60
 const MAX_STREAM_CHUNK_BYTES = 48 * 1024
 const DEFAULT_LEASE_RENEW_INTERVAL_MS = 15_000
 const DEFAULT_STOP_GRACE_MS = 1_000
+const DEFAULT_CONTEXT_WAIT_TIMEOUT_MS = 30_000
 
 const STATE_TRANSITION_SCRIPT = `
 -- tty-execution-state-transition
@@ -664,8 +665,13 @@ export class TTYExecutionCoordinator {
     // run() owns the execution promise only after it registers the context;
     // callers that race cancellation with startup use the state as the safe
     // acknowledgement if the worker has not yet reached a process handle.
-    while (this.contexts.has(context.executionId)) {
+    const deadline = Date.now() + DEFAULT_CONTEXT_WAIT_TIMEOUT_MS
+    while (this.contexts.has(context.executionId) && Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    if (this.contexts.has(context.executionId)) {
+      log.warn('tty.execution.context_wait_timed_out', { executionId: context.executionId, sessionId: context.sessionId, workerId: this.dependencies.workerId })
+      return { accepted: false, reason: 'internal_error', state: null }
     }
     const state = await this.getState(context.executionId)
     return state ? { accepted: true, state } : { accepted: false, reason: 'internal_error', state: null }
