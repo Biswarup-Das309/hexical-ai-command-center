@@ -18,6 +18,7 @@ export interface UseTTYExecutionStreamOptions {
   readonly enabled?: boolean
   readonly maxEvents?: number
   readonly flushIntervalMs?: number
+  readonly onExecutionNotFound?: () => void
 }
 
 export interface UseTTYExecutionStreamResult {
@@ -40,7 +41,8 @@ export function useTTYExecutionStream({
   sessionId,
   enabled = true,
   maxEvents = DEFAULT_MAX_EVENTS,
-  flushIntervalMs = DEFAULT_FLUSH_INTERVAL_MS
+  flushIntervalMs = DEFAULT_FLUSH_INTERVAL_MS,
+  onExecutionNotFound
 }: UseTTYExecutionStreamOptions): UseTTYExecutionStreamResult {
   const [events, setEvents] = useState<readonly TTYStreamEvent[]>([])
   const [connectionState, setConnectionState] = useState<TTYStreamClientConnectionState>('idle')
@@ -49,6 +51,8 @@ export function useTTYExecutionStream({
   const [reconnectCount, setReconnectCount] = useState(0)
   const [gapRecoveryCount, setGapRecoveryCount] = useState(0)
   const sourceRef = useRef<EventSource | null>(null)
+  const validationRef = useRef<AbortController | null>(null)
+  const connectionAttemptRef = useRef(0)
   const pendingRef = useRef<TTYStreamEvent[]>([])
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSequenceRef = useRef(0)
@@ -85,9 +89,23 @@ export function useTTYExecutionStream({
   }, [executionId, flush, flushIntervalMs])
 
   const closeSource = useCallback(() => {
+    validationRef.current?.abort()
+    validationRef.current = null
+    connectionAttemptRef.current += 1
     sourceRef.current?.close()
     sourceRef.current = null
   }, [])
+
+  const handleExecutionNotFound = useCallback(() => {
+    completedRef.current = true
+    pendingRef.current = []
+    lastSequenceRef.current = 0
+    setEvents([])
+    setLastEventId(null)
+    setConnectionState('error')
+    setError('No active execution')
+    onExecutionNotFound?.()
+  }, [onExecutionNotFound])
 
   const scheduleConnect = useCallback((delayMs: number) => {
     if (!mountedRef.current || !enabled || !executionId || completedRef.current) return
@@ -104,52 +122,83 @@ export function useTTYExecutionStream({
     if (!mountedRef.current || !enabled || !executionId || completedRef.current || typeof EventSource === 'undefined') return
     closeSource()
     setConnectionState('connecting')
-    const source = new EventSource(buildTTYStreamUrl(executionId, sessionId))
-    sourceRef.current = source
-    source.onopen = () => {
-      if (sourceRef.current !== source) return
-      setConnectionState('open')
-      setError(null)
-    }
-    source.onerror = () => {
-      if (sourceRef.current !== source || completedRef.current) return
-      setConnectionState('reconnecting')
-      if (source.readyState === EventSource.CLOSED) {
-        sourceRef.current = null
-        scheduleConnect(fullReplayRef.current ? 250 : 1_000)
-      }
-    }
-    const eventTypes = ['stdout', 'stderr', 'state', 'metric', 'heartbeat', 'completion', 'error'] as const
-    for (const type of eventTypes) {
-      source.addEventListener(type, (message: Event) => {
-        const data = (message as MessageEvent<string>).data
-        const event = parseTTYStreamMessage(data)
-        if (!event) {
-          setError('The execution stream returned an invalid event.')
-          return
+    const url = buildTTYStreamUrl(executionId, sessionId)
+    const attempt = connectionAttemptRef.current + 1
+    connectionAttemptRef.current = attempt
+    const validation = new AbortController()
+    validationRef.current = validation
+
+    void fetch(url, { cache: 'no-store', headers: { Accept: 'text/event-stream' }, signal: validation.signal }).then(async response => {
+      if (connectionAttemptRef.current !== attempt || !mountedRef.current || completedRef.current) return
+      const contentType = response.headers.get('content-type') ?? ''
+      if (!response.ok || !contentType.toLowerCase().includes('text/event-stream')) {
+        const body: unknown = await response.json().catch(() => null)
+        const code = typeof body === 'object' && body !== null && 'code' in body && typeof body.code === 'string' ? body.code : null
+        if (code === 'EXECUTION_NOT_FOUND' || response.status === 404) {
+          handleExecutionNotFound()
+        } else {
+          setConnectionState('error')
+          setError(typeof body === 'object' && body !== null && 'message' in body && typeof body.message === 'string' ? body.message : 'The execution stream is unavailable.')
         }
-        if (event.type === 'error') {
-          setError(event.payload.message)
-          if (event.payload.code === 'STREAM_GAP' || event.payload.code === 'STREAM_UNAVAILABLE') {
-            fullReplayRef.current = true
-            source.close()
-            sourceRef.current = null
-            setConnectionState('reconnecting')
-            scheduleConnect(250)
-            queueEvent(event)
+        return
+      }
+
+      validation.abort()
+      validationRef.current = null
+      if (connectionAttemptRef.current !== attempt || !mountedRef.current || completedRef.current) return
+
+      const source = new EventSource(url)
+      sourceRef.current = source
+      source.onopen = () => {
+        if (sourceRef.current !== source) return
+        setConnectionState('open')
+        setError(null)
+      }
+      source.onerror = () => {
+        if (sourceRef.current !== source || completedRef.current) return
+        setConnectionState('reconnecting')
+        if (source.readyState === EventSource.CLOSED) {
+          sourceRef.current = null
+          scheduleConnect(fullReplayRef.current ? 250 : 1_000)
+        }
+      }
+      const eventTypes = ['stdout', 'stderr', 'state', 'metric', 'heartbeat', 'completion', 'error'] as const
+      for (const type of eventTypes) {
+        source.addEventListener(type, (message: Event) => {
+          const data = (message as MessageEvent<string>).data
+          const event = parseTTYStreamMessage(data)
+          if (!event) {
+            setError('The execution stream returned an invalid event.')
             return
           }
-        }
-        queueEvent(event)
-        if (isTTYStreamTerminal(event)) {
-          completedRef.current = true
-          source.close()
-          sourceRef.current = null
-          setConnectionState('completed')
-        }
-      })
-    }
-  }, [closeSource, enabled, executionId, queueEvent, scheduleConnect, sessionId])
+          if (event.type === 'error') {
+            setError(event.payload.message)
+            if (event.payload.code === 'STREAM_GAP' || event.payload.code === 'STREAM_UNAVAILABLE') {
+              fullReplayRef.current = true
+              source.close()
+              sourceRef.current = null
+              setConnectionState('reconnecting')
+              scheduleConnect(250)
+              queueEvent(event)
+              return
+            }
+          }
+          queueEvent(event)
+          if (isTTYStreamTerminal(event)) {
+            completedRef.current = true
+            source.close()
+            sourceRef.current = null
+            setConnectionState('completed')
+          }
+        })
+      }
+    }).catch(error => {
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      if (connectionAttemptRef.current !== attempt || !mountedRef.current || completedRef.current) return
+      setConnectionState('reconnecting')
+      scheduleConnect(fullReplayRef.current ? 250 : 1_000)
+    })
+  }, [closeSource, enabled, executionId, handleExecutionNotFound, queueEvent, scheduleConnect, sessionId])
   connectRef.current = connect
 
   const disconnect = useCallback(() => {

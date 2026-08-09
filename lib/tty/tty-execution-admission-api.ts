@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 import { classifyTerminalInput, denialReasonToFailure, validateRawTerminalInput } from './tty-policy'
-import { toBrowserSafeJob, type TTYExecutionAdmission } from './tty-execution-admission'
+import { toBrowserSafeJob, type TTYExecutionAdmission, type TTYQueuedJob } from './tty-execution-admission'
 import { hasTTYCapability, type InternalTTYSession, type TTYSessionId } from './tty-types'
 import type { Tier } from '@/lib/hexical/types'
 
@@ -19,6 +19,7 @@ export interface TTYExecutionAdmissionApiDependencies {
   readonly resolveTier: (userId: string) => Promise<Tier>
   readonly getSession: (sessionId: TTYSessionId, ownerUserId: string) => Promise<InternalTTYSession | null>
   readonly admission: TTYExecutionAdmission
+  readonly startExecution?: (executionId: TTYQueuedJob['executionId'], sessionId: TTYSessionId) => Promise<{ readonly accepted: boolean }>
 }
 
 function response(body: unknown, status: number): Response {
@@ -66,6 +67,10 @@ export function createTTYExecutionAdmissionApi(dependencies: TTYExecutionAdmissi
         if (!result.admitted) {
           const status = result.reason === 'session_terminated' ? 409 : result.reason === 'authorization_required' ? 403 : result.reason === 'input_rejected' ? 400 : result.reason === 'internal_error' ? 500 : 429
           return failure(result.reason, status)
+        }
+        if (dependencies.startExecution) {
+          const started = await dependencies.startExecution(result.job.executionId, result.job.sessionId)
+          if (!started.accepted) return response({ ok: false, code: 'EXECUTION_NOT_STARTED', message: 'The execution could not be started.' }, 503)
         }
         return response({ ok: true, job: toBrowserSafeJob(result.job), duplicate: result.duplicate }, result.duplicate ? 200 : 202)
       } catch {

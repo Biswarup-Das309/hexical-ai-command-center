@@ -1,24 +1,27 @@
 import 'server-only'
-import { clerkClient } from '@clerk/nextjs/server'
 
-type Tier = 'free' | 'go' | 'plus' | 'pro'
+import { createClient } from '@supabase/supabase-js'
+
+import type { Tier } from '@/lib/hexical/types'
+import { resolveWorkspaceEntitlement, type WorkspaceEntitlementProfile } from '@/lib/workspace-entitlement'
 
 /**
- * PLACEHOLDER — wire this to whatever actually determines a user's
- * paid tier. Clerk publicMetadata works but drifts if a Stripe
- * webhook is ever missed; if you sync subscriptions into your own
- * table, query that instead and treat this as the fallback.
- *
- * The one rule that matters: tier is never read from client input,
- * anywhere, under any circumstances. It's always looked up here.
+ * Resolves the same profile record used by /api/entitlement. Clerk supplies
+ * the authenticated owner key; optional Clerk metadata must not decide paid
+ * access because it can lag the durable subscription profile.
  */
 export async function getUserTier(userId: string): Promise<Tier> {
-  const client = await clerkClient()
-  const user = await client.users.getUser(userId)
-  const tier = user.publicMetadata?.tier
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !serviceRoleKey) return 'free'
 
-  if (tier === 'go' || tier === 'plus' || tier === 'pro') {
-    return tier
-  }
-  return 'free'
+  const supabaseAdmin = createClient(url, serviceRoleKey)
+  const { data, error } = await supabaseAdmin
+    .from('profiles')
+    .select('tier, subscription_status, current_period_end')
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (error) return 'free'
+  return resolveWorkspaceEntitlement(data as WorkspaceEntitlementProfile | null).tier
 }

@@ -31,3 +31,16 @@ test('workspace uses the editable title control and parent sidebar receives the 
   assert.match(console, /await investigationManager\.rename\(investigationId, title, description\)/)
   assert.match(investigations, /replaceInvestigation\(current, response\.investigation\)/)
 })
+
+test('workspace turns a failed session attach into a visible retryable license state', async () => {
+  const [workspace, hook] = await Promise.all([
+    source('components/workspace/PersistentInvestigationWorkspace.tsx'),
+    source('hooks/useInvestigationWorkspace.ts')
+  ])
+
+  assert.match(hook, /readonly sessionFailure: InvestigationSessionFailure \| null/)
+  assert.match(hook, /\{ code: cause\.code, message: cause\.message \}/)
+  assert.match(workspace, /sessionFailure \? 'session unavailable' : 'attaching session'/)
+  assert.match(workspace, /sessionFailure\.code === 'CAPABILITY_LOCKED'/)
+  assert.match(workspace, /Retry session/)
+})
