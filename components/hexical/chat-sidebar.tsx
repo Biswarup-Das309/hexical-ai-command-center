@@ -296,7 +296,6 @@ export function ChatSidebar({
             <div className="flex w-full items-center gap-3">
               <div className="flex flex-shrink-0 items-center justify-center">
                <UserButton 
-  afterSignOutUrl="/"
   appearance={{ elements: { avatarBox: 'size-8 rounded-md' } }} 
 />
               </div>

@@ -10,6 +10,7 @@ import { PLAN_CATALOG, PLAN_ORDER, type PlanDisplayConfig, type PlanFeatureIcon,
 
 interface UpgradeModalProps {
   onClose: () => void
+  onSuccess?: () => void
   currentTier?: PlanTier | 'enterprise'
 }
 
@@ -123,7 +124,7 @@ function PricingCard({ action, plan }: { action: ReactElement; plan: PlanDisplay
   )
 }
 
-export default function UpgradeModal({ onClose, currentTier = 'free' }: UpgradeModalProps) {
+export default function UpgradeModal({ onClose, onSuccess, currentTier = 'free' }: UpgradeModalProps) {
   const router = useRouter()
   const [billingCycle, setBillingCycle] = useState<'personal' | 'business'>('personal')
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null)
@@ -191,6 +192,7 @@ export default function UpgradeModal({ onClose, currentTier = 'free' }: UpgradeM
             })
 
             router.refresh()
+            onSuccess?.()
             onClose()
           } catch {
             toast.error('Verification Failed', {

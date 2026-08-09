@@ -133,6 +133,8 @@ import {
   type TTYTerminationReason,
   type TTYTerminationResult
 } from './tty-types'
+import { ttyExecutionJobKey, ttyWorkerActiveLeasesKey, ttyWorkerActiveLeaseIndexKey, ttyWorkerLeaseIndexMember } from './tty-worker-keys'
+import { parseTTYWorkerId, type TTYLeaseId, type TTYWorkerExecutionMetadata } from './tty-worker-types'
 
 // ============================================================================
 // 1. CONSTANTS
@@ -370,12 +372,26 @@ export class TTYSessionStore {
     // inspectable/auditable until its own absolute TTL (maxSessionDurationMs
     // from creation) naturally expires it.
     try {
+      const jobIds = await this.redis.smembers(this.jobsKey(sessionId)).catch(() => [] as string[])
+      const idempotencyKeys = await this.redis.smembers(this.idempotenciesKey(sessionId)).catch(() => [] as string[])
+      const workerLeases = (await Promise.all(jobIds.map(async jobId => {
+        const raw = await this.redis.get<unknown>(`tty:job:${jobId}`).catch(() => null)
+        return raw === null ? null : workerLeaseFromRawJob(raw, sessionId)
+      }))).filter((lease): lease is TTYWorkerExecutionMetadata & { readonly workerId: NonNullable<TTYWorkerExecutionMetadata['workerId']> } => lease !== null && lease.workerId !== null)
       await Promise.all([
         this.redis.del(this.activeExecKey(sessionId)),
         this.redis.del(this.queueDepthKey(sessionId)),
         this.redis.del(this.execWindowKey(sessionId)),
         this.redis.del(this.statusKey(sessionId)),
-        this.redis.srem(this.userIndexKey(ownerUserId), sessionId)
+        this.redis.del(this.jobsKey(sessionId)),
+        this.redis.del(this.idempotenciesKey(sessionId)),
+        ...(jobIds.length > 0 ? [this.redis.del(...jobIds.map(id => `tty:job:${id}`))] : []),
+        ...(idempotencyKeys.length > 0 ? [this.redis.del(...idempotencyKeys)] : []),
+        this.redis.srem(this.userIndexKey(ownerUserId), sessionId),
+        ...workerLeases.flatMap(lease => [
+          this.redis.srem(ttyWorkerActiveLeasesKey(lease.workerId), lease.executionId),
+          this.redis.srem(ttyWorkerActiveLeaseIndexKey(), ttyWorkerLeaseIndexMember(lease.workerId, lease.executionId))
+        ])
       ])
     } catch (error) {
       this.logger.warn(
@@ -400,6 +416,14 @@ export class TTYSessionStore {
       await this.redis.set(key, 0)
     }
     await this.redis.expire(key, EXECUTION_COUNTER_TTL_SECS)
+  }
+
+  private jobsKey(id: TTYSessionId): string {
+    return `${SESSION_KEY_PREFIX}${id}:jobs`
+  }
+
+  private idempotenciesKey(id: TTYSessionId): string {
+    return `${SESSION_KEY_PREFIX}${id}:idempotencies`
   }
 
   private async countRecentExecutions(sessionId: TTYSessionId, nowMs: number): Promise<number> {
@@ -599,6 +623,30 @@ export class TTYSessionStore {
   }
 
   /**
+   * Returns safe worker attribution for executions belonging to an owned
+   * session. Lease tokens are intentionally omitted. The job record remains
+   * the source of truth and the result is sorted for deterministic replay.
+   */
+  async getWorkerExecutionMetadata(
+    sessionId: TTYSessionId,
+    expectedOwnerUserId: string
+  ): Promise<readonly TTYWorkerExecutionMetadata[]> {
+    const session = await this.getSession(sessionId, expectedOwnerUserId)
+    if (session === null) return []
+    try {
+      const jobIds = await this.redis.smembers(this.jobsKey(sessionId))
+      const metadata = (await Promise.all(jobIds.map(async jobId => {
+        const raw = await this.redis.get<unknown>(ttyExecutionJobKey(jobId as TTYExecutionId))
+        return raw === null ? null : workerLeaseFromRawJob(raw, sessionId)
+      }))).filter((item): item is TTYWorkerExecutionMetadata => item !== null)
+      return metadata.sort((left, right) => left.executionId.localeCompare(right.executionId))
+    } catch (error) {
+      this.logger.error('Failed to read worker-aware TTY execution metadata.', { sessionId, error })
+      return []
+    }
+  }
+
+  /**
    * Records activity and refreshes the idle window. Returns null (never
    * revives) if the session doesn't exist, isn't owned by
    * `ownerUserId`, is already terminal, or has newly exceeded its
@@ -723,4 +771,37 @@ export function createTTYSessionStore(redis: Redis, options?: { logger?: TTYSess
 export function toBrowserSafeSession(session: InternalTTYSession): TTYSession {
   const { ownerUserId: _ownerUserId, usage: _usage, ...browserSafe } = session
   return browserSafe
+}
+
+function workerLeaseFromRawJob(raw: unknown, sessionId: TTYSessionId): TTYWorkerExecutionMetadata | null {
+  try {
+    const parsed: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const record = parsed as Record<string, unknown>
+    const executionId = typeof record.executionId === 'string' ? record.executionId as TTYExecutionId : null
+    const status = record.status
+    if (executionId === null || (status !== 'queued' && status !== 'leased' && status !== 'abandoned')) return null
+    if (status === 'queued' || status === 'abandoned') {
+      return { executionId, sessionId, workerId: null, leaseId: null, claimedAt: null, renewedAt: null, leaseAgeMs: null, executionState: status }
+    }
+    if (typeof record.lease !== 'object' || record.lease === null) return null
+    const lease = record.lease as Record<string, unknown>
+    const workerId = typeof lease.workerId === 'string' ? parseTTYWorkerId(lease.workerId) : null
+    const token = typeof lease.token === 'string' ? lease.token : null
+    const claimedAtMs = typeof lease.claimedAtMs === 'number' ? lease.claimedAtMs : null
+    const renewedAtMs = typeof lease.renewedAtMs === 'number' ? lease.renewedAtMs : claimedAtMs
+    if (workerId === null || token === null || claimedAtMs === null || renewedAtMs === null) return null
+    return {
+      executionId,
+      sessionId,
+      workerId,
+      leaseId: (typeof lease.leaseId === 'string' ? lease.leaseId : token) as TTYLeaseId,
+      claimedAt: new Date(claimedAtMs).toISOString(),
+      renewedAt: new Date(renewedAtMs).toISOString(),
+      leaseAgeMs: Math.max(0, Date.now() - claimedAtMs),
+      executionState: 'leased'
+    }
+  } catch {
+    return null
+  }
 }

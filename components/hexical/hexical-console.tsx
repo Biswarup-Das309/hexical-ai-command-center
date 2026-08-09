@@ -807,7 +807,9 @@ export function HexicalConsole() {
           pinned: c.pinned,
           messages: msgs ? msgs.filter(m => m.conversation_id === c.id).map(m => ({
               id: m.id, 
-              role: m.role, 
+              role: m.role === 'user' || m.role === 'system' || m.role === 'error' || m.role === 'hexical'
+                ? m.role
+                : 'error',
               text: m.content, 
               ts: new Date(m.created_at).toLocaleTimeString('en-GB', { hour12: false, fractionalSecondDigits: 2 }),
               steps: m.role === 'hexical' ? ['REHYDRATED_STATE'] : [], 

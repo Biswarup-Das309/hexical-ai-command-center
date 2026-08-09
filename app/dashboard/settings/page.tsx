@@ -229,10 +229,6 @@ export default function SettingsPage() {
                     variables: {
                       colorPrimary: '#06b6d4',
                       colorBackground: '#111116',
-                      colorText: '#ffffff',
-                      colorTextSecondary: '#a1a1aa',
-                      colorInputBackground: '#0a0a0c',
-                      colorInputText: '#ffffff',
                       colorDanger: '#f43f5e',
                     },
                     elements: {

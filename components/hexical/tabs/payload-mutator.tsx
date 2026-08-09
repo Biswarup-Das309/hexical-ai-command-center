@@ -328,12 +328,18 @@ function md5(bytes: Uint8Array): string {
   return Array.from(out).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(bytes.byteLength)
+  copy.set(bytes)
+  return copy.buffer
+}
+
 async function sha1Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-1', bytes);
+  const digest = await crypto.subtle.digest('SHA-1', toArrayBuffer(bytes));
   return digestToHex(digest);
 }
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  const digest = await crypto.subtle.digest('SHA-256', toArrayBuffer(bytes));
   return digestToHex(digest);
 }
 
@@ -349,8 +355,8 @@ function base64urlDecodeBytes(str: string): Uint8Array {
   return base64DecodeBytes(s);
 }
 async function hmacSha256(secret: string, message: string): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey('raw', textToBytes(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const sig = await crypto.subtle.sign('HMAC', key, textToBytes(message));
+  const key = await crypto.subtle.importKey('raw', toArrayBuffer(textToBytes(secret)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, toArrayBuffer(textToBytes(message)));
   return new Uint8Array(sig);
 }
 

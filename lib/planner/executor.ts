@@ -106,7 +106,7 @@ import {
     Timestamped,
     Timestamp,
     VersionNumber
-} from "./memory";
+} from "../memory";
 
 /* =============================================================================
  * Global Constants
@@ -177,7 +177,7 @@ export enum ExecutionState {
  * task quietly re-entering "running") than to reject the instant it would
  * occur.
  */
-const LEGAL_EXECUTION_TRANSITIONS: ReadonlyMap<ExecutionState, ReadonlySet<ExecutionState>> = new Map([
+const LEGAL_EXECUTION_TRANSITIONS: ReadonlyMap<ExecutionState, ReadonlySet<ExecutionState>> = new Map<ExecutionState, ReadonlySet<ExecutionState>>([
     [ExecutionState.Pending, new Set([ExecutionState.Waiting, ExecutionState.Ready, ExecutionState.Cancelled])],
     [ExecutionState.Waiting, new Set([ExecutionState.Ready, ExecutionState.Skipped, ExecutionState.Cancelled])],
     [ExecutionState.Ready, new Set([ExecutionState.Dispatched, ExecutionState.Skipped, ExecutionState.Cancelled])],

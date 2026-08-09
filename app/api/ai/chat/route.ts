@@ -4,6 +4,7 @@ import { cookies } from 'next/headers'
 import { randomUUID } from 'crypto'
 import { aiGateway } from '@/lib/ai-gateway'
 import { getUserTier } from '@/lib/get-user-tier'
+import type { PlanTier } from '@/lib/plans'
 
 const MAX_BODY_BYTES = 100_000
 
@@ -45,8 +46,8 @@ function mapStatus(reason?: string): number {
 /**
  * Proper guest identity system (cookie-based, per user)
  */
-function getGuestId() {
-  const cookieStore = cookies()
+async function getGuestId() {
+  const cookieStore = await cookies()
 
   let guestId = cookieStore.get('guest_id')?.value
 
@@ -69,7 +70,7 @@ export async function POST(req: Request) {
   const { userId } = await auth()
 
   const isGuest = !userId
-  const actualUserId = userId ?? getGuestId()
+  const actualUserId = userId ?? await getGuestId()
 
   // 1. Size check BEFORE parsing
   const contentLength = Number(req.headers.get('content-length') ?? 0)
@@ -99,7 +100,7 @@ export async function POST(req: Request) {
   }
 
   // 3. Tier logic
-  let tier = 'go' // default for guests
+  let tier: PlanTier = 'go' // default for guests
 
   if (!isGuest) {
     try {
