@@ -67,6 +67,7 @@ export function useInvestigations(): UseInvestigationsResult {
   const listRequestRef = useRef(0)
   const mutationVersionRef = useRef(0)
   const paginationInFlightRef = useRef(false)
+  const createInFlightRef = useRef(false)
   const mutationQueuesRef = useRef(new Map<string, Promise<void>>())
 
   const updateInvestigations = useCallback((updater: (current: readonly PublicInvestigation[]) => readonly PublicInvestigation[]) => {
@@ -143,6 +144,8 @@ export function useInvestigations(): UseInvestigationsResult {
   }, [fetchPage, nextCursor, updateInvestigations])
 
   const create = useCallback(async (input: { readonly title?: string; readonly description?: string } = {}) => {
+    if (createInFlightRef.current) return null
+    createInFlightRef.current = true
     setLoading(true)
     try {
       const body = await requestJson<{ readonly ok: true; readonly investigation: PublicInvestigation }>('/api/investigations', {
@@ -157,6 +160,7 @@ export function useInvestigations(): UseInvestigationsResult {
       setError(cause instanceof Error ? cause.message : 'The investigation could not be created.')
       return null
     } finally {
+      createInFlightRef.current = false
       setLoading(false)
     }
   }, [updateInvestigations])

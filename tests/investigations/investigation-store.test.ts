@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { InvestigationStore } from '../../lib/investigations/investigation-store'
-import { investigationRecordKey } from '../../lib/investigations/investigation-keys'
+import { investigationOwnerIndexKey, investigationRecordKey, investigationSessionKey } from '../../lib/investigations/investigation-keys'
 import { FakeInvestigationRedis } from './fake-investigation-redis'
 
 const OWNER = 'user-investigation-owner'
@@ -68,6 +68,25 @@ test('paginates past stale owner-index entries without underfilling a page', asy
   assert.deepEqual(page.investigations.map(item => item.investigationId), [second.investigationId, first.investigationId])
   assert.equal(page.investigations.length, 2)
   assert.equal(page.nextCursor, null)
+  assert.equal((await redis.zrange<string[]>(investigationOwnerIndexKey(OWNER), 0, -1, { rev: true, offset: 0, count: 10 })).includes(third.investigationId), false)
+})
+
+test('attaches one durable TTY session per investigation and removes it during deletion', async () => {
+  const redis = new FakeInvestigationRedis()
+  const investigations = store(redis)
+  const created = await investigations.create(OWNER, { title: 'TTY session binding', description: '' }, FIXED_TIME)
+  const attached = await Promise.all([
+    investigations.attachSession(OWNER, created.investigationId, '00000000-0000-4000-8000-000000000921', FIXED_TIME),
+    investigations.attachSession(OWNER, created.investigationId, '00000000-0000-4000-8000-000000000922', FIXED_TIME)
+  ])
+
+  assert.ok(attached[0]?.ttySessionId)
+  assert.equal(attached[0]?.ttySessionId, attached[1]?.ttySessionId)
+  assert.equal((await investigations.get(OWNER, created.investigationId))?.investigation.ttySessionId, attached[0]?.ttySessionId)
+  assert.equal((await investigations.get(OWNER, created.investigationId))?.timeline.some(event => event.type === 'session_attached'), true)
+
+  await investigations.delete(OWNER, created.investigationId)
+  assert.equal(await redis.get(investigationSessionKey(created.investigationId)), null)
 })
 
 test('edits and deletes notes through replayable timeline events', async () => {

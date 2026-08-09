@@ -1574,7 +1574,16 @@ export function HexicalConsole() {
               <div className="p-4 md:p-6 h-full relative">
                 {!hasFeatureAccess('advanced_terminal') && <LockedFeatureOverlay featureName="Execution Sandbox" />}
                 <div className={`mx-auto h-full max-w-5xl ${!hasFeatureAccess('advanced_terminal') ? 'blur-md pointer-events-none' : ''}`}>
-                  <AdvancedTerminal logs={systemLogs} theme={uiTheme} onCommand={handleTerminalCommand} />
+                  {activeInvestigationId ? <PersistentInvestigationWorkspace
+                    key={`terminal:${activeInvestigationId}:${workspaceRevision}`}
+                    investigationId={activeInvestigationId}
+                    autoCreate={false}
+                    onNewInvestigation={handleNewInvestigation}
+                    onRename={(title, description) => handleRenameInvestigation(activeInvestigationId, title, description)}
+                    onArchive={() => handleArchiveInvestigation(activeInvestigationId)}
+                    onRestore={() => handleRestoreInvestigation(activeInvestigationId)}
+                    onDelete={() => handleDeleteInvestigation(activeInvestigationId)}
+                  /> : <AdvancedTerminal logs={systemLogs} theme={uiTheme} onCommand={handleTerminalCommand} unavailableReason="No investigation selected" />}
                 </div>
               </div>
             )}

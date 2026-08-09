@@ -16,6 +16,8 @@ export type InvestigationTimelineEventType =
   | 'stderr'
   | 'execution_completed'
   | 'execution_failed'
+  | 'session_attached'
+  | 'session_terminated'
   | 'evidence_bookmarked'
   | 'note_added'
   | 'note_edited'
@@ -30,6 +32,7 @@ export interface InvestigationRecord {
   readonly createdAt: string
   readonly updatedAt: string
   readonly archivedAt: string | null
+  readonly ttySessionId: string | null
   readonly executionCount: number
   readonly evidenceCount: number
   readonly findingCount: number

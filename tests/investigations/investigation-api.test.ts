@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { createInvestigationApi, createInvestigationExecutionApi } from '../../lib/investigations/investigation-api'
+import { createInvestigationApi, createInvestigationExecutionApi, createInvestigationSessionApi } from '../../lib/investigations/investigation-api'
 import { InvestigationStore } from '../../lib/investigations/investigation-store'
 import { FakeInvestigationRedis } from './fake-investigation-redis'
 
@@ -113,6 +113,24 @@ test('timeline API validates and persists notes and evidence bookmarks', async (
   assert.equal((await fixtureData.api.timeline(request('POST', `/api/investigations/${secondId}/timeline`, { type: 'note', body: '' }), secondId)).status, 400)
 })
 
+test('a saved title persists through detail refresh and the sidebar list projection', async () => {
+  const fixtureData = fixture()
+  const created = await fixtureData.api.create(request('POST', '/api/investigations', { title: 'ACME', description: '' }))
+  const createdBody = await read(created)
+  const investigationId = String((createdBody.investigation as Record<string, unknown>).investigationId)
+
+  const renamed = await fixtureData.api.patch(request('PATCH', `/api/investigations/${investigationId}`, { title: 'New investigation title' }), investigationId)
+  assert.equal(renamed.status, 200)
+  assert.equal(String(((await read(renamed)).investigation as Record<string, unknown>).title), 'New investigation title')
+
+  const refreshed = await read(await fixtureData.api.get(request('GET', `/api/investigations/${investigationId}`), investigationId))
+  assert.equal(String((refreshed.investigation as Record<string, unknown>).title), 'New investigation title')
+
+  const sidebar = await read(await fixtureData.api.list(request('GET', '/api/investigations?limit=50')))
+  const sidebarTitle = (sidebar.investigations as Array<Record<string, unknown>>).find(item => String(item.investigationId) === investigationId)?.title
+  assert.equal(sidebarTitle, 'New investigation title')
+})
+
 test('investigation execution attachment composes with the frozen admission boundary', async () => {
   const store = new InvestigationStore(new FakeInvestigationRedis())
   let user: string | null = OWNER
@@ -137,4 +155,42 @@ test('investigation execution attachment composes with the frozen admission boun
   user = OTHER
   assert.equal((await executionApi.attach(request('POST', `/api/investigations/${investigationId}/executions`, { sessionId: SESSION_ID, input: 'approved probe', idempotencyKey: 'investigation-idempotency-2' }), investigationId)).status, 404)
   assert.equal(admissions, 1)
+})
+
+test('investigation session lifecycle is owner-scoped, durable, reusable, and terminable', async () => {
+  const store = new InvestigationStore(new FakeInvestigationRedis())
+  let user: string | null = OWNER
+  const api = createInvestigationApi({ authenticate: async () => user, getStore: () => store })
+  const created = await api.create(request('POST', '/api/investigations', { title: 'TTY lifecycle' }))
+  const createdBody = await read(created)
+  const investigationId = String((createdBody.investigation as Record<string, unknown>).investigationId)
+  let sessionCreates = 0
+  let terminated = false
+  const sessionApi = createInvestigationSessionApi({
+    authenticate: async () => user,
+    getStore: () => store,
+    createTTYSession: async () => {
+      sessionCreates += 1
+      return new Response(JSON.stringify({ ok: true, session: { sessionId: SESSION_ID, status: 'active' } }), { status: 201 })
+    },
+    getTTYSession: async () => new Response(JSON.stringify({ ok: true, session: { sessionId: SESSION_ID, status: terminated ? 'terminated' : 'active' } }), { status: 200 }),
+    terminateTTYSession: async () => {
+      terminated = true
+      return new Response(JSON.stringify({ ok: true, sessionId: SESSION_ID }), { status: 200 })
+    }
+  })
+
+  const first = await sessionApi.ensure(request('POST', `/api/investigations/${investigationId}/session`), investigationId)
+  assert.equal(first.status, 201)
+  const second = await sessionApi.ensure(request('POST', `/api/investigations/${investigationId}/session`), investigationId)
+  assert.equal(second.status, 200)
+  assert.equal(sessionCreates, 1)
+  assert.equal((await store.get(OWNER, investigationId as never))?.investigation.ttySessionId, SESSION_ID)
+
+  user = OTHER
+  assert.equal((await sessionApi.ensure(request('POST', `/api/investigations/${investigationId}/session`), investigationId)).status, 404)
+  user = OWNER
+  assert.equal((await sessionApi.terminate(request('DELETE', `/api/investigations/${investigationId}/session`), investigationId)).status, 200)
+  assert.equal(terminated, true)
+  assert.equal((await store.get(OWNER, investigationId as never))?.investigation.ttySessionId, null)
 })

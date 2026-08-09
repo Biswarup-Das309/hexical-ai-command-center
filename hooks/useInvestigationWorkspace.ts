@@ -41,6 +41,8 @@ export interface UseInvestigationWorkspaceResult {
   readonly archive: () => Promise<void>
   readonly restore: () => Promise<void>
   readonly remove: () => Promise<void>
+  readonly ensureSession: () => Promise<string | null>
+  readonly terminateSession: () => Promise<void>
   readonly addNote: (body: string) => Promise<void>
   readonly editNote: (noteId: string, body: string) => Promise<void>
   readonly deleteNote: (noteId: string) => Promise<void>
@@ -113,6 +115,7 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
   const loadRequestRef = useRef(0)
   const createInFlightRef = useRef(false)
   const mutationQueueRef = useRef(Promise.resolve())
+  const sessionProvisionRef = useRef<Promise<string | null> | null>(null)
 
   const fetchInvestigation = useCallback(async (id: string, query = ''): Promise<InvestigationWorkspaceData> => {
     const body = await requestJson<{ ok: true } & InvestigationWorkspaceData>(`/api/investigations/${id}${query}`)
@@ -276,6 +279,43 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
     return next
   }, [])
 
+  const ensureSession = useCallback(async (): Promise<string | null> => {
+    if (!resolvedInvestigationId) return null
+    if (data?.investigation.ttySessionId) return data.investigation.ttySessionId
+    if (sessionProvisionRef.current) return sessionProvisionRef.current
+
+    let sessionId: string | null = null
+    const provision = queueMutation(async () => {
+      const response = await requestJson<{ ok: true; investigation: PublicInvestigation; sessionId: string }>(`/api/investigations/${resolvedInvestigationId}/session`, { method: 'POST' })
+      sessionId = response.sessionId
+      setData(current => current ? { ...current, investigation: { ...current.investigation, ...response.investigation } } : current)
+      setError(null)
+    }).then(() => sessionId)
+    sessionProvisionRef.current = provision
+    try {
+      return await provision
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'The execution session could not be attached.')
+      throw cause
+    } finally {
+      if (sessionProvisionRef.current === provision) sessionProvisionRef.current = null
+    }
+  }, [data?.investigation.ttySessionId, queueMutation, resolvedInvestigationId])
+
+  const terminateSession = useCallback(async () => {
+    if (!resolvedInvestigationId) return
+    try {
+      await queueMutation(async () => {
+        const response = await requestJson<{ ok: true; investigation: PublicInvestigation }>(`/api/investigations/${resolvedInvestigationId}/session`, { method: 'DELETE' })
+        setData(current => current ? { ...current, investigation: { ...current.investigation, ...response.investigation } } : current)
+        setError(null)
+      })
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'The execution session could not be terminated.')
+      throw cause
+    }
+  }, [queueMutation, resolvedInvestigationId])
+
   const timelinePost = useCallback(async (body: Record<string, unknown>) => {
     if (!resolvedInvestigationId) return
     try {
@@ -332,5 +372,5 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
     return executionId
   }, [load, queueMutation, resolvedInvestigationId])
 
-  return useMemo(() => ({ investigationId: resolvedInvestigationId, data, loading, error, create, refresh, loadMoreTimeline, loadMoreExecutions, rename, archive, restore, remove, addNote, editNote, deleteNote, addBookmark, attachExecution }), [addBookmark, addNote, archive, attachExecution, create, data, deleteNote, editNote, error, loadMoreExecutions, loadMoreTimeline, refresh, remove, rename, resolvedInvestigationId, restore, loading])
+  return useMemo(() => ({ investigationId: resolvedInvestigationId, data, loading, error, create, refresh, loadMoreTimeline, loadMoreExecutions, rename, archive, restore, remove, ensureSession, terminateSession, addNote, editNote, deleteNote, addBookmark, attachExecution }), [addBookmark, addNote, archive, attachExecution, create, data, deleteNote, editNote, ensureSession, error, loadMoreExecutions, loadMoreTimeline, refresh, remove, rename, resolvedInvestigationId, restore, loading, terminateSession])
 }

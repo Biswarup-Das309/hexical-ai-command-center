@@ -1,10 +1,11 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Archive, FilePlus2, Pencil, RefreshCw, Save, StickyNote, Trash2 } from 'lucide-react'
+import { Archive, FilePlus2, Play, Pencil, RefreshCw, Save, Square, StickyNote, Trash2 } from 'lucide-react'
 
 import type { TTYEvidenceCandidate } from '@/components/tty/EvidenceBookmarks'
 import { EvidenceGraphPanel } from '@/components/workspace/EvidenceGraphPanel'
+import { InvestigationTitleEditor } from '@/components/workspace/InvestigationTitleEditor'
 import { InvestigationWorkspace } from '@/components/workspace/InvestigationWorkspace'
 import { useInvestigationWorkspace } from '@/hooks/useInvestigationWorkspace'
 import type { InvestigationBookmark } from '@/lib/investigations/investigation-types'
@@ -45,6 +46,9 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null)
   const [editingNoteBody, setEditingNoteBody] = useState('')
   const [noteError, setNoteError] = useState<string | null>(null)
+  const [executionInput, setExecutionInput] = useState('')
+  const [executionError, setExecutionError] = useState<string | null>(null)
+  const [submittingExecution, setSubmittingExecution] = useState(false)
   const draftInvestigationIdRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -58,16 +62,25 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
     setEditingNoteBody('')
   }, [workspace.data?.investigation])
 
+  useEffect(() => {
+    if (!workspace.data || workspace.data.investigation.ttySessionId) return
+    void workspace.ensureSession().catch(() => {})
+  }, [workspace.data?.investigation.investigationId, workspace.data?.investigation.ttySessionId, workspace.ensureSession])
+
   const activeExecutionId = requestedExecutionId ?? selectedExecutionId ?? workspace.data?.executions[0]?.executionId ?? null
   const history = useMemo(() => workspace.data?.executions.map(execution => ({ executionId: execution.executionId, state: execution.state, updatedAt: execution.updatedAt, durationMs: execution.durationMs ?? undefined })) ?? [], [workspace.data?.executions])
   const bookmarks = useMemo(() => workspace.data?.bookmarks.filter(bookmark => bookmark.executionId === activeExecutionId).map(toTTYBookmark) ?? [], [activeExecutionId, workspace.data?.bookmarks])
   const candidates = useMemo<readonly TTYEvidenceCandidate[]>(() => workspace.data?.timeline.filter(event => event.executionId === activeExecutionId && (event.type === 'stdout' || event.type === 'stderr')).slice(-8).map(event => ({ sequence: event.sequence ?? 0, lineNumber: null, kind: event.type === 'stderr' ? 'error' : 'output', label: event.type, excerpt: String(event.payload.text ?? '') })) ?? [], [activeExecutionId, workspace.data?.timeline])
 
+  const activeSessionId = sessionId ?? workspace.data?.executions.find(execution => execution.executionId === activeExecutionId)?.sessionId ?? workspace.data?.investigation.ttySessionId ?? null
+
   const saveMetadata = async () => {
     if (!workspace.data) return
     const nextTitle = title.trim()
     if (!nextTitle) {
-      setMetadataError('Investigation title cannot be empty.')
+      const restoredTitle = workspace.data.investigation.title.trim() || 'Untitled Investigation'
+      setTitle(restoredTitle)
+      setMetadataError('Title was restored because investigation titles cannot be empty.')
       return
     }
     if (nextTitle.length > 200) {
@@ -137,6 +150,35 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
     }
   }
 
+  const execute = async (rawInput: string) => {
+    const input = rawInput.trim()
+    if (!input) return
+    setSubmittingExecution(true)
+    setExecutionError(null)
+    try {
+      const attachedSessionId = activeSessionId ?? await workspace.ensureSession()
+      if (!attachedSessionId) throw new Error('No execution session is attached to this investigation.')
+      const executionId = await workspace.attachExecution({ sessionId: attachedSessionId, input, idempotencyKey: crypto.randomUUID() })
+      if (!executionId) throw new Error('The execution could not be attached.')
+      setSelectedExecutionId(executionId)
+      setExecutionInput('')
+    } catch (cause) {
+      setExecutionError(cause instanceof Error ? cause.message : 'The execution could not be submitted.')
+      throw cause
+    } finally {
+      setSubmittingExecution(false)
+    }
+  }
+
+  const terminateSession = async () => {
+    try {
+      setExecutionError(null)
+      await workspace.terminateSession()
+    } catch (cause) {
+      setExecutionError(cause instanceof Error ? cause.message : 'The execution session could not be terminated.')
+    }
+  }
+
   if (!workspace.data) {
     return <main className="min-h-screen bg-[#070709] p-6 text-zinc-200" aria-label="Investigation workspace loading"><div className="mx-auto max-w-3xl rounded-lg border border-white/10 bg-black/30 p-6 font-mono text-xs text-zinc-500">{workspace.loading ? 'Hydrating investigation…' : workspace.error ?? 'Preparing investigation workspace…'}</div></main>
   }
@@ -147,7 +189,7 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
     <div className="min-h-screen bg-[#070709] text-zinc-200">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-black/30 px-4 py-3">
         <div className="min-w-0 flex-1">
-          <input value={title} onChange={event => setTitle(event.target.value)} aria-label="Investigation title" className="w-full bg-transparent font-mono text-sm font-semibold text-cyan-200 outline-none" />
+          <InvestigationTitleEditor title={title} disabled={savingMetadata} onTitleChange={setTitle} onSave={() => void saveMetadata()} />
           <input value={description} onChange={event => setDescription(event.target.value)} aria-label="Investigation description" placeholder="Describe the investigation" className="mt-1 w-full bg-transparent font-mono text-[10px] text-zinc-500 outline-none" />
         </div>
         <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-wider">
@@ -162,13 +204,14 @@ export function PersistentInvestigationWorkspace({ investigationId, autoCreate =
       {metadataError && <p role="alert" className="border-b border-rose-400/20 bg-rose-400/[0.04] px-4 py-2 font-mono text-[10px] text-rose-300">{metadataError}</p>}
 
       <div className="border-b border-white/10 bg-black/20 px-4 py-2 font-mono text-[10px] text-zinc-500">
-        <span className="mr-4">executions {investigation.executionCount}</span><span className="mr-4">evidence {investigation.evidenceCount}</span><span>findings {investigation.findingCount}</span>
+        <span className="mr-4">executions {investigation.executionCount}</span><span className="mr-4">evidence {investigation.evidenceCount}</span><span className="mr-4">findings {investigation.findingCount}</span><span className={activeSessionId ? 'text-emerald-300' : 'text-amber-300'}>{activeSessionId ? 'session attached' : 'attaching session'}</span>
       </div>
 
       <EvidenceGraphPanel investigationId={investigation.investigationId} />
 
-      {showExecution ? <InvestigationWorkspace executionId={activeExecutionId} sessionId={sessionId} command={investigation.title} history={history} onSelectHistory={setSelectedExecutionId} initialBookmarks={bookmarks} onBookmarkAdded={bookmark => workspace.addBookmark({ executionId: bookmark.executionId, sequence: bookmark.sequence, lineNumber: bookmark.lineNumber, kind: bookmark.kind, label: bookmark.label, excerpt: bookmark.excerpt })} /> : <section className="mx-auto grid max-w-5xl gap-4 p-6 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)]">
+      {showExecution ? <InvestigationWorkspace executionId={activeExecutionId} sessionId={activeSessionId ?? undefined} command={investigation.title} history={history} onSelectHistory={setSelectedExecutionId} onExecute={execute} onCancel={terminateSession} onRestart={() => execute(investigation.title)} initialBookmarks={bookmarks} onBookmarkAdded={bookmark => workspace.addBookmark({ executionId: bookmark.executionId, sequence: bookmark.sequence, lineNumber: bookmark.lineNumber, kind: bookmark.kind, label: bookmark.label, excerpt: bookmark.excerpt })} /> : <section className="mx-auto grid max-w-5xl gap-4 p-6 lg:grid-cols-[minmax(0,1fr)_minmax(260px,360px)]">
         <div className="rounded-lg border border-white/10 bg-black/20 p-4">
+          <div className="mb-4 rounded border border-cyan-400/20 bg-cyan-400/[0.03] p-3"><div className="mb-2 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.2em] text-cyan-300"><span>Execute in investigation</span>{activeSessionId && <button type="button" onClick={() => void terminateSession()} className="text-zinc-500 hover:text-rose-300"><Square className="mr-1 inline size-3" />Terminate session</button>}</div><textarea value={executionInput} onChange={event => setExecutionInput(event.target.value)} onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); void execute(executionInput) } }} disabled={!activeSessionId || submittingExecution} aria-label="Investigation execution command" placeholder={activeSessionId ? 'Enter an approved command. Ctrl+Enter runs it.' : 'Attaching investigation session…'} className="min-h-20 w-full rounded border border-white/10 bg-black/30 p-2 font-mono text-xs text-zinc-200 outline-none disabled:cursor-not-allowed disabled:opacity-60" /><button type="button" onClick={() => void execute(executionInput)} disabled={!activeSessionId || submittingExecution || !executionInput.trim()} className="mt-2 rounded border border-cyan-400/30 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-cyan-200 hover:bg-cyan-400/10 disabled:opacity-50"><Play className="mr-1 inline size-3" />{submittingExecution ? 'Queueing' : 'Execute'}</button>{executionError && <p role="alert" className="mt-2 font-mono text-[10px] text-rose-300">{executionError}</p>}</div>
           <div className="mb-3 font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-400">Investigation timeline</div>
           <div className="space-y-2">
             {workspace.data.timeline.map(event => <div key={event.eventId} className="rounded border border-white/10 px-3 py-2 font-mono text-[10px] text-zinc-500"><span className="mr-2 text-cyan-300">{event.type}</span><time dateTime={event.occurredAt}>{new Date(event.occurredAt).toLocaleString()}</time>{event.executionId && <span className="ml-2 text-zinc-700">{event.executionId.slice(0, 8)}</span>}</div>)}

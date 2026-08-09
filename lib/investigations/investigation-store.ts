@@ -5,6 +5,7 @@ import {
   investigationExecutionKey,
   investigationOwnerIndexKey,
   investigationRecordKey,
+  investigationSessionKey,
   investigationTimelineDedupeKey,
   investigationTimelineKey
 } from './investigation-keys'
@@ -97,6 +98,8 @@ function isTimelineType(value: string): value is InvestigationTimelineEventType 
     'stderr',
     'execution_completed',
     'execution_failed',
+    'session_attached',
+    'session_terminated',
     'evidence_bookmarked',
     'note_added',
     'note_edited',
@@ -191,6 +194,7 @@ export class InvestigationStore {
       createdAt: now,
       updatedAt: now,
       archivedAt: null,
+      ttySessionId: null,
       executionCount: 0,
       evidenceCount: 0,
       findingCount: 0
@@ -224,13 +228,19 @@ export class InvestigationStore {
     while (true) {
       const ids = await this.redis.zrange<string[]>(investigationOwnerIndexKey(ownerUserId), 0, -1, { rev: true, offset: scanOffset, count: limit + 1 })
       if (ids.length === 0) break
+      let retainedEntries = 0
 
       for (let index = 0; index < ids.length; index += 1) {
-        const record = await this.readRecord(ids[index]! as InvestigationId, ownerUserId)
-        if (!record || record.status === 'deleted') continue
+        const investigationId = ids[index]! as InvestigationId
+        const record = await this.readRecord(investigationId, ownerUserId)
+        if (!record || record.status === 'deleted') {
+          await this.redis.zrem(investigationOwnerIndexKey(ownerUserId), investigationId)
+          continue
+        }
+        retainedEntries += 1
         if (visible.length < limit) {
           visible.push(record)
-          if (visible.length === limit) pageEndCursor = scanOffset + index + 1
+          if (visible.length === limit) pageEndCursor = scanOffset + retainedEntries
           continue
         }
         hasMore = true
@@ -238,7 +248,7 @@ export class InvestigationStore {
       }
 
       if (hasMore) break
-      scanOffset += ids.length
+      scanOffset += retainedEntries
       if (ids.length < limit + 1) break
     }
 
@@ -303,7 +313,39 @@ export class InvestigationStore {
     await this.redis.set(investigationRecordKey(investigationId), JSON.stringify(deleted))
     await this.appendTimeline(investigationId, 'investigation_deleted', {}, { dedupeKey: `deleted:${now}`, occurredAt: now })
     await this.redis.zrem(investigationOwnerIndexKey(ownerUserId), investigationId)
+    await this.redis.del(investigationSessionKey(investigationId))
     return true
+  }
+
+  async attachSession(ownerUserId: string, investigationId: InvestigationId, sessionId: string, now = new Date().toISOString()): Promise<InvestigationRecord | null> {
+    const current = await this.readRecord(investigationId, ownerUserId)
+    if (!current || current.status === 'deleted') return null
+    if (current.ttySessionId) return current
+
+    const sessionKey = investigationSessionKey(investigationId)
+    const inserted = await this.redis.set(sessionKey, sessionId, { nx: true })
+    const persistedSessionId = inserted === null ? await this.redis.get<string>(sessionKey) : sessionId
+    if (!persistedSessionId) return null
+    if (current.ttySessionId === persistedSessionId) return current
+
+    const next: InvestigationRecord = { ...current, ttySessionId: persistedSessionId, updatedAt: now }
+    await this.redis.set(investigationRecordKey(investigationId), JSON.stringify(next))
+    await this.appendTimeline(investigationId, 'session_attached', { sessionId: persistedSessionId }, { dedupeKey: `session-attached:${persistedSessionId}`, occurredAt: now })
+    return next
+  }
+
+  async clearSession(ownerUserId: string, investigationId: InvestigationId, now = new Date().toISOString()): Promise<InvestigationRecord | null> {
+    const current = await this.readRecord(investigationId, ownerUserId)
+    if (!current || current.status === 'deleted') return null
+    if (!current.ttySessionId) return current
+    const sessionId = current.ttySessionId
+    const next: InvestigationRecord = { ...current, ttySessionId: null, updatedAt: now }
+    await Promise.all([
+      this.redis.set(investigationRecordKey(investigationId), JSON.stringify(next)),
+      this.redis.del(investigationSessionKey(investigationId))
+    ])
+    await this.appendTimeline(investigationId, 'session_terminated', { sessionId }, { dedupeKey: `session-terminated:${sessionId}`, occurredAt: now })
+    return next
   }
 
   async attachExecution(ownerUserId: string, investigationId: InvestigationId, input: InvestigationExecutionAttachmentInput): Promise<InvestigationExecution | null> {
@@ -415,7 +457,7 @@ export class InvestigationStore {
       this.redis.get(investigationCounterKey(investigationId, 'evidence')),
       this.redis.get(investigationCounterKey(investigationId, 'findings'))
     ])
-    return Object.freeze({ ...raw, executionCount: counterValue(executions ?? raw.executionCount), evidenceCount: counterValue(evidence ?? raw.evidenceCount), findingCount: counterValue(findings ?? raw.findingCount) })
+    return Object.freeze({ ...raw, ttySessionId: typeof raw.ttySessionId === 'string' ? raw.ttySessionId : null, executionCount: counterValue(executions ?? raw.executionCount), evidenceCount: counterValue(evidence ?? raw.evidenceCount), findingCount: counterValue(findings ?? raw.findingCount) })
   }
 
   private async readExecution(investigationId: InvestigationId, executionId: string): Promise<InvestigationExecution | null> {
@@ -438,7 +480,8 @@ export class InvestigationStore {
         investigationCounterKey(investigationId, 'findings'),
         investigationTimelineKey(investigationId),
         investigationTimelineDedupeKey(investigationId),
-        investigationBookmarkIndexKey(investigationId)
+        investigationBookmarkIndexKey(investigationId),
+        investigationSessionKey(investigationId)
       )
     ])
   }
