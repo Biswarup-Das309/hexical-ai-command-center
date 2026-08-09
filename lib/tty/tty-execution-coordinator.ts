@@ -91,6 +91,8 @@ export interface TTYExecutionCoordinatorRunHooks {
  */
 export interface TTYExecutionCoordinatorRunOptions {
   readonly onAccepted?: (state: TTYExecutionStateRecord) => void
+  readonly abortSignal?: AbortSignal
+  readonly correlationId?: string
 }
 
 export interface TTYExecutionCoordinatorDependencies {
@@ -150,6 +152,9 @@ interface ExecutionContext {
   stdoutBytes: number
   stderrBytes: number
   readonly hooks: TTYExecutionCoordinatorRunHooks
+  readonly correlationId?: string
+  readonly abortSignal?: AbortSignal
+  abortListener?: () => void
 }
 
 function commandName(file: string): string {
@@ -239,10 +244,10 @@ export class TTYExecutionCoordinator {
     if (existing && isTerminalTTYExecutionState(existing.state)) return { accepted: true, state: existing }
     if (this.contexts.has(executionId)) return { accepted: false, reason: 'already_running', state: existing }
 
-    const context = this.createContext(executionId, sessionId)
+    const context = this.createContext(executionId, sessionId, {}, options.abortSignal, options.correlationId)
     this.contexts.set(executionId, context)
     try {
-      return await withSpan('tty.execution.run', { executionId, sessionId, workerId: this.dependencies.workerId }, async () => this.execute(context, undefined, options))
+      return await withSpan('tty.execution.run', { executionId, sessionId, workerId: this.dependencies.workerId, ...(options.correlationId ? { correlationId: options.correlationId } : {}) }, async () => this.execute(context, undefined, options))
     } finally {
       this.clearContext(context)
     }
@@ -347,8 +352,8 @@ export class TTYExecutionCoordinator {
     return queued
   }
 
-  private createContext(executionId: TTYExecutionId, sessionId: TTYSessionId, hooks: TTYExecutionCoordinatorRunHooks = {}): ExecutionContext {
-    return {
+  private createContext(executionId: TTYExecutionId, sessionId: TTYSessionId, hooks: TTYExecutionCoordinatorRunHooks = {}, abortSignal?: AbortSignal, correlationId?: string): ExecutionContext {
+    const context: ExecutionContext = {
       executionId,
       sessionId,
       stateTail: Promise.resolve(),
@@ -367,8 +372,20 @@ export class TTYExecutionCoordinator {
       outputBytes: 0,
       stdoutBytes: 0,
       stderrBytes: 0,
-      hooks
+      hooks,
+      ...(abortSignal ? { abortSignal } : {}),
+      ...(correlationId ? { correlationId } : {})
     }
+    if (abortSignal) {
+      const onAbort = () => {
+        context.cancelReason ??= 'worker_cancellation'
+        void this.requestStop(context)
+      }
+      context.abortListener = onAbort
+      if (abortSignal.aborted) onAbort()
+      else abortSignal.addEventListener('abort', onAbort, { once: true })
+    }
+    return context
   }
 
   private async execute(context: ExecutionContext, preclaimedJob?: TTYLeasedJob, options: TTYExecutionCoordinatorRunOptions = {}): Promise<TTYExecutionRunResult> {
@@ -471,7 +488,7 @@ export class TTYExecutionCoordinator {
       return { accepted: true, state }
     } catch (error) {
       context.failureCode = 'RUNTIME_INTERNAL_ERROR'
-      log.error('tty.execution.runtime_failure', { executionId: context.executionId, sessionId: context.sessionId, workerId: this.dependencies.workerId, error: error instanceof Error ? error.message : String(error) })
+      log.error('tty.execution.runtime_failure', { executionId: context.executionId, sessionId: context.sessionId, workerId: this.dependencies.workerId, error: error instanceof Error ? error.message : String(error), ...this.correlationFields(context) })
       state = await this.finalize(context, 'failed', { failureCode: context.failureCode, completionReason: 'runtime_internal_error' })
       return { accepted: true, state }
     }
@@ -523,14 +540,14 @@ export class TTYExecutionCoordinator {
       try {
         await this.dependencies.sessionStore.recordExecutionFinished(context.sessionId)
       } catch (error) {
-        log.warn('tty.execution.accounting_finish_failed', { executionId: context.executionId, sessionId: context.sessionId, error: error instanceof Error ? error.message : String(error) })
+        log.warn('tty.execution.accounting_finish_failed', { executionId: context.executionId, sessionId: context.sessionId, error: error instanceof Error ? error.message : String(error), ...this.correlationFields(context) })
       }
     }
     if (context.handle) {
       try {
         await this.dependencies.processRuntime.cleanup(context.handle)
       } catch (error) {
-        log.warn('tty.execution.process_cleanup_failed', { executionId: context.executionId, sessionId: context.sessionId, error: error instanceof Error ? error.message : String(error) })
+        log.warn('tty.execution.process_cleanup_failed', { executionId: context.executionId, sessionId: context.sessionId, error: error instanceof Error ? error.message : String(error), ...this.correlationFields(context) })
       }
     }
     try {
@@ -613,7 +630,7 @@ export class TTYExecutionCoordinator {
     } catch (error) {
       context.outputFailed = true
       context.failureCode = 'OUTPUT_STREAM_FAILURE'
-      log.warn('tty.execution.output_stream_failed', { executionId: context.executionId, sessionId: context.sessionId, stream, error: error instanceof Error ? error.message : String(error) })
+      log.warn('tty.execution.output_stream_failed', { executionId: context.executionId, sessionId: context.sessionId, stream, error: error instanceof Error ? error.message : String(error), ...this.correlationFields(context) })
       await this.requestStop(context)
     }
   }
@@ -688,7 +705,7 @@ export class TTYExecutionCoordinator {
       await new Promise(resolve => setTimeout(resolve, 10))
     }
     if (this.contexts.has(context.executionId)) {
-      log.warn('tty.execution.context_wait_timed_out', { executionId: context.executionId, sessionId: context.sessionId, workerId: this.dependencies.workerId })
+      log.warn('tty.execution.context_wait_timed_out', { executionId: context.executionId, sessionId: context.sessionId, workerId: this.dependencies.workerId, ...this.correlationFields(context) })
       return { accepted: false, reason: 'internal_error', state: null }
     }
     const state = await this.getState(context.executionId)
@@ -698,7 +715,15 @@ export class TTYExecutionCoordinator {
   private clearContext(context: ExecutionContext): void {
     this.stopRenewal(context)
     if (context.killTimer) clearTimeout(context.killTimer)
+    if (context.abortListener) {
+      context.abortSignal?.removeEventListener('abort', context.abortListener)
+      context.abortListener = undefined
+    }
     if (this.contexts.get(context.executionId) === context) this.contexts.delete(context.executionId)
+  }
+
+  private correlationFields(context: ExecutionContext): Readonly<Record<string, string>> {
+    return context.correlationId ? { correlationId: context.correlationId } : {}
   }
 
   private async safeAppendState(state: TTYExecutionStateRecord): Promise<void> {

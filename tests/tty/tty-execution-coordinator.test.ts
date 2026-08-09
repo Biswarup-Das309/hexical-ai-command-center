@@ -215,6 +215,21 @@ test('coordinator cancellation stops the owned process and is idempotent', async
   assert.equal(replay.state?.state, 'cancelled')
 })
 
+test('coordinator turns an activation abort into a persisted cancellation before starting a process', async () => {
+  const runtime = new ControlledRuntime({ stdout: '', stderr: '' })
+  const leases = new FakeLeases()
+  const controller = new AbortController()
+  controller.abort()
+  const coordinator = new TTYExecutionCoordinator(dependencies(runtime, leases))
+
+  const result = await coordinator.run(executionId, sessionId, { abortSignal: controller.signal })
+
+  assert.equal(result.accepted, true)
+  if (result.accepted) assert.equal(result.state.state, 'cancelled')
+  assert.equal(runtime.started.length, 0)
+  assert.deepEqual(leases.completed, [])
+})
+
 test('coordinator turns a runtime timeout into a hard-stop terminal state', async () => {
   const runtime = new ControlledRuntime({ stdout: '', stderr: '' })
   const leases = new FakeLeases()

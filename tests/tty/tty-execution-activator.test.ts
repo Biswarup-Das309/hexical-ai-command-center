@@ -72,3 +72,25 @@ test('activation accepts a state atomically claimed by another process without a
   assert.deepEqual(await activator.activate(executionId, sessionId), { accepted: true, state: leasedState })
   assert.equal(calls, 1)
 })
+
+test('activation timeout aborts the coordinator so a failed admission cannot leave a phantom execution running', async () => {
+  let receivedSignal: AbortSignal | undefined
+  let finish!: () => void
+  const running = new Promise<void>(resolve => { finish = resolve })
+  const activator = new TTYExecutionActivator({
+    activationTimeoutMs: 100,
+    coordinator: {
+      getState: async () => null,
+      run: async (_executionId: typeof executionId, _sessionId: typeof sessionId, options: TTYExecutionCoordinatorRunOptions = {}) => {
+        receivedSignal = options.abortSignal
+        await running
+        return { accepted: false, reason: 'internal_error', state: null }
+      }
+    } as never
+  })
+
+  const result = await activator.activate(executionId, sessionId)
+  assert.deepEqual(result, { accepted: false, state: null, reason: 'internal_error' })
+  assert.equal(receivedSignal?.aborted, true)
+  finish()
+})

@@ -1,5 +1,7 @@
 import { auth } from '@clerk/nextjs/server'
 
+import { log, requestCorrelationId } from '@/lib/hexical/telemetry'
+
 import { createTTYStreamManagerForRequest } from '@/lib/tty/tty-stream-server'
 import type { TTYExecutionId, TTYSessionId } from '@/lib/tty/tty-types'
 
@@ -16,6 +18,7 @@ function jsonFailure(status: number, code: string, message: string): Response {
 }
 
 export async function GET(request: Request, context: { params: Promise<{ executionId: string }> }): Promise<Response> {
+  const correlationId = requestCorrelationId(request)
   try {
     const { userId } = await auth()
     if (!userId) return jsonFailure(401, 'UNAUTHENTICATED', 'Authentication is required.')
@@ -34,8 +37,18 @@ export async function GET(request: Request, context: { params: Promise<{ executi
       lastEventId: request.headers.get('Last-Event-ID'),
       signal: request.signal
     })
+    result.response.headers.set('X-Correlation-ID', correlationId)
+    log.info('tty.stream.opened', {
+      executionId,
+      sessionId: requestedSessionIdRaw,
+      accepted: result.accepted,
+      reason: result.accepted ? null : result.reason,
+      status: result.response.status,
+      correlationId
+    })
     return result.response
-  } catch {
+  } catch (error) {
+    log.error('tty.stream.open_failed', { correlationId, errorCode: error instanceof Error ? error.name : 'unknown_error' })
     return jsonFailure(500, 'STREAM_UNAVAILABLE', 'The execution stream is temporarily unavailable.')
   }
 }

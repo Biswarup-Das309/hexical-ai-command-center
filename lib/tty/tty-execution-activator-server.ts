@@ -5,7 +5,7 @@ import { Redis } from '@upstash/redis'
 import { log } from '@/lib/hexical/telemetry'
 
 import { TTYExecutionCoordinator } from './tty-execution-coordinator'
-import { TTYExecutionActivator, type TTYExecutionActivationResult } from './tty-execution-activator'
+import { TTYExecutionActivator, type TTYExecutionActivationOptions, type TTYExecutionActivationResult } from './tty-execution-activator'
 import { TTYExecutionLeaseManager } from './tty-execution-lease'
 import { createDefaultTTYProcessRuntime } from './tty-process-runtime'
 import { TTYResourceGuard } from './tty-resource-guard'
@@ -19,7 +19,7 @@ const DEFAULT_MAX_OUTPUT_BYTES_PER_SECOND = 1_048_576
 interface TTYExecutionActivationRuntime {
   readonly activator: TTYExecutionActivator
 }
-export { TTYExecutionActivator, type TTYExecutionActivationResult, type TTYExecutionActivatorDependencies } from './tty-execution-activator'
+export { TTYExecutionActivator, type TTYExecutionActivationOptions, type TTYExecutionActivationResult, type TTYExecutionActivatorDependencies } from './tty-execution-activator'
 
 let runtime: TTYExecutionActivationRuntime | null = null
 
@@ -69,8 +69,8 @@ function createRuntime(): TTYExecutionActivationRuntime {
   return {
     activator: new TTYExecutionActivator({
       coordinator,
-      onFailure: ({ executionId, sessionId, reason, phase }) => {
-        log.error('tty.execution.activation_failed', { executionId, sessionId, reason, phase })
+      onFailure: ({ executionId, sessionId, reason, phase, correlationId }) => {
+        log.error('tty.execution.activation_failed', { executionId, sessionId, reason, phase, ...(correlationId ? { correlationId } : {}) })
       }
     })
   }
@@ -81,6 +81,15 @@ function getRuntime(): TTYExecutionActivationRuntime {
   return runtime
 }
 
-export async function activateTTYExecution(executionId: string, sessionId: string): Promise<TTYExecutionActivationResult> {
-  return getRuntime().activator.activate(executionId, sessionId)
+export async function activateTTYExecution(executionId: string, sessionId: string, options: TTYExecutionActivationOptions = {}): Promise<TTYExecutionActivationResult> {
+  log.info('tty.execution.activation_started', { executionId, sessionId, ...(options.correlationId ? { correlationId: options.correlationId } : {}) })
+  const result = await getRuntime().activator.activate(executionId, sessionId, options)
+  log.info(result.accepted ? 'tty.execution.activation_accepted' : 'tty.execution.activation_rejected', {
+    executionId,
+    sessionId,
+    state: result.state?.state ?? null,
+    reason: result.reason ?? null,
+    ...(options.correlationId ? { correlationId: options.correlationId } : {})
+  })
+  return result
 }

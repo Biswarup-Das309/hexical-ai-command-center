@@ -68,3 +68,10 @@ test('workspace validates the persisted session before every execution so termin
   assert.match(workspace, /workspace\.data\?\.investigation\.ttySessionId \?\? sessionId/)
   assert.doesNotMatch(hook, /if \(data\?\.investigation\.ttySessionId\) return data\.investigation\.ttySessionId/)
 })
+
+test('terminated execution streams clear stale browser state', async () => {
+  const stream = await source('hooks/useTTYExecutionStream.ts')
+
+  assert.match(stream, /code === 'SESSION_NOT_ACTIVE' \|\| code === 'SESSION_NOT_FOUND'/)
+  assert.match(stream, /handleExecutionNotFound\(\)/)
+})

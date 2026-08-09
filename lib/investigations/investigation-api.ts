@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { log, requestCorrelationId } from '@/lib/hexical/telemetry'
+
 import type { InvestigationStore } from './investigation-store'
 import type {
   InvestigationBookmark,
@@ -44,7 +46,7 @@ export interface InvestigationSessionApiDependencies extends InvestigationApiDep
 export interface InvestigationExecutionApiDependencies extends InvestigationApiDependencies {
   readonly admitExecution: (request: Request, sessionId: string) => Promise<Response>
   readonly ensureSession?: (request: Request, investigationId: string) => Promise<Response>
-  readonly startExecution?: (executionId: string, sessionId: string) => Promise<{ readonly accepted: boolean }>
+  readonly startExecution?: (executionId: string, sessionId: string, options?: { readonly correlationId?: string }) => Promise<{ readonly accepted: boolean }>
 }
 
 function json(body: unknown, status: number): Response {
@@ -336,6 +338,7 @@ export function createInvestigationExecutionApi(dependencies: InvestigationExecu
         if (!parsed.success) return failure(400, 'INVALID_INPUT', 'The execution attachment payload is invalid.')
         const investigation = await dependencies.getStore().get(user, investigationId, { executionLimit: 1, timelineLimit: 1 })
         if (!investigation) return failure(404, 'NOT_FOUND', 'Investigation not found.')
+        const correlationId = requestCorrelationId(request)
 
         let sessionId = parsed.data.sessionId
         const ensureAttachedSession = async (): Promise<Response | null> => {
@@ -354,7 +357,7 @@ export function createInvestigationExecutionApi(dependencies: InvestigationExecu
 
         const admissionRequest = () => new Request(request.url, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', 'x-request-id': correlationId },
           body: JSON.stringify({ input: parsed.data.input, idempotencyKey: parsed.data.idempotencyKey })
         })
         let admitted = await dependencies.admitExecution(admissionRequest(), sessionId)
@@ -372,8 +375,9 @@ export function createInvestigationExecutionApi(dependencies: InvestigationExecu
         if (!body.ok || !body.job?.executionId || body.job.sessionId !== sessionId) return failure(502, 'INVALID_ADMISSION_RESPONSE', 'The execution admission response was invalid.')
         const attached = await dependencies.getStore().attachExecution(user, investigationId, { executionId: body.job.executionId, sessionId })
         if (!attached) return failure(404, 'NOT_FOUND', 'Investigation not found.')
+        log.info('investigation.execution.attached', { investigationId, executionId: body.job.executionId, sessionId, duplicate: body.duplicate === true, correlationId })
         if (dependencies.startExecution) {
-          const started = await dependencies.startExecution(body.job.executionId, sessionId)
+          const started = await dependencies.startExecution(body.job.executionId, sessionId, { correlationId })
           if (!started.accepted) return failure(503, 'EXECUTION_NOT_STARTED', 'The execution could not be started.')
         }
         return json({ ok: true, investigationId, execution: attached, job: body.job, duplicate: body.duplicate === true }, admitted.status)

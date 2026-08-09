@@ -95,6 +95,6 @@ export function createInvestigationExecutionApiForRequest() {
     getStore: () => store,
     ensureSession: (request, investigationId) => sessionApi.ensure(request, investigationId),
     admitExecution: (request, sessionId) => createTTYAdmissionApiForRequest({ activate: false }).admit(request, sessionId),
-    startExecution: activateTTYExecution
+    startExecution: (executionId, sessionId, options) => activateTTYExecution(executionId, sessionId, options)
   })
 }

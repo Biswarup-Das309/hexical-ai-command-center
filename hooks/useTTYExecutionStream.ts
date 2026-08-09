@@ -137,8 +137,7 @@ export function useTTYExecutionStream({
         if (code === 'EXECUTION_NOT_FOUND' || response.status === 404) {
           handleExecutionNotFound()
         } else if (code === 'SESSION_NOT_ACTIVE' || code === 'SESSION_NOT_FOUND') {
-          setConnectionState('error')
-          setError('The execution session is no longer active.')
+          handleExecutionNotFound()
         } else {
           setConnectionState('error')
           setError(typeof body === 'object' && body !== null && 'message' in body && typeof body.message === 'string' ? body.message : 'The execution stream is unavailable.')

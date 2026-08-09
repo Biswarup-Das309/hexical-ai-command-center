@@ -15,10 +15,14 @@ export interface TTYExecutionActivationResult {
   readonly reason?: TTYExecutionCoordinatorFailureReason
 }
 
+export interface TTYExecutionActivationOptions {
+  readonly correlationId?: string
+}
+
 export interface TTYExecutionActivatorDependencies {
   readonly coordinator: Pick<TTYExecutionCoordinator, 'getState' | 'run'>
   readonly activationTimeoutMs?: number
-  readonly onFailure?: (input: { readonly executionId: TTYExecutionId; readonly sessionId: TTYSessionId; readonly reason: TTYExecutionCoordinatorFailureReason; readonly phase: 'state_read' | 'run' | 'timeout' }) => void
+  readonly onFailure?: (input: { readonly executionId: TTYExecutionId; readonly sessionId: TTYSessionId; readonly reason: TTYExecutionCoordinatorFailureReason; readonly phase: 'state_read' | 'run' | 'timeout'; readonly correlationId?: string }) => void
 }
 
 function activationTimeout(value: number | undefined): number {
@@ -53,13 +57,13 @@ export class TTYExecutionActivator {
     this.timeoutMs = activationTimeout(dependencies.activationTimeoutMs)
   }
 
-  activate(rawExecutionId: string, rawSessionId: string): Promise<TTYExecutionActivationResult> {
+  activate(rawExecutionId: string, rawSessionId: string, options: TTYExecutionActivationOptions = {}): Promise<TTYExecutionActivationResult> {
     const executionId = rawExecutionId as TTYExecutionId
     const sessionId = rawSessionId as TTYSessionId
     const existing = this.inFlight.get(executionId)
     if (existing) return existing
 
-    const activation = this.activateNew(executionId, sessionId)
+    const activation = this.activateNew(executionId, sessionId, options)
     this.inFlight.set(executionId, activation)
     void activation.finally(() => {
       if (this.inFlight.get(executionId) === activation) this.inFlight.delete(executionId)
@@ -67,7 +71,7 @@ export class TTYExecutionActivator {
     return activation
   }
 
-  private async activateNew(executionId: TTYExecutionId, sessionId: TTYSessionId): Promise<TTYExecutionActivationResult> {
+  private async activateNew(executionId: TTYExecutionId, sessionId: TTYSessionId, activationOptions: TTYExecutionActivationOptions): Promise<TTYExecutionActivationResult> {
     const existing = await this.readState(executionId, sessionId)
     if (existing === undefined) return { accepted: false, state: null, reason: 'internal_error' }
     if (existing !== null && existing.state !== 'queued') return { accepted: true, state: existing }
@@ -80,21 +84,27 @@ export class TTYExecutionActivator {
       settled = true
       resolveAcceptance(result)
     }
-    const options: TTYExecutionCoordinatorRunOptions = { onAccepted: state => settle({ accepted: true, state }) }
+    const abortController = new AbortController()
+    const options: TTYExecutionCoordinatorRunOptions = {
+      onAccepted: state => settle({ accepted: true, state }),
+      abortSignal: abortController.signal,
+      ...(activationOptions.correlationId ? { correlationId: activationOptions.correlationId } : {})
+    }
     const run = this.dependencies.coordinator.run(executionId, sessionId, options)
     void run.then(result => {
       if (result.accepted) return settle({ accepted: true, state: result.state })
       if (result.reason === 'not_queued' && result.state !== null) return settle({ accepted: true, state: result.state })
-      this.failure(executionId, sessionId, result.reason, 'run')
+      this.failure(executionId, sessionId, result.reason, 'run', activationOptions.correlationId)
       settle({ accepted: false, state: result.state, reason: result.reason })
     }).catch(() => {
-      this.failure(executionId, sessionId, 'internal_error', 'run')
+      this.failure(executionId, sessionId, 'internal_error', 'run', activationOptions.correlationId)
       settle({ accepted: false, state: null, reason: 'internal_error' })
     })
 
     const outcome = await withTimeout(acceptance, this.timeoutMs)
     if (!outcome.timedOut) return outcome.value
-    this.failure(executionId, sessionId, 'internal_error', 'timeout')
+    abortController.abort()
+    this.failure(executionId, sessionId, 'internal_error', 'timeout', activationOptions.correlationId)
     return { accepted: false, state: null, reason: 'internal_error' }
   }
 
@@ -105,9 +115,9 @@ export class TTYExecutionActivator {
     return undefined
   }
 
-  private failure(executionId: TTYExecutionId, sessionId: TTYSessionId, reason: TTYExecutionCoordinatorFailureReason, phase: 'state_read' | 'run' | 'timeout'): void {
+  private failure(executionId: TTYExecutionId, sessionId: TTYSessionId, reason: TTYExecutionCoordinatorFailureReason, phase: 'state_read' | 'run' | 'timeout', correlationId?: string): void {
     try {
-      this.dependencies.onFailure?.({ executionId, sessionId, reason, phase })
+      this.dependencies.onFailure?.({ executionId, sessionId, reason, phase, ...(correlationId ? { correlationId } : {}) })
     } catch {
       // Failure observers must not mask a failed activation result.
     }

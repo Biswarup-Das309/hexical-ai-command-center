@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { log, requestCorrelationId } from '@/lib/hexical/telemetry'
+
 import { classifyTerminalInput, denialReasonToFailure, validateRawTerminalInput } from './tty-policy'
 import { toBrowserSafeJob, type TTYExecutionAdmission, type TTYQueuedJob } from './tty-execution-admission'
 import { hasTTYCapability, type InternalTTYSession, type TTYSessionId } from './tty-types'
@@ -19,7 +21,7 @@ export interface TTYExecutionAdmissionApiDependencies {
   readonly resolveTier: (userId: string) => Promise<Tier>
   readonly getSession: (sessionId: TTYSessionId, ownerUserId: string) => Promise<InternalTTYSession | null>
   readonly admission: TTYExecutionAdmission
-  readonly startExecution?: (executionId: TTYQueuedJob['executionId'], sessionId: TTYSessionId) => Promise<{ readonly accepted: boolean }>
+  readonly startExecution?: (executionId: TTYQueuedJob['executionId'], sessionId: TTYSessionId, options?: { readonly correlationId?: string }) => Promise<{ readonly accepted: boolean }>
 }
 
 function response(body: unknown, status: number): Response {
@@ -35,6 +37,7 @@ export function createTTYExecutionAdmissionApi(dependencies: TTYExecutionAdmissi
   return {
     async admit(request: Request, rawSessionId: string): Promise<Response> {
       try {
+        const correlationId = requestCorrelationId(request)
         const userId = (await dependencies.authenticate())?.trim()
         if (!userId) return failure('unauthenticated', 401)
         const sessionId = SESSION_ID_SCHEMA.safeParse(rawSessionId).success ? rawSessionId as TTYSessionId : null
@@ -68,8 +71,9 @@ export function createTTYExecutionAdmissionApi(dependencies: TTYExecutionAdmissi
           const status = result.reason === 'session_terminated' ? 409 : result.reason === 'authorization_required' ? 403 : result.reason === 'input_rejected' ? 400 : result.reason === 'internal_error' ? 500 : 429
           return failure(result.reason, status)
         }
+        log.info('tty.execution.admitted', { executionId: result.job.executionId, sessionId: result.job.sessionId, duplicate: result.duplicate, correlationId })
         if (dependencies.startExecution) {
-          const started = await dependencies.startExecution(result.job.executionId, result.job.sessionId)
+          const started = await dependencies.startExecution(result.job.executionId, result.job.sessionId, { correlationId })
           if (!started.accepted) return response({ ok: false, code: 'EXECUTION_NOT_STARTED', message: 'The execution could not be started.' }, 503)
         }
         return response({ ok: true, job: toBrowserSafeJob(result.job), duplicate: result.duplicate }, result.duplicate ? 200 : 202)

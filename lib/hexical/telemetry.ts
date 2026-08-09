@@ -33,6 +33,14 @@ export const log = {
   error: (message: string, fields?: LogFields) => emit('error', message, fields),
 };
 
+const CORRELATION_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+
+/** Returns a bounded correlation ID suitable for structured server logs. */
+export function requestCorrelationId(request: Request): string {
+  const supplied = request.headers.get('x-request-id') ?? request.headers.get('x-correlation-id');
+  return supplied && CORRELATION_ID_PATTERN.test(supplied) ? supplied : crypto.randomUUID();
+}
+
 interface MinimalSpan {
   setAttribute(key: string, value: string | number | boolean): unknown;
   recordException(err: unknown): unknown;
