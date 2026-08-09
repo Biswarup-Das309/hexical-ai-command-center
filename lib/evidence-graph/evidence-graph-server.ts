@@ -39,11 +39,12 @@ function parseExecutionState(raw: unknown): TTYExecutionStateRecord | null {
 export function createEvidenceGraphApiForRequest() {
   const redis = createRedis()
   const investigationStore = new InvestigationStore(createInvestigationRedis(redis))
+  const getInvestigation = async (ownerUserId: string, investigationId: Parameters<typeof investigationStore.get>[1]) => {
+    const hydration = await investigationStore.get(ownerUserId, investigationId, { executionLimit: 50, timelineLimit: 1 })
+    return hydration ? { investigationId: hydration.investigation.investigationId, title: hydration.investigation.title, status: hydration.investigation.status } : null
+  }
   const graphStore = new EvidenceGraphStore(createGraphRedis(redis), {
-    getInvestigation: async (ownerUserId, investigationId) => {
-      const hydration = await investigationStore.get(ownerUserId, investigationId, { executionLimit: 50, timelineLimit: 1 })
-      return hydration ? { investigationId: hydration.investigation.investigationId, title: hydration.investigation.title, status: hydration.investigation.status } : null
-    }
+    getInvestigation
   })
   const sessionStore = createTTYSessionStore(redis)
   const executionApi = new TTYExecutionApi({
@@ -51,10 +52,6 @@ export function createEvidenceGraphApiForRequest() {
     outputStream: new TTYOutputStreamManager(redis),
     sessionStore
   })
-  const getInvestigation = async (ownerUserId: string, investigationId: Parameters<typeof investigationStore.get>[1]) => {
-    const hydration = await investigationStore.get(ownerUserId, investigationId, { executionLimit: 50, timelineLimit: 1 })
-    return hydration ? { investigationId: hydration.investigation.investigationId, title: hydration.investigation.title, status: hydration.investigation.status } : null
-  }
   const synchronizer = new EvidenceGraphSynchronizer(graphStore, {
     getInvestigation,
     getExecutions: async (ownerUserId, investigationId) => (await investigationStore.get(ownerUserId, investigationId, { executionLimit: 50, timelineLimit: 1 }))?.executions ?? [],
@@ -64,6 +61,7 @@ export function createEvidenceGraphApiForRequest() {
   return createEvidenceGraphApi({
     authenticate: async () => (await auth()).userId ?? null,
     getStore: () => graphStore,
+    getInvestigation,
     synchronize: (ownerUserId, investigationId, executionId) => executionId ? synchronizer.synchronizeExecution(ownerUserId, investigationId, executionId) : synchronizer.synchronizeInvestigation(ownerUserId, investigationId)
   })
 }

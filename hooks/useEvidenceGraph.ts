@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type {
   EvidenceGraphConnectedPage,
@@ -14,12 +14,20 @@ interface SummaryResponse { readonly ok: true; readonly summary: EvidenceGraphSu
 interface EntityResponse { readonly ok: true; readonly entity: EvidenceGraphEntity }
 interface ConnectedResponse extends EvidenceGraphConnectedPage { readonly ok: true }
 
-async function requestJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, { cache: 'no-store', headers: { Accept: 'application/json' } })
+class EvidenceGraphRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly code: string) {
+    super(message)
+    this.name = 'EvidenceGraphRequestError'
+  }
+}
+
+async function requestJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(url, { cache: 'no-store', headers: { Accept: 'application/json' }, signal })
   const body: unknown = await response.json().catch(() => null)
   if (!response.ok) {
     const message = typeof body === 'object' && body !== null && 'message' in body && typeof body.message === 'string' ? body.message : 'The evidence graph request failed.'
-    throw new Error(message)
+    const code = typeof body === 'object' && body !== null && 'code' in body && typeof body.code === 'string' ? body.code : 'REQUEST_FAILED'
+    throw new EvidenceGraphRequestError(message, response.status, code)
   }
   return body as T
 }
@@ -45,24 +53,47 @@ export function useEvidenceGraph(investigationId: string | null): UseEvidenceGra
   const [selectedType, setSelectedType] = useState<EvidenceGraphEntityType | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const refreshRequestRef = useRef(0)
+  const refreshAbortRef = useRef<AbortController | null>(null)
 
   const refresh = useCallback(async () => {
     if (!investigationId) {
+      refreshRequestRef.current += 1
+      refreshAbortRef.current?.abort()
+      refreshAbortRef.current = null
       setSummary(null)
       setEntities([])
       setSelectedEntity(null)
       setConnected(null)
+      setSelectedType(null)
+      setError(null)
       return
     }
+    const requestId = ++refreshRequestRef.current
+    refreshAbortRef.current?.abort()
+    const controller = new AbortController()
+    refreshAbortRef.current = controller
     setLoading(true)
     try {
-      const body = await requestJson<SummaryResponse>(`/api/investigations/${investigationId}/graph/summary`)
+      const body = await requestJson<SummaryResponse>(`/api/investigations/${investigationId}/graph/summary`, controller.signal)
+      if (requestId !== refreshRequestRef.current) return
       setSummary(body.summary)
       setError(null)
     } catch (cause) {
+      if (requestId !== refreshRequestRef.current || (cause instanceof DOMException && cause.name === 'AbortError')) return
+      if (cause instanceof EvidenceGraphRequestError && cause.status === 404) {
+        setSummary(null)
+        setEntities([])
+        setSelectedEntity(null)
+        setConnected(null)
+        setSelectedType(null)
+      }
       setError(cause instanceof Error ? cause.message : 'The evidence graph could not be loaded.')
     } finally {
-      setLoading(false)
+      if (requestId === refreshRequestRef.current) {
+        refreshAbortRef.current = null
+        setLoading(false)
+      }
     }
   }, [investigationId])
 
@@ -102,6 +133,12 @@ export function useEvidenceGraph(investigationId: string | null): UseEvidenceGra
   }, [investigationId])
 
   useEffect(() => {
+    setSummary(null)
+    setEntities([])
+    setSelectedEntity(null)
+    setConnected(null)
+    setSelectedType(null)
+    setError(null)
     void refresh()
     if (!investigationId) return
     const timer = window.setInterval(() => {

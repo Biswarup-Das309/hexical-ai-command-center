@@ -76,3 +76,29 @@ test('graph entity details and connected evidence remain owner-scoped', async ()
   const execution = await fixtureData.api.execution(request(`/api/investigations/${fixtureData.investigation.investigationId}/graph/executions/${EXECUTION_ID}`), fixtureData.investigation.investigationId, EXECUTION_ID)
   assert.equal(execution.status, 200)
 })
+
+test('summary recreates the investigation graph root before querying an empty graph', async () => {
+  const investigationStore = new InvestigationStore(new FakeInvestigationRedis())
+  const investigation = await investigationStore.create(OWNER, { title: 'Empty graph', description: '' }, '2026-08-09T12:30:00.000Z')
+  const graphStore = new EvidenceGraphStore(new FakeEvidenceGraphRedis(), {
+    getInvestigation: async (ownerUserId, investigationId) => {
+      const hydration = await investigationStore.get(ownerUserId, investigationId, { executionLimit: 1, timelineLimit: 1 })
+      return hydration ? { investigationId, title: hydration.investigation.title, status: hydration.investigation.status } : null
+    }
+  })
+  const api = createEvidenceGraphApi({
+    authenticate: async () => OWNER,
+    getStore: () => graphStore,
+    getInvestigation: async (ownerUserId, investigationId) => {
+      const hydration = await investigationStore.get(ownerUserId, investigationId, { executionLimit: 1, timelineLimit: 1 })
+      return hydration ? { investigationId, title: hydration.investigation.title, status: hydration.investigation.status } : null
+    }
+  })
+
+  const response = await api.summary(request(`/api/investigations/${investigation.investigationId}/graph/summary`), investigation.investigationId)
+  const body = await read(response)
+  const summary = body.summary as Record<string, unknown>
+  assert.equal(response.status, 200)
+  assert.equal(summary.entityCount, 1)
+  assert.equal((summary.entitiesByType as Record<string, number>).investigation, 1)
+})

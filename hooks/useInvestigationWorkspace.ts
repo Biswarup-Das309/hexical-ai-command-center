@@ -155,12 +155,22 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
       rememberId(storageKey, id)
       return body
     } catch (cause) {
-      if (requestId === loadRequestRef.current) setError(cause instanceof Error ? cause.message : 'The investigation could not be loaded.')
+      if (requestId === loadRequestRef.current) {
+        if (cause instanceof InvestigationRequestError && (cause.code === 'NOT_FOUND' || cause.code === 'UNAUTHENTICATED')) {
+          setData(null)
+          setSessionFailure(null)
+          if (options.investigationId === undefined) {
+            setInvestigationId(null)
+            rememberId(storageKey, null)
+          }
+        }
+        setError(cause instanceof Error ? cause.message : 'The investigation could not be loaded.')
+      }
       return null
     } finally {
       if (requestId === loadRequestRef.current) setLoading(false)
     }
-  }, [fetchInvestigation, storageKey])
+  }, [fetchInvestigation, options.investigationId, storageKey])
 
   const create = useCallback(async (input: { readonly title?: string; readonly description?: string } = {}) => {
     if (createInFlightRef.current) return null

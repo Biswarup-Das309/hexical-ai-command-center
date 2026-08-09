@@ -19,6 +19,19 @@ test('title editor renders a controlled input and defers empty-title validation 
   assert.doesNotMatch(editor, /onBlur/)
 })
 
+test('workspace and graph clear stale data after owner or investigation loss', async () => {
+  const [workspace, graph] = await Promise.all([
+    source('hooks/useInvestigationWorkspace.ts'),
+    source('hooks/useEvidenceGraph.ts')
+  ])
+
+  assert.match(workspace, /cause\.code === 'NOT_FOUND' \|\| cause\.code === 'UNAUTHENTICATED'/)
+  assert.match(workspace, /setData\(null\)/)
+  assert.match(graph, /cause instanceof EvidenceGraphRequestError && cause\.status === 404/)
+  assert.match(graph, /setSummary\(null\)/)
+  assert.match(graph, /refreshAbortRef\.current\?\.abort\(\)/)
+})
+
 test('workspace uses the editable title control and parent sidebar receives the saved title', async () => {
   const [workspace, console, investigations] = await Promise.all([
     source('components/workspace/PersistentInvestigationWorkspace.tsx'),

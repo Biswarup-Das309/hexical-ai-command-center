@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-import type { InvestigationId } from '@/lib/investigations/investigation-types'
+import type { InvestigationId, InvestigationRecord } from '@/lib/investigations/investigation-types'
 import type { EvidenceGraphStore } from './evidence-graph-store'
 import { EVIDENCE_GRAPH_ENTITY_TYPES, EVIDENCE_GRAPH_RELATIONSHIPS } from './evidence-graph-types'
 import type { EvidenceGraphEntityId, EvidenceGraphEntityType, EvidenceGraphRelationship } from './evidence-graph-types'
@@ -12,11 +12,14 @@ const ENTITY_TYPE_SCHEMA = z.enum(EVIDENCE_GRAPH_ENTITY_TYPES)
 const RELATIONSHIP_SCHEMA = z.enum(EVIDENCE_GRAPH_RELATIONSHIPS)
 const NO_STORE_HEADERS = { 'Cache-Control': 'no-store, no-cache, must-revalidate', Pragma: 'no-cache', 'Content-Type': 'application/json' } as const
 
-type Store = Pick<EvidenceGraphStore, 'summary' | 'listEntities' | 'listRelationships' | 'getEntity' | 'getConnected' | 'executionGraph' | 'investigationGraph'>
+type Store = Pick<EvidenceGraphStore, 'ensureInvestigation' | 'summary' | 'listEntities' | 'listRelationships' | 'getEntity' | 'getConnected' | 'executionGraph' | 'investigationGraph'>
+
+type InvestigationContext = Pick<InvestigationRecord, 'investigationId' | 'title' | 'status'>
 
 export interface EvidenceGraphApiDependencies {
   readonly authenticate: () => Promise<string | null>
   readonly getStore: () => Store
+  readonly getInvestigation?: (ownerUserId: string, investigationId: InvestigationId) => Promise<InvestigationContext | null>
   readonly synchronize?: (ownerUserId: string, investigationId: InvestigationId, executionId?: string) => Promise<void>
 }
 
@@ -61,8 +64,12 @@ function pagination(url: URL, maximum: number): { readonly cursor: string | null
 }
 
 export function createEvidenceGraphApi(dependencies: EvidenceGraphApiDependencies) {
-  const hydrate = async (ownerUserId: string, investigationId: InvestigationId, executionId?: string): Promise<void> => {
+  const hydrate = async (ownerUserId: string, investigationId: InvestigationId, executionId?: string): Promise<boolean> => {
+    const investigation = await dependencies.getInvestigation?.(ownerUserId, investigationId)
+    if (dependencies.getInvestigation && (!investigation || investigation.status === 'deleted')) return false
+    if (investigation) await dependencies.getStore().ensureInvestigation(ownerUserId, investigation)
     await dependencies.synchronize?.(ownerUserId, investigationId, executionId)
+    return true
   }
 
   return {
@@ -73,7 +80,7 @@ export function createEvidenceGraphApi(dependencies: EvidenceGraphApiDependencie
         if (!emptyBody(request)) return failure(400, 'INVALID_INPUT', 'The request body must be empty.')
         const investigationId = parseInvestigationId(rawInvestigationId)
         if (!investigationId) return failure(400, 'INVALID_INVESTIGATION_ID', 'The investigation identifier is invalid.')
-        await hydrate(user, investigationId)
+        if (!(await hydrate(user, investigationId))) return failure(404, 'NOT_FOUND', 'Investigation not found.')
         const view = await dependencies.getStore().investigationGraph(user, investigationId)
         return view ? json({ ok: true, ...view }, 200) : failure(404, 'NOT_FOUND', 'Investigation graph not found.')
       } catch {
@@ -88,7 +95,7 @@ export function createEvidenceGraphApi(dependencies: EvidenceGraphApiDependencie
         if (!emptyBody(request)) return failure(400, 'INVALID_INPUT', 'The request body must be empty.')
         const investigationId = parseInvestigationId(rawInvestigationId)
         if (!investigationId) return failure(400, 'INVALID_INVESTIGATION_ID', 'The investigation identifier is invalid.')
-        await hydrate(user, investigationId)
+        if (!(await hydrate(user, investigationId))) return failure(404, 'NOT_FOUND', 'Investigation not found.')
         const summary = await dependencies.getStore().summary(user, investigationId)
         return summary ? json({ ok: true, summary }, 200) : failure(404, 'NOT_FOUND', 'Investigation graph not found.')
       } catch {
@@ -113,7 +120,7 @@ export function createEvidenceGraphApi(dependencies: EvidenceGraphApiDependencie
           if (!parsedType.success) return failure(400, 'INVALID_ENTITY_TYPE', 'The entity type is invalid.')
           entityType = parsedType.data
         }
-        await hydrate(user, investigationId)
+        if (!(await hydrate(user, investigationId))) return failure(404, 'NOT_FOUND', 'Investigation not found.')
         const result = await dependencies.getStore().listEntities(user, investigationId, { type: entityType, cursor: page.cursor, limit: page.limit })
         return result ? json({ ok: true, ...result }, 200) : failure(404, 'NOT_FOUND', 'Investigation graph not found.')
       } catch {
@@ -140,7 +147,7 @@ export function createEvidenceGraphApi(dependencies: EvidenceGraphApiDependencie
         }
         const executionRaw = url.searchParams.get('executionId')
         if (executionRaw !== null && !EXECUTION_ID_SCHEMA.safeParse(executionRaw).success) return failure(400, 'INVALID_EXECUTION_ID', 'The execution identifier is invalid.')
-        await hydrate(user, investigationId, executionRaw ?? undefined)
+        if (!(await hydrate(user, investigationId, executionRaw ?? undefined))) return failure(404, 'NOT_FOUND', 'Investigation not found.')
         const result = await dependencies.getStore().listRelationships(user, investigationId, { relationship: relationshipType, executionId: executionRaw ?? undefined, cursor: page.cursor, limit: page.limit })
         return result ? json({ ok: true, ...result }, 200) : failure(404, 'NOT_FOUND', 'Investigation graph not found.')
       } catch {
@@ -157,7 +164,7 @@ export function createEvidenceGraphApi(dependencies: EvidenceGraphApiDependencie
         const entityId = parseEntityId(rawEntityId)
         if (!investigationId) return failure(400, 'INVALID_INVESTIGATION_ID', 'The investigation identifier is invalid.')
         if (!entityId) return failure(400, 'INVALID_ENTITY_ID', 'The entity identifier is invalid.')
-        await hydrate(user, investigationId)
+        if (!(await hydrate(user, investigationId))) return failure(404, 'NOT_FOUND', 'Investigation not found.')
         const entity = await dependencies.getStore().getEntity(user, investigationId, entityId)
         return entity ? json({ ok: true, entity }, 200) : failure(404, 'NOT_FOUND', 'Graph entity not found.')
       } catch {
@@ -176,7 +183,7 @@ export function createEvidenceGraphApi(dependencies: EvidenceGraphApiDependencie
         if (!entityId) return failure(400, 'INVALID_ENTITY_ID', 'The entity identifier is invalid.')
         const page = pagination(new URL(request.url), 100)
         if (page instanceof Response) return page
-        await hydrate(user, investigationId)
+        if (!(await hydrate(user, investigationId))) return failure(404, 'NOT_FOUND', 'Investigation not found.')
         const result = await dependencies.getStore().getConnected(user, investigationId, entityId, page)
         return result ? json({ ok: true, ...result }, 200) : failure(404, 'NOT_FOUND', 'Connected graph data not found.')
       } catch {
@@ -194,7 +201,7 @@ export function createEvidenceGraphApi(dependencies: EvidenceGraphApiDependencie
         if (!EXECUTION_ID_SCHEMA.safeParse(rawExecutionId).success) return failure(400, 'INVALID_EXECUTION_ID', 'The execution identifier is invalid.')
         const page = pagination(new URL(request.url), 100)
         if (page instanceof Response) return page
-        await hydrate(user, investigationId, rawExecutionId)
+        if (!(await hydrate(user, investigationId, rawExecutionId))) return failure(404, 'NOT_FOUND', 'Investigation not found.')
         const result = await dependencies.getStore().executionGraph(user, investigationId, rawExecutionId, page)
         return result ? json({ ok: true, ...result }, 200) : failure(404, 'NOT_FOUND', 'Execution graph not found.')
       } catch {
