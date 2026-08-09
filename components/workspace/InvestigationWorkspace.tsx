@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from 'react'
 import { Activity, Boxes, FileSearch, GitBranch, Search, Wifi, WifiOff } from 'lucide-react'
 
 import { EvidenceBookmarks, type TTYEvidenceCandidate } from '@/components/tty/EvidenceBookmarks'
+import type { TTYEvidenceBookmark } from '@/lib/tty/tty-evidence-bookmarks'
 import { ExecutionControls } from '@/components/tty/ExecutionControls'
 import { ExecutionHistory, type TTYExecutionHistoryEntry } from '@/components/tty/ExecutionHistory'
 import { ExecutionMetadata } from '@/components/tty/ExecutionMetadata'
@@ -27,6 +28,8 @@ export interface InvestigationWorkspaceProps {
   readonly onSelectHistory?: (executionId: string) => void
   readonly onCancel?: () => Promise<void> | void
   readonly onRestart?: () => Promise<void> | void
+  readonly initialBookmarks?: readonly TTYEvidenceBookmark[]
+  readonly onBookmarkAdded?: (bookmark: TTYEvidenceBookmark) => Promise<void> | void
 }
 
 function latestState(events: readonly TTYStreamEvent[]): TTYExecutionState | null {
@@ -52,7 +55,9 @@ export function InvestigationWorkspace({
   history,
   onSelectHistory,
   onCancel,
-  onRestart
+  onRestart,
+  initialBookmarks,
+  onBookmarkAdded
 }: InvestigationWorkspaceProps) {
   const terminalRef = useRef<InvestigationTerminalHandle | null>(null)
   const [search, setSearch] = useState('')
@@ -131,7 +136,7 @@ export function InvestigationWorkspace({
           <aside className="order-3 flex min-h-0 flex-col gap-3">
             <ExecutionTimeline events={stream.events} currentState={state} />
             <ExecutionMetadata execution={execution} completion={completion} verificationStatus={verificationStatus} />
-            <EvidenceBookmarks executionId={executionId} candidates={candidates} onJump={bookmark => { if (bookmark.lineNumber) terminalRef.current?.scrollToLine(bookmark.lineNumber) }} />
+            <EvidenceBookmarks executionId={executionId} candidates={candidates} initialBookmarks={initialBookmarks} onBookmarkAdded={onBookmarkAdded} onJump={bookmark => { if (bookmark.lineNumber) terminalRef.current?.scrollToLine(bookmark.lineNumber) }} />
             <div className="flex items-center gap-2 rounded border border-white/10 bg-black/20 px-3 py-2 font-mono text-[10px] text-zinc-600"><Activity className="size-3" /> replay window bounded to 20k events</div>
           </aside>
         </div>
