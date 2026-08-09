@@ -18,6 +18,10 @@ export function investigationExecutionKey(investigationId: InvestigationId, exec
   return `${PREFIX}:execution:${investigationId}:${executionId}`
 }
 
+export function investigationSessionKey(investigationId: InvestigationId): string {
+  return `${PREFIX}:session:${investigationId}`
+}
+
 export function investigationTimelineKey(investigationId: InvestigationId): string {
   return `${PREFIX}:timeline:${investigationId}`
 }

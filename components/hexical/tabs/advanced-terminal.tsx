@@ -15,7 +15,7 @@ function generateTimestamp(): string {
   return new Date().toLocaleTimeString('en-GB', { hour12: false, fractionalSecondDigits: 2 });
 }
 
-export const AdvancedTerminal = ({ logs, theme, onCommand }: { logs: string[], theme: AccentTheme, onCommand: (cmd: string) => void }) => {
+export const AdvancedTerminal = ({ logs, theme, onCommand, unavailableReason = 'No investigation selected' }: { logs: string[], theme: AccentTheme, onCommand: (cmd: string) => void, unavailableReason?: string }) => {
   const endRef = useRef<HTMLDivElement>(null);
   const [input, setInput] = useState('');
   
@@ -39,7 +39,7 @@ export const AdvancedTerminal = ({ logs, theme, onCommand }: { logs: string[], t
          </div>
          <span className="bg-amber-500/10 border border-amber-500/20 text-amber-400 px-3 py-1 rounded text-[10px] font-mono uppercase tracking-widest flex items-center gap-2">
            <div className="size-2 bg-amber-500 rounded-full"/>
-           no session attached
+           {unavailableReason}
          </span>
       </div>
       
@@ -77,7 +77,7 @@ export const AdvancedTerminal = ({ logs, theme, onCommand }: { logs: string[], t
             onKeyDown={handleKeyDown}
             disabled
             className="flex-1 bg-transparent outline-none text-white placeholder:text-zinc-700 w-full disabled:cursor-not-allowed disabled:opacity-60"
-            placeholder="Attach an approved server execution session to enable commands"
+            placeholder="Select an investigation to enable commands"
             aria-label="Execution sandbox command"
           />
         </div>

@@ -17,6 +17,7 @@ const TIMELINE_SCHEMA = z.union([
   z.object({ type: z.literal('note'), body: z.string().trim().min(1).max(10_000) }).strict(),
   z.object({ type: z.literal('bookmark'), executionId: z.string().uuid(), sequence: z.number().int().positive(), lineNumber: z.number().int().positive().nullable(), kind: z.enum(['output', 'error', 'state', 'finding']), label: z.string().trim().min(1).max(200), excerpt: z.string().max(2_000) }).strict()
 ])
+const NOTE_PATCH_SCHEMA = z.object({ body: z.string().trim().min(1).max(10_000) }).strict()
 const ATTACH_SCHEMA = z.object({ sessionId: z.string().uuid(), input: z.string().min(1).max(4_000), idempotencyKey: z.string().min(16).max(128).regex(/^[A-Za-z0-9._~-]+$/) }).strict()
 
 const NO_STORE_HEADERS = {
@@ -25,12 +26,19 @@ const NO_STORE_HEADERS = {
   'Content-Type': 'application/json'
 } as const
 
-type Store = Pick<InvestigationStore, 'create' | 'list' | 'get' | 'patch' | 'delete' | 'recordBookmark' | 'recordNote' | 'attachExecution'>
+type Store = Pick<InvestigationStore, 'create' | 'list' | 'get' | 'patch' | 'delete' | 'attachSession' | 'clearSession' | 'recordBookmark' | 'recordNote' | 'updateNote' | 'deleteNote' | 'attachExecution'>
 
 export interface InvestigationApiDependencies {
   readonly authenticate: () => Promise<string | null>
   readonly getStore: () => Store
   readonly synchronize?: (ownerUserId: string, investigationId: InvestigationId) => Promise<void>
+  readonly terminateInvestigationSession?: (sessionId: string) => Promise<void>
+}
+
+export interface InvestigationSessionApiDependencies extends InvestigationApiDependencies {
+  readonly createTTYSession: (request: Request) => Promise<Response>
+  readonly getTTYSession: (request: Request, sessionId: string) => Promise<Response>
+  readonly terminateTTYSession: (request: Request, sessionId: string) => Promise<Response>
 }
 
 export interface InvestigationExecutionApiDependencies extends InvestigationApiDependencies {
@@ -167,7 +175,15 @@ export function createInvestigationApi(dependencies: InvestigationApiDependencie
         if (!emptyBody(request)) return failure(400, 'INVALID_INPUT', 'The request body must be empty.')
         const investigationId = parseId(rawId)
         if (!investigationId) return failure(400, 'INVALID_INVESTIGATION_ID', 'The investigation identifier is invalid.')
+        const existing = await dependencies.getStore().get(user, investigationId, { timelineLimit: 1, executionLimit: 1 })
         const deleted = await dependencies.getStore().delete(user, investigationId)
+        if (deleted && existing?.investigation.ttySessionId) {
+          try {
+            await dependencies.terminateInvestigationSession?.(existing.investigation.ttySessionId)
+          } catch {
+            // Deletion remains durable even when remote session cleanup is temporarily unavailable.
+          }
+        }
         return deleted ? json({ ok: true, investigationId, deleted: true }, 200) : failure(404, 'NOT_FOUND', 'Investigation not found.')
       } catch {
         return failure(500, 'INTERNAL_ERROR', 'The investigation could not be deleted.')
@@ -191,6 +207,116 @@ export function createInvestigationApi(dependencies: InvestigationApiDependencie
         return event ? json({ ok: true, event }, 201) : failure(404, 'NOT_FOUND', 'Investigation not found.')
       } catch {
         return failure(500, 'INTERNAL_ERROR', 'The timeline event could not be persisted.')
+      }
+    },
+
+    async patchNote(request: Request, rawId: string, rawNoteId: string): Promise<Response> {
+      try {
+        const user = await requireUser(dependencies)
+        if (user instanceof Response) return user
+        const investigationId = parseId(rawId)
+        const noteId = parseId(rawNoteId)
+        if (!investigationId || !noteId) return failure(400, 'INVALID_NOTE_ID', 'The note identifier is invalid.')
+        const parsed = NOTE_PATCH_SCHEMA.safeParse(await parseJsonBody(request))
+        if (!parsed.success) return failure(400, 'INVALID_INPUT', 'The note update is invalid.')
+        const event = await dependencies.getStore().updateNote(user, investigationId, rawNoteId, parsed.data.body)
+        return event ? json({ ok: true, event }, 200) : failure(404, 'NOT_FOUND', 'Note not found.')
+      } catch {
+        return failure(500, 'INTERNAL_ERROR', 'The note could not be updated.')
+      }
+    },
+
+    async deleteNote(request: Request, rawId: string, rawNoteId: string): Promise<Response> {
+      try {
+        const user = await requireUser(dependencies)
+        if (user instanceof Response) return user
+        if (!emptyBody(request)) return failure(400, 'INVALID_INPUT', 'The request body must be empty.')
+        const investigationId = parseId(rawId)
+        const noteId = parseId(rawNoteId)
+        if (!investigationId || !noteId) return failure(400, 'INVALID_NOTE_ID', 'The note identifier is invalid.')
+        const event = await dependencies.getStore().deleteNote(user, investigationId, rawNoteId)
+        return event ? json({ ok: true, event }, 200) : failure(404, 'NOT_FOUND', 'Note not found.')
+      } catch {
+        return failure(500, 'INTERNAL_ERROR', 'The note could not be deleted.')
+      }
+    }
+  }
+}
+
+function sessionFromResponse(body: unknown): { readonly sessionId: string; readonly status: string } | null {
+  if (typeof body !== 'object' || body === null || !('session' in body)) return null
+  const session = body.session
+  if (typeof session !== 'object' || session === null || !('sessionId' in session) || !('status' in session)) return null
+  return typeof session.sessionId === 'string' && typeof session.status === 'string' ? { sessionId: session.sessionId, status: session.status } : null
+}
+
+function emptyRequest(url: string, method: 'GET' | 'POST' | 'DELETE'): Request {
+  return new Request(url, { method })
+}
+
+export function createInvestigationSessionApi(dependencies: InvestigationSessionApiDependencies) {
+  return {
+    async ensure(request: Request, rawId: string): Promise<Response> {
+      try {
+        const user = await requireUser(dependencies)
+        if (user instanceof Response) return user
+        if (!emptyBody(request)) return failure(400, 'INVALID_INPUT', 'The request body must be empty.')
+        const investigationId = parseId(rawId)
+        if (!investigationId) return failure(400, 'INVALID_INVESTIGATION_ID', 'The investigation identifier is invalid.')
+        const store = dependencies.getStore()
+        const hydration = await store.get(user, investigationId, { timelineLimit: 1, executionLimit: 1 })
+        if (!hydration) return failure(404, 'NOT_FOUND', 'Investigation not found.')
+
+        const existingSessionId = hydration.investigation.ttySessionId
+        if (existingSessionId) {
+          const existingResponse = await dependencies.getTTYSession(emptyRequest(request.url, 'GET'), existingSessionId)
+          const existingBody: unknown = await existingResponse.json().catch(() => null)
+          const existing = sessionFromResponse(existingBody)
+          if (existingResponse.ok && existing?.status === 'active') return json({ ok: true, investigation: publicRecord(hydration.investigation), sessionId: existing.sessionId, reused: true }, 200)
+          if (existingResponse.status >= 500) return failure(503, 'SESSION_UNAVAILABLE', 'The execution session could not be restored.')
+          await store.clearSession(user, investigationId)
+        }
+
+        const createdResponse = await dependencies.createTTYSession(emptyRequest(request.url, 'POST'))
+        const createdBody: unknown = await createdResponse.json().catch(() => null)
+        const created = sessionFromResponse(createdBody)
+        if (!createdResponse.ok || !created) return json(createdBody ?? { ok: false, code: 'SESSION_NOT_CREATED', message: 'The execution session could not be created.' }, createdResponse.status)
+        const attached = await store.attachSession(user, investigationId, created.sessionId)
+        if (!attached) {
+          await dependencies.terminateTTYSession(emptyRequest(request.url, 'DELETE'), created.sessionId).catch(() => {})
+          return failure(404, 'NOT_FOUND', 'Investigation not found.')
+        }
+        if (attached.ttySessionId !== created.sessionId) {
+          await dependencies.terminateTTYSession(emptyRequest(request.url, 'DELETE'), created.sessionId).catch(() => {})
+          return json({ ok: true, investigation: publicRecord(attached), sessionId: attached.ttySessionId, reused: true }, 200)
+        }
+        return json({ ok: true, investigation: publicRecord(attached), sessionId: created.sessionId, reused: false }, 201)
+      } catch {
+        return failure(500, 'INTERNAL_ERROR', 'The execution session could not be attached.')
+      }
+    },
+
+    async terminate(request: Request, rawId: string): Promise<Response> {
+      try {
+        const user = await requireUser(dependencies)
+        if (user instanceof Response) return user
+        if (!emptyBody(request)) return failure(400, 'INVALID_INPUT', 'The request body must be empty.')
+        const investigationId = parseId(rawId)
+        if (!investigationId) return failure(400, 'INVALID_INVESTIGATION_ID', 'The investigation identifier is invalid.')
+        const store = dependencies.getStore()
+        const hydration = await store.get(user, investigationId, { timelineLimit: 1, executionLimit: 1 })
+        if (!hydration) return failure(404, 'NOT_FOUND', 'Investigation not found.')
+        const sessionId = hydration.investigation.ttySessionId
+        if (!sessionId) return json({ ok: true, investigation: publicRecord(hydration.investigation), terminated: false }, 200)
+        const terminatedResponse = await dependencies.terminateTTYSession(emptyRequest(request.url, 'DELETE'), sessionId)
+        if (!terminatedResponse.ok) {
+          const body: unknown = await terminatedResponse.json().catch(() => null)
+          return json(body ?? { ok: false, code: 'SESSION_NOT_TERMINATED', message: 'The execution session could not be terminated.' }, terminatedResponse.status)
+        }
+        const investigation = await store.clearSession(user, investigationId)
+        return investigation ? json({ ok: true, investigation: publicRecord(investigation), terminated: true }, 200) : failure(404, 'NOT_FOUND', 'Investigation not found.')
+      } catch {
+        return failure(500, 'INTERNAL_ERROR', 'The execution session could not be terminated.')
       }
     }
   }

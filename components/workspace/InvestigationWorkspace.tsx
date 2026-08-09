@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useRef, useState } from 'react'
-import { Activity, Boxes, FileSearch, GitBranch, Search, Wifi, WifiOff } from 'lucide-react'
+import { Activity, Boxes, FileSearch, GitBranch, Play, Search, Wifi, WifiOff } from 'lucide-react'
 
 import { EvidenceBookmarks, type TTYEvidenceCandidate } from '@/components/tty/EvidenceBookmarks'
 import type { TTYEvidenceBookmark } from '@/lib/tty/tty-evidence-bookmarks'
@@ -28,6 +28,7 @@ export interface InvestigationWorkspaceProps {
   readonly onSelectHistory?: (executionId: string) => void
   readonly onCancel?: () => Promise<void> | void
   readonly onRestart?: () => Promise<void> | void
+  readonly onExecute?: (input: string) => Promise<void> | void
   readonly initialBookmarks?: readonly TTYEvidenceBookmark[]
   readonly onBookmarkAdded?: (bookmark: TTYEvidenceBookmark) => Promise<void> | void
 }
@@ -56,12 +57,16 @@ export function InvestigationWorkspace({
   onSelectHistory,
   onCancel,
   onRestart,
+  onExecute,
   initialBookmarks,
   onBookmarkAdded
 }: InvestigationWorkspaceProps) {
   const terminalRef = useRef<InvestigationTerminalHandle | null>(null)
   const [search, setSearch] = useState('')
   const [searchIndex, setSearchIndex] = useState(0)
+  const [input, setInput] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [executionError, setExecutionError] = useState<string | null>(null)
   const stream = useTTYExecutionStream({ executionId, sessionId, maxEvents: 20_000 })
   const lines = useMemo(() => buildTTYTerminalLines(stream.events), [stream.events])
   const matches = useMemo(() => findTTYSearchMatches(lines, search), [lines, search])
@@ -86,6 +91,21 @@ export function InvestigationWorkspace({
   const clear = () => {
     stream.clear()
     terminalRef.current?.clear()
+  }
+
+  const submit = async () => {
+    const next = input.trim()
+    if (!next || !onExecute || submitting) return
+    setSubmitting(true)
+    setExecutionError(null)
+    try {
+      await onExecute(next)
+      setInput('')
+    } catch (cause) {
+      setExecutionError(cause instanceof Error ? cause.message : 'The execution could not be submitted.')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -119,6 +139,13 @@ export function InvestigationWorkspace({
           </aside>
 
           <section className="order-1 flex min-h-[560px] min-w-0 flex-col gap-2 lg:order-2">
+            <div className="rounded-lg border border-cyan-400/20 bg-cyan-400/[0.03] p-2">
+              <div className="flex items-end gap-2">
+                <textarea value={input} onChange={event => setInput(event.target.value)} onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); void submit() } }} disabled={!onExecute || submitting} aria-label="Execution command" placeholder={onExecute ? 'Enter an approved command. Ctrl+Enter runs it.' : 'Execution session is unavailable.'} className="min-h-12 flex-1 resize-y rounded border border-white/10 bg-black/30 p-2 font-mono text-[11px] text-zinc-200 outline-none placeholder:text-zinc-700 disabled:cursor-not-allowed disabled:opacity-60" />
+                <button type="button" onClick={() => void submit()} disabled={!onExecute || submitting || !input.trim()} className="inline-flex h-9 items-center gap-1 rounded border border-cyan-400/30 px-3 font-mono text-[10px] uppercase tracking-wider text-cyan-200 hover:bg-cyan-400/10 disabled:opacity-50"><Play className="size-3" />{submitting ? 'queueing' : 'execute'}</button>
+              </div>
+              {executionError && <p role="alert" className="mt-1 font-mono text-[10px] text-rose-300">{executionError}</p>}
+            </div>
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/10 bg-black/30 p-2">
               <div className="flex min-w-0 flex-1 items-center gap-2">
                 <Search className="size-3 shrink-0 text-zinc-600" />

@@ -5,11 +5,12 @@ import { Redis } from '@upstash/redis'
 
 import { createTTYAdmissionApiForRequest } from '@/lib/tty/tty-execution-admission-server'
 import { TTYExecutionApi } from '@/lib/tty/tty-execution-api'
+import { createTTYLifecycleApiForRequest } from '@/lib/tty/tty-lifecycle-server'
 import { isTTYExecutionState, type TTYExecutionStateRecord } from '@/lib/tty/tty-execution-state'
 import { TTYOutputStreamManager } from '@/lib/tty/tty-output-stream'
 import { createTTYSessionStore } from '@/lib/tty/tty-session-store'
 import { ttyExecutionStateKey } from '@/lib/tty/tty-worker-keys'
-import { createInvestigationApi, createInvestigationExecutionApi } from './investigation-api'
+import { createInvestigationApi, createInvestigationExecutionApi, createInvestigationSessionApi } from './investigation-api'
 import { InvestigationExecutionSynchronizer } from './investigation-execution-sync'
 import { InvestigationStore, type InvestigationRedis } from './investigation-store'
 
@@ -60,10 +61,27 @@ export function createInvestigationApiForRequest() {
     getExecution: (executionId, ownerUserId) => executionApi.getExecution(executionId as never, ownerUserId),
     getOutput: (executionId, ownerUserId, options) => executionApi.getOutput(executionId as never, ownerUserId, options)
   })
+  const lifecycle = createTTYLifecycleApiForRequest()
   return createInvestigationApi({
     authenticate: async () => (await auth()).userId ?? null,
     getStore: () => store,
-    synchronize: (ownerUserId, investigationId) => synchronizer.synchronize(ownerUserId, investigationId)
+    synchronize: (ownerUserId, investigationId) => synchronizer.synchronize(ownerUserId, investigationId),
+    terminateInvestigationSession: async sessionId => {
+      const response = await lifecycle.terminate(new Request(`http://localhost/api/tty/sessions/${sessionId}`, { method: 'DELETE' }), sessionId as never)
+      if (!response.ok) throw new Error('TTY session termination failed.')
+    }
+  })
+}
+
+export function createInvestigationSessionApiForRequest() {
+  const store = new InvestigationStore(createInvestigationRedis(createRedis()))
+  const lifecycle = createTTYLifecycleApiForRequest()
+  return createInvestigationSessionApi({
+    authenticate: async () => (await auth()).userId ?? null,
+    getStore: () => store,
+    createTTYSession: request => lifecycle.create(request),
+    getTTYSession: (request, sessionId) => lifecycle.get(request, sessionId as never),
+    terminateTTYSession: (request, sessionId) => lifecycle.terminate(request, sessionId as never)
   })
 }
 

@@ -5,6 +5,7 @@ import {
   investigationExecutionKey,
   investigationOwnerIndexKey,
   investigationRecordKey,
+  investigationSessionKey,
   investigationTimelineDedupeKey,
   investigationTimelineKey
 } from './investigation-keys'
@@ -97,8 +98,12 @@ function isTimelineType(value: string): value is InvestigationTimelineEventType 
     'stderr',
     'execution_completed',
     'execution_failed',
+    'session_attached',
+    'session_terminated',
     'evidence_bookmarked',
-    'note_added'
+    'note_added',
+    'note_edited',
+    'note_deleted'
   ].includes(value as InvestigationTimelineEventType)
 }
 
@@ -189,6 +194,7 @@ export class InvestigationStore {
       createdAt: now,
       updatedAt: now,
       archivedAt: null,
+      ttySessionId: null,
       executionCount: 0,
       evidenceCount: 0,
       findingCount: 0
@@ -214,15 +220,39 @@ export class InvestigationStore {
   async list(ownerUserId: string, options: { readonly cursor?: string | null; readonly limit?: number } = {}): Promise<InvestigationPage> {
     const offset = safeCursor(options.cursor)
     const limit = safeLimit(options.limit, MAX_LIST_LIMIT)
-    const ids = await this.redis.zrange<string[]>(investigationOwnerIndexKey(ownerUserId), 0, -1, { rev: true, offset, count: limit + 1 })
     const visible: InvestigationRecord[] = []
-    for (const id of ids) {
-      const record = await this.readRecord(id as InvestigationId, ownerUserId)
-      if (record && record.status !== 'deleted') visible.push(record)
-      if (visible.length >= limit + 1) break
+    let scanOffset = offset
+    let pageEndCursor: number | null = null
+    let hasMore = false
+
+    while (true) {
+      const ids = await this.redis.zrange<string[]>(investigationOwnerIndexKey(ownerUserId), 0, -1, { rev: true, offset: scanOffset, count: limit + 1 })
+      if (ids.length === 0) break
+      let retainedEntries = 0
+
+      for (let index = 0; index < ids.length; index += 1) {
+        const investigationId = ids[index]! as InvestigationId
+        const record = await this.readRecord(investigationId, ownerUserId)
+        if (!record || record.status === 'deleted') {
+          await this.redis.zrem(investigationOwnerIndexKey(ownerUserId), investigationId)
+          continue
+        }
+        retainedEntries += 1
+        if (visible.length < limit) {
+          visible.push(record)
+          if (visible.length === limit) pageEndCursor = scanOffset + retainedEntries
+          continue
+        }
+        hasMore = true
+        break
+      }
+
+      if (hasMore) break
+      scanOffset += retainedEntries
+      if (ids.length < limit + 1) break
     }
-    const hasMore = visible.length > limit
-    return { investigations: visible.slice(0, limit), nextCursor: hasMore ? String(offset + limit) : null }
+
+    return { investigations: visible, nextCursor: hasMore && pageEndCursor !== null ? String(pageEndCursor) : null }
   }
 
   async get(ownerUserId: string, investigationId: InvestigationId, options: { readonly timelineCursor?: string | null; readonly timelineLimit?: number; readonly executionCursor?: string | null; readonly executionLimit?: number } = {}): Promise<InvestigationHydration | null> {
@@ -283,7 +313,39 @@ export class InvestigationStore {
     await this.redis.set(investigationRecordKey(investigationId), JSON.stringify(deleted))
     await this.appendTimeline(investigationId, 'investigation_deleted', {}, { dedupeKey: `deleted:${now}`, occurredAt: now })
     await this.redis.zrem(investigationOwnerIndexKey(ownerUserId), investigationId)
+    await this.redis.del(investigationSessionKey(investigationId))
     return true
+  }
+
+  async attachSession(ownerUserId: string, investigationId: InvestigationId, sessionId: string, now = new Date().toISOString()): Promise<InvestigationRecord | null> {
+    const current = await this.readRecord(investigationId, ownerUserId)
+    if (!current || current.status === 'deleted') return null
+    if (current.ttySessionId) return current
+
+    const sessionKey = investigationSessionKey(investigationId)
+    const inserted = await this.redis.set(sessionKey, sessionId, { nx: true })
+    const persistedSessionId = inserted === null ? await this.redis.get<string>(sessionKey) : sessionId
+    if (!persistedSessionId) return null
+    if (current.ttySessionId === persistedSessionId) return current
+
+    const next: InvestigationRecord = { ...current, ttySessionId: persistedSessionId, updatedAt: now }
+    await this.redis.set(investigationRecordKey(investigationId), JSON.stringify(next))
+    await this.appendTimeline(investigationId, 'session_attached', { sessionId: persistedSessionId }, { dedupeKey: `session-attached:${persistedSessionId}`, occurredAt: now })
+    return next
+  }
+
+  async clearSession(ownerUserId: string, investigationId: InvestigationId, now = new Date().toISOString()): Promise<InvestigationRecord | null> {
+    const current = await this.readRecord(investigationId, ownerUserId)
+    if (!current || current.status === 'deleted') return null
+    if (!current.ttySessionId) return current
+    const sessionId = current.ttySessionId
+    const next: InvestigationRecord = { ...current, ttySessionId: null, updatedAt: now }
+    await Promise.all([
+      this.redis.set(investigationRecordKey(investigationId), JSON.stringify(next)),
+      this.redis.del(investigationSessionKey(investigationId))
+    ])
+    await this.appendTimeline(investigationId, 'session_terminated', { sessionId }, { dedupeKey: `session-terminated:${sessionId}`, occurredAt: now })
+    return next
   }
 
   async attachExecution(ownerUserId: string, investigationId: InvestigationId, input: InvestigationExecutionAttachmentInput): Promise<InvestigationExecution | null> {
@@ -337,7 +399,18 @@ export class InvestigationStore {
 
   async recordNote(ownerUserId: string, investigationId: InvestigationId, body: string, now = new Date().toISOString()): Promise<InvestigationTimelineEvent | null> {
     if (!(await this.readRecord(investigationId, ownerUserId))) return null
-    return this.appendTimeline(investigationId, 'note_added', { noteId: crypto.randomUUID(), body }, { dedupeKey: `note:${crypto.randomUUID()}`, occurredAt: now })
+    const noteId = crypto.randomUUID()
+    return this.appendTimeline(investigationId, 'note_added', { noteId, body }, { dedupeKey: `note:${noteId}`, occurredAt: now })
+  }
+
+  async updateNote(ownerUserId: string, investigationId: InvestigationId, noteId: string, body: string, now = new Date().toISOString()): Promise<InvestigationTimelineEvent | null> {
+    if (!(await this.findNote(ownerUserId, investigationId, noteId))) return null
+    return this.appendTimeline(investigationId, 'note_edited', { noteId, body }, { dedupeKey: `note-edit:${noteId}:${now}:${body}`, occurredAt: now })
+  }
+
+  async deleteNote(ownerUserId: string, investigationId: InvestigationId, noteId: string, now = new Date().toISOString()): Promise<InvestigationTimelineEvent | null> {
+    if (!(await this.findNote(ownerUserId, investigationId, noteId))) return null
+    return this.appendTimeline(investigationId, 'note_deleted', { noteId }, { dedupeKey: `note-delete:${noteId}:${now}`, occurredAt: now })
   }
 
   async recordExecutionEvent(ownerUserId: string, investigationId: InvestigationId, event: { readonly type: Extract<InvestigationTimelineEventType, 'execution_started' | 'stdout' | 'stderr' | 'execution_completed' | 'execution_failed'>; readonly executionId: string; readonly sequence?: number; readonly occurredAt?: string; readonly payload?: Readonly<Record<string, string | number | boolean | null>> }): Promise<InvestigationTimelineEvent | null> {
@@ -384,7 +457,7 @@ export class InvestigationStore {
       this.redis.get(investigationCounterKey(investigationId, 'evidence')),
       this.redis.get(investigationCounterKey(investigationId, 'findings'))
     ])
-    return Object.freeze({ ...raw, executionCount: counterValue(executions ?? raw.executionCount), evidenceCount: counterValue(evidence ?? raw.evidenceCount), findingCount: counterValue(findings ?? raw.findingCount) })
+    return Object.freeze({ ...raw, ttySessionId: typeof raw.ttySessionId === 'string' ? raw.ttySessionId : null, executionCount: counterValue(executions ?? raw.executionCount), evidenceCount: counterValue(evidence ?? raw.evidenceCount), findingCount: counterValue(findings ?? raw.findingCount) })
   }
 
   private async readExecution(investigationId: InvestigationId, executionId: string): Promise<InvestigationExecution | null> {
@@ -407,16 +480,33 @@ export class InvestigationStore {
         investigationCounterKey(investigationId, 'findings'),
         investigationTimelineKey(investigationId),
         investigationTimelineDedupeKey(investigationId),
-        investigationBookmarkIndexKey(investigationId)
+        investigationBookmarkIndexKey(investigationId),
+        investigationSessionKey(investigationId)
       )
     ])
   }
 
   private notesFromTimeline(events: readonly InvestigationTimelineEvent[]): readonly InvestigationNote[] {
-    return events.filter(event => event.type === 'note_added').map(event => ({
-      noteId: String(event.payload.noteId ?? event.eventId),
-      body: String(event.payload.body ?? ''),
-      createdAt: event.occurredAt
-    }))
+    const notes = new Map<string, InvestigationNote>()
+    for (const event of events) {
+      const noteId = String(event.payload.noteId ?? '')
+      if (!noteId) continue
+      if (event.type === 'note_added') {
+        notes.set(noteId, { noteId, body: String(event.payload.body ?? ''), createdAt: event.occurredAt })
+      } else if (event.type === 'note_edited') {
+        const current = notes.get(noteId)
+        if (current) notes.set(noteId, { ...current, body: String(event.payload.body ?? '') })
+      } else if (event.type === 'note_deleted') {
+        notes.delete(noteId)
+      }
+    }
+    return [...notes.values()]
+  }
+
+  private async findNote(ownerUserId: string, investigationId: InvestigationId, noteId: string): Promise<InvestigationNote | null> {
+    const investigation = await this.readRecord(investigationId, ownerUserId)
+    if (!investigation || investigation.status === 'deleted') return null
+    const raw = await this.redis.xrange(investigationTimelineKey(investigationId), '-', '+')
+    return this.notesFromTimeline(parseTimelineEntries(raw, investigationId).map(entry => entry.event)).find(note => note.noteId === noteId) ?? null
   }
 }
