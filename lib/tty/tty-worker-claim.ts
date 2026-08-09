@@ -35,6 +35,11 @@ export type TTYWorkerClaimResult =
   | { readonly claimed: true; readonly ownership: TTYWorkerOwnership }
   | { readonly claimed: false; readonly reason: TTYWorkerClaimFailure }
 
+/** Trusted server-side handoff used only by the execution coordinator. */
+export type TTYWorkerCoordinatorClaimResult =
+  | { readonly claimed: true; readonly ownership: TTYWorkerOwnership; readonly job: TTYLeasedJob }
+  | { readonly claimed: false; readonly reason: TTYWorkerClaimFailure }
+
 export type TTYWorkerReleaseResult =
   | { readonly released: true }
   | { readonly released: false; readonly reason: 'unknown_ownership' | 'missing_job' | 'not_owner' | 'lease_expired' | 'session_terminated' | 'attempts_exhausted' | 'internal_error' }
@@ -100,6 +105,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error && error.message.length > 0 ? error.message : 'Unknown lease claim failure.'
 }
 
+type TTYWorkerClaimAttempt =
+  | { readonly sessionId: TTYSessionId; readonly result: TTYLeaseClaimResult }
+  | { readonly sessionId: null; readonly result: null }
+
 export class TTYWorkerClaimService {
   private readonly now: () => number
   private readonly logger: TTYWorkerClaimLogger
@@ -127,29 +136,31 @@ export class TTYWorkerClaimService {
   }
 
   async claimExecution(executionId: TTYExecutionId, knownSessionId?: TTYSessionId): Promise<TTYWorkerClaimResult> {
-    this.claimAttempts += 1
-    const sessionId = knownSessionId ?? await this.resolveSessionId(executionId)
-    if (sessionId === null) return { claimed: false, reason: 'missing_execution_context' }
-
-    let result: TTYLeaseClaimResult
-    try {
-      result = await this.dependencies.leaseManager.claim(executionId, sessionId)
-    } catch (error) {
-      this.logger.error('lease_claim_error', { executionId, error: errorMessage(error) })
-      return { claimed: false, reason: 'internal_error' }
-    }
+    const attempt = await this.claimLease(executionId, knownSessionId)
+    if (attempt.sessionId === null || attempt.result === null) return { claimed: false, reason: 'missing_execution_context' }
+    const { sessionId, result } = attempt
 
     if (result.claimed) {
-      return this.recordClaimedOwnership(result.job)
+      return { claimed: true, ownership: await this.recordClaimedOwnership(result.job) }
     }
 
-    if (result.reason === 'not_queued') {
-      this.claimConflicts += 1
-      const recoveredExpiredLease = await this.observePossibleExpiration(executionId, sessionId)
-      this.logger.info('lease_conflict', { executionId })
-      if (recoveredExpiredLease) return { claimed: false, reason: 'lease_expired' }
+    return { claimed: false, reason: await this.resolveClaimFailure(executionId, sessionId, result) }
+  }
+
+  /**
+   * Claims once and returns the internal leased job to the coordinator. The
+   * job contains a lease token and must never cross a browser or logging
+   * boundary. This method is deliberately separate from the browser-safe
+   * claim result above.
+   */
+  async claimExecutionForCoordinator(executionId: TTYExecutionId, knownSessionId?: TTYSessionId): Promise<TTYWorkerCoordinatorClaimResult> {
+    const attempt = await this.claimLease(executionId, knownSessionId)
+    if (attempt.sessionId === null || attempt.result === null) return { claimed: false, reason: 'missing_execution_context' }
+    const { sessionId, result } = attempt
+    if (result.claimed) {
+      return { claimed: true, ownership: await this.recordClaimedOwnership(result.job), job: result.job }
     }
-    return { claimed: false, reason: result.reason }
+    return { claimed: false, reason: await this.resolveClaimFailure(executionId, sessionId, result) }
   }
 
   async releaseOwnership(ownership: TTYWorkerOwnership): Promise<TTYWorkerReleaseResult> {
@@ -173,6 +184,14 @@ export class TTYWorkerClaimService {
     return this.ownerships.get(executionId) ?? null
   }
 
+  /** Clears trusted local ownership after the coordinator finalizes a lease. */
+  forgetOwnership(ownership: TTYWorkerOwnership): void {
+    const current = this.ownerships.get(ownership.executionId)
+    if (current?.leaseId !== ownership.leaseId || current.workerId !== ownership.workerId) return
+    this.ownerships.delete(ownership.executionId)
+    this.secrets.delete(ownership.executionId)
+  }
+
   getStatus(): TTYWorkerClaimStatus {
     const activeOwnerships = [...this.ownerships.values()].sort((left, right) => left.executionId.localeCompare(right.executionId)).map(safeOwnership)
     return Object.freeze({
@@ -193,7 +212,28 @@ export class TTYWorkerClaimService {
     }
   }
 
-  private async recordClaimedOwnership(job: TTYLeasedJob): Promise<TTYWorkerClaimResult> {
+  private async claimLease(executionId: TTYExecutionId, knownSessionId?: TTYSessionId): Promise<TTYWorkerClaimAttempt> {
+    this.claimAttempts += 1
+    const sessionId = knownSessionId ?? await this.resolveSessionId(executionId)
+    if (sessionId === null) return { sessionId: null, result: null }
+
+    try {
+      return { sessionId, result: await this.dependencies.leaseManager.claim(executionId, sessionId) }
+    } catch (error) {
+      this.logger.error('lease_claim_error', { executionId, error: errorMessage(error) })
+      return { sessionId, result: { claimed: false, reason: 'internal_error' } }
+    }
+  }
+
+  private async resolveClaimFailure(executionId: TTYExecutionId, sessionId: TTYSessionId, result: Exclude<TTYLeaseClaimResult, { claimed: true }>): Promise<TTYWorkerClaimFailure> {
+    if (result.reason !== 'not_queued') return result.reason
+    this.claimConflicts += 1
+    const recoveredExpiredLease = await this.observePossibleExpiration(executionId, sessionId)
+    this.logger.info('lease_conflict', { executionId })
+    return recoveredExpiredLease ? 'lease_expired' : result.reason
+  }
+
+  private async recordClaimedOwnership(job: TTYLeasedJob): Promise<TTYWorkerOwnership> {
     let ownership: TTYWorkerOwnership
     try {
       const observation = await this.dependencies.observer.getLeaseObservation(job.executionId)
@@ -207,7 +247,7 @@ export class TTYWorkerClaimService {
     this.secrets.set(job.executionId, { sessionId: job.sessionId, token: job.lease.token })
     this.claimSuccesses += 1
     this.logger.info('lease_claimed', this.safeLogFields(ownership))
-    return { claimed: true, ownership }
+    return ownership
   }
 
   private async observePossibleExpiration(executionId: TTYExecutionId, sessionId: TTYSessionId): Promise<boolean> {

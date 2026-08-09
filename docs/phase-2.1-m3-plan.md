@@ -73,3 +73,11 @@ The service composes the existing `TTYRecoveryManager`, `TTYExecutionCoordinator
 Phase D does not execute jobs, change lease or coordinator contracts, add distributed scheduling, or expose lease tokens. Queue polling and claim services remain responsible for discovering and claiming executions returned to `queued`.
 
 See [`tty-worker-recovery.md`](./tty-worker-recovery.md) for architecture, lifecycle, ownership, failure modes, recovery behavior, metrics, security, and operational guidance.
+
+## Phase E scope checkpoint
+
+Milestone 3E adds `TTYWorkerExecutor` as the single-concurrency execution loop. The executor consumes the poller's pending-ID callback, claims through the worker claim service, hands the already-owned lease to the coordinator, and releases local ownership in every terminal path. The coordinator remains the authority for state transitions, process lifecycle, output streaming, lease renewal, and terminal completion; the executor observes trusted renewal/loss hooks for metrics and recovery.
+
+Startup performs one recovery scan before polling. Shutdown stops discovery, requests idempotent worker cancellation, waits for the active run, and then releases polling resources. A lease loss stops the coordinator runtime and preserves the coordinator's expired state for recovery; coordinator/runtime failures are recorded without exposing payloads or lease tokens. No autoscaling, distributed scheduling, or parallel execution is introduced.
+
+See [`tty-worker-execution.md`](./tty-worker-execution.md) for architecture, lifecycle, ownership, failure modes, recovery behavior, metrics, security, and operational guidance.

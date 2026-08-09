@@ -76,6 +76,12 @@ export interface TTYExecutionLeaseOperations {
   recover(executionId: TTYExecutionId, sessionId: TTYSessionId): ReturnType<TTYExecutionLeaseManager['recover']>
 }
 
+/** Trusted per-run signals used by the worker executor for metrics only. */
+export interface TTYExecutionCoordinatorRunHooks {
+  readonly onLeaseRenewed?: (executionId: TTYExecutionId, sessionId: TTYSessionId) => void
+  readonly onLeaseLost?: (executionId: TTYExecutionId, sessionId: TTYSessionId, reason: string) => void
+}
+
 export interface TTYExecutionCoordinatorDependencies {
   readonly redis: Redis
   readonly workerId: TTYWorkerId
@@ -132,6 +138,7 @@ interface ExecutionContext {
   outputBytes: number
   stdoutBytes: number
   stderrBytes: number
+  readonly hooks: TTYExecutionCoordinatorRunHooks
 }
 
 function commandName(file: string): string {
@@ -208,6 +215,28 @@ export class TTYExecutionCoordinator {
     this.contexts.set(executionId, context)
     try {
       return await withSpan('tty.execution.run', { executionId, sessionId, workerId: this.dependencies.workerId }, async () => this.execute(context))
+    } finally {
+      this.clearContext(context)
+    }
+  }
+
+  /**
+   * Executes a lease already claimed by TTYWorkerClaimService. The existing
+   * run() path remains the coordinator-owned claim-and-run contract; this
+   * additive handoff prevents a worker loop from claiming the same job twice.
+   */
+  async runClaimed(job: TTYLeasedJob, hooks: TTYExecutionCoordinatorRunHooks = {}): Promise<TTYExecutionRunResult> {
+    const existing = await this.getState(job.executionId)
+    if (existing && isTerminalTTYExecutionState(existing.state)) return { accepted: true, state: existing }
+    if (this.contexts.has(job.executionId)) return { accepted: false, reason: 'already_running', state: existing }
+    if (job.status !== 'leased' || job.sessionId.length === 0 || job.lease.workerId !== this.dependencies.workerId) {
+      return { accepted: false, reason: 'unauthorized_worker', state: existing }
+    }
+
+    const context = this.createContext(job.executionId, job.sessionId, hooks)
+    this.contexts.set(job.executionId, context)
+    try {
+      return await withSpan('tty.execution.run_claimed', { executionId: job.executionId, sessionId: job.sessionId, workerId: this.dependencies.workerId }, async () => this.execute(context, job))
     } finally {
       this.clearContext(context)
     }
@@ -290,7 +319,7 @@ export class TTYExecutionCoordinator {
     return queued
   }
 
-  private createContext(executionId: TTYExecutionId, sessionId: TTYSessionId): ExecutionContext {
+  private createContext(executionId: TTYExecutionId, sessionId: TTYSessionId, hooks: TTYExecutionCoordinatorRunHooks = {}): ExecutionContext {
     return {
       executionId,
       sessionId,
@@ -309,11 +338,12 @@ export class TTYExecutionCoordinator {
       streaming: false,
       outputBytes: 0,
       stdoutBytes: 0,
-      stderrBytes: 0
+      stderrBytes: 0,
+      hooks
     }
   }
 
-  private async execute(context: ExecutionContext): Promise<TTYExecutionRunResult> {
+  private async execute(context: ExecutionContext, preclaimedJob?: TTYLeasedJob): Promise<TTYExecutionRunResult> {
     let state = await this.ensureQueued(context)
     if (state === null) return { accepted: false, reason: 'internal_error', state: null }
     if (context.cancelReason) {
@@ -321,9 +351,11 @@ export class TTYExecutionCoordinator {
       return { accepted: true, state }
     }
 
-    const claimed = await this.dependencies.leaseManager.claim(context.executionId, context.sessionId)
+    const claimed = preclaimedJob
+      ? { claimed: true as const, job: preclaimedJob }
+      : await this.dependencies.leaseManager.claim(context.executionId, context.sessionId)
     if (!claimed.claimed) return { accepted: false, reason: claimed.reason === 'internal_error' ? 'internal_error' : claimed.reason, state: await this.getState(context.executionId) }
-    if (claimed.job.sessionId !== context.sessionId || claimed.job.lease.workerId !== this.dependencies.workerId) {
+    if (claimed.job.executionId !== context.executionId || claimed.job.sessionId !== context.sessionId || claimed.job.lease.workerId !== this.dependencies.workerId) {
       return { accepted: false, reason: 'unauthorized_worker', state }
     }
 
@@ -561,6 +593,7 @@ export class TTYExecutionCoordinator {
     try {
       result = await this.dependencies.leaseManager.renew(context.executionId, context.sessionId, context.leaseToken)
     } catch {
+      this.notifyLeaseLost(context, 'internal_error')
       context.leaseLost = true
       context.cancelReason = 'lease_expired'
       context.failureCode = 'LEASE_RENEWAL_FAILED'
@@ -568,10 +601,25 @@ export class TTYExecutionCoordinator {
       return
     }
     if (!result.renewed) {
+      this.notifyLeaseLost(context, result.reason)
       context.leaseLost = true
       context.cancelReason = 'lease_expired'
       context.failureCode = result.reason === 'lease_expired' ? 'LEASE_EXPIRED' : 'LEASE_RENEWAL_FAILED'
       await this.requestStop(context)
+    } else {
+      try {
+        context.hooks.onLeaseRenewed?.(context.executionId, context.sessionId)
+      } catch {
+        // Metrics hooks must never change execution ownership or runtime state.
+      }
+    }
+  }
+
+  private notifyLeaseLost(context: ExecutionContext, reason: string): void {
+    try {
+      context.hooks.onLeaseLost?.(context.executionId, context.sessionId, reason)
+    } catch {
+      // Metrics hooks must never change execution ownership or runtime state.
     }
   }
 
