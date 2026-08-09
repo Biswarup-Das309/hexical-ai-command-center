@@ -18,6 +18,8 @@ export type InvestigationTimelineEventType =
   | 'execution_failed'
   | 'evidence_bookmarked'
   | 'note_added'
+  | 'note_edited'
+  | 'note_deleted'
 
 export interface InvestigationRecord {
   readonly investigationId: InvestigationId

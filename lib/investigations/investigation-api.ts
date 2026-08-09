@@ -17,6 +17,7 @@ const TIMELINE_SCHEMA = z.union([
   z.object({ type: z.literal('note'), body: z.string().trim().min(1).max(10_000) }).strict(),
   z.object({ type: z.literal('bookmark'), executionId: z.string().uuid(), sequence: z.number().int().positive(), lineNumber: z.number().int().positive().nullable(), kind: z.enum(['output', 'error', 'state', 'finding']), label: z.string().trim().min(1).max(200), excerpt: z.string().max(2_000) }).strict()
 ])
+const NOTE_PATCH_SCHEMA = z.object({ body: z.string().trim().min(1).max(10_000) }).strict()
 const ATTACH_SCHEMA = z.object({ sessionId: z.string().uuid(), input: z.string().min(1).max(4_000), idempotencyKey: z.string().min(16).max(128).regex(/^[A-Za-z0-9._~-]+$/) }).strict()
 
 const NO_STORE_HEADERS = {
@@ -25,7 +26,7 @@ const NO_STORE_HEADERS = {
   'Content-Type': 'application/json'
 } as const
 
-type Store = Pick<InvestigationStore, 'create' | 'list' | 'get' | 'patch' | 'delete' | 'recordBookmark' | 'recordNote' | 'attachExecution'>
+type Store = Pick<InvestigationStore, 'create' | 'list' | 'get' | 'patch' | 'delete' | 'recordBookmark' | 'recordNote' | 'updateNote' | 'deleteNote' | 'attachExecution'>
 
 export interface InvestigationApiDependencies {
   readonly authenticate: () => Promise<string | null>
@@ -191,6 +192,37 @@ export function createInvestigationApi(dependencies: InvestigationApiDependencie
         return event ? json({ ok: true, event }, 201) : failure(404, 'NOT_FOUND', 'Investigation not found.')
       } catch {
         return failure(500, 'INTERNAL_ERROR', 'The timeline event could not be persisted.')
+      }
+    },
+
+    async patchNote(request: Request, rawId: string, rawNoteId: string): Promise<Response> {
+      try {
+        const user = await requireUser(dependencies)
+        if (user instanceof Response) return user
+        const investigationId = parseId(rawId)
+        const noteId = parseId(rawNoteId)
+        if (!investigationId || !noteId) return failure(400, 'INVALID_NOTE_ID', 'The note identifier is invalid.')
+        const parsed = NOTE_PATCH_SCHEMA.safeParse(await parseJsonBody(request))
+        if (!parsed.success) return failure(400, 'INVALID_INPUT', 'The note update is invalid.')
+        const event = await dependencies.getStore().updateNote(user, investigationId, rawNoteId, parsed.data.body)
+        return event ? json({ ok: true, event }, 200) : failure(404, 'NOT_FOUND', 'Note not found.')
+      } catch {
+        return failure(500, 'INTERNAL_ERROR', 'The note could not be updated.')
+      }
+    },
+
+    async deleteNote(request: Request, rawId: string, rawNoteId: string): Promise<Response> {
+      try {
+        const user = await requireUser(dependencies)
+        if (user instanceof Response) return user
+        if (!emptyBody(request)) return failure(400, 'INVALID_INPUT', 'The request body must be empty.')
+        const investigationId = parseId(rawId)
+        const noteId = parseId(rawNoteId)
+        if (!investigationId || !noteId) return failure(400, 'INVALID_NOTE_ID', 'The note identifier is invalid.')
+        const event = await dependencies.getStore().deleteNote(user, investigationId, rawNoteId)
+        return event ? json({ ok: true, event }, 200) : failure(404, 'NOT_FOUND', 'Note not found.')
+      } catch {
+        return failure(500, 'INTERNAL_ERROR', 'The note could not be deleted.')
       }
     }
   }

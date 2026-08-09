@@ -104,6 +104,12 @@ test('timeline API validates and persists notes and evidence bookmarks', async (
   const bookmark = await fixtureData.api.timeline(request('POST', `/api/investigations/${secondId}/timeline`, { type: 'bookmark', executionId: EXECUTION_ID, sequence: 2, lineNumber: 4, kind: 'finding', label: 'Finding', excerpt: 'Evidence' }), secondId)
   assert.equal(note.status, 201)
   assert.equal(bookmark.status, 201)
+  const noteBody = await read(note)
+  const noteEvent = noteBody.event as Record<string, unknown>
+  const notePayload = noteEvent.payload as Record<string, unknown>
+  const noteId = String(notePayload.noteId)
+  assert.equal((await fixtureData.api.patchNote(request('PATCH', `/api/investigations/${secondId}/timeline/notes/${noteId}`, { body: 'Updated provenance.' }), secondId, noteId)).status, 200)
+  assert.equal((await fixtureData.api.deleteNote(request('DELETE', `/api/investigations/${secondId}/timeline/notes/${noteId}`), secondId, noteId)).status, 200)
   assert.equal((await fixtureData.api.timeline(request('POST', `/api/investigations/${secondId}/timeline`, { type: 'note', body: '' }), secondId)).status, 400)
 })
 

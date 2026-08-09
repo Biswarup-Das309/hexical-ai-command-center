@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { InvestigationRecord } from '@/lib/investigations/investigation-types'
 
@@ -46,11 +46,53 @@ function replaceInvestigation(current: readonly PublicInvestigation[], next: Pub
   return current.map(item => item.investigationId === next.investigationId ? next : item)
 }
 
+function optimisticPatch(current: PublicInvestigation, body: Record<string, unknown>): PublicInvestigation {
+  const status = body.status === 'active' || body.status === 'archived' ? body.status : current.status
+  return {
+    ...current,
+    title: typeof body.title === 'string' ? body.title.trim() : current.title,
+    description: typeof body.description === 'string' ? body.description.trim() : current.description,
+    status,
+    archivedAt: status === 'active' ? null : current.archivedAt,
+    updatedAt: new Date().toISOString()
+  }
+}
+
 export function useInvestigations(): UseInvestigationsResult {
   const [investigations, setInvestigations] = useState<readonly PublicInvestigation[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const investigationsRef = useRef<readonly PublicInvestigation[]>([])
+  const listRequestRef = useRef(0)
+  const mutationVersionRef = useRef(0)
+  const paginationInFlightRef = useRef(false)
+  const mutationQueuesRef = useRef(new Map<string, Promise<void>>())
+
+  const updateInvestigations = useCallback((updater: (current: readonly PublicInvestigation[]) => readonly PublicInvestigation[]) => {
+    setInvestigations(current => {
+      const next = updater(current)
+      investigationsRef.current = next
+      return next
+    })
+  }, [])
+
+  const enqueueMutation = useCallback((investigationId: string, operation: () => Promise<void>) => {
+    const previous = mutationQueuesRef.current.get(investigationId) ?? Promise.resolve()
+    const next = previous.catch(() => undefined).then(operation)
+    const tracked = next.then(
+      value => {
+        if (mutationQueuesRef.current.get(investigationId) === tracked) mutationQueuesRef.current.delete(investigationId)
+        return value
+      },
+      cause => {
+        if (mutationQueuesRef.current.get(investigationId) === tracked) mutationQueuesRef.current.delete(investigationId)
+        throw cause
+      }
+    )
+    mutationQueuesRef.current.set(investigationId, tracked)
+    return tracked
+  }, [])
 
   const fetchPage = useCallback(async (cursor?: string | null): Promise<InvestigationPageResponse> => {
     const params = new URLSearchParams({ limit: '50' })
@@ -59,37 +101,46 @@ export function useInvestigations(): UseInvestigationsResult {
   }, [])
 
   const refresh = useCallback(async () => {
+    const requestId = ++listRequestRef.current
+    const mutationVersion = mutationVersionRef.current
     setLoading(true)
     try {
       const page = await fetchPage()
-      setInvestigations(page.investigations)
+      if (requestId !== listRequestRef.current || mutationVersion !== mutationVersionRef.current) return
+      updateInvestigations(() => page.investigations)
       setNextCursor(page.nextCursor)
       setError(null)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Investigations could not be loaded.')
+      if (requestId === listRequestRef.current) setError(cause instanceof Error ? cause.message : 'Investigations could not be loaded.')
     } finally {
-      setLoading(false)
+      if (requestId === listRequestRef.current) setLoading(false)
     }
-  }, [fetchPage])
+  }, [fetchPage, updateInvestigations])
 
   useEffect(() => {
     void refresh()
   }, [refresh])
 
   const loadMore = useCallback(async () => {
-    if (!nextCursor) return
+    if (!nextCursor || paginationInFlightRef.current) return
+    paginationInFlightRef.current = true
+    const requestId = ++listRequestRef.current
+    const mutationVersion = mutationVersionRef.current
+    const cursor = nextCursor
     setLoading(true)
     try {
-      const page = await fetchPage(nextCursor)
-      setInvestigations(current => [...current, ...page.investigations])
+      const page = await fetchPage(cursor)
+      if (requestId !== listRequestRef.current || mutationVersion !== mutationVersionRef.current) return
+      updateInvestigations(current => [...current, ...page.investigations])
       setNextCursor(page.nextCursor)
       setError(null)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'More investigations could not be loaded.')
+      if (requestId === listRequestRef.current) setError(cause instanceof Error ? cause.message : 'More investigations could not be loaded.')
     } finally {
-      setLoading(false)
+      paginationInFlightRef.current = false
+      if (requestId === listRequestRef.current) setLoading(false)
     }
-  }, [fetchPage, nextCursor])
+  }, [fetchPage, nextCursor, updateInvestigations])
 
   const create = useCallback(async (input: { readonly title?: string; readonly description?: string } = {}) => {
     setLoading(true)
@@ -98,7 +149,8 @@ export function useInvestigations(): UseInvestigationsResult {
         method: 'POST',
         body: JSON.stringify({ title: input.title ?? 'New Investigation', description: input.description ?? '' })
       })
-      setInvestigations(current => [body.investigation, ...current.filter(item => item.investigationId !== body.investigation.investigationId)])
+      mutationVersionRef.current += 1
+      updateInvestigations(current => [body.investigation, ...current.filter(item => item.investigationId !== body.investigation.investigationId)])
       setError(null)
       return body.investigation.investigationId
     } catch (cause) {
@@ -107,24 +159,30 @@ export function useInvestigations(): UseInvestigationsResult {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [updateInvestigations])
 
   const patch = useCallback(async (investigationId: string, body: Record<string, unknown>) => {
-    setLoading(true)
-    try {
-      const response = await requestJson<{ readonly ok: true; readonly investigation: PublicInvestigation }>(`/api/investigations/${investigationId}`, {
-        method: 'PATCH',
-        body: JSON.stringify(body)
-      })
-      setInvestigations(current => replaceInvestigation(current, response.investigation))
-      setError(null)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The investigation could not be updated.')
-      throw cause
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+    return enqueueMutation(investigationId, async () => {
+      mutationVersionRef.current += 1
+      const previous = investigationsRef.current.find(item => item.investigationId === investigationId) ?? null
+      if (previous) updateInvestigations(current => replaceInvestigation(current, optimisticPatch(previous, body)))
+      setLoading(true)
+      try {
+        const response = await requestJson<{ readonly ok: true; readonly investigation: PublicInvestigation }>(`/api/investigations/${investigationId}`, {
+          method: 'PATCH',
+          body: JSON.stringify(body)
+        })
+        updateInvestigations(current => replaceInvestigation(current, response.investigation))
+        setError(null)
+      } catch (cause) {
+        if (previous) updateInvestigations(current => replaceInvestigation(current, previous))
+        setError(cause instanceof Error ? cause.message : 'The investigation could not be updated.')
+        throw cause
+      } finally {
+        setLoading(false)
+      }
+    })
+  }, [enqueueMutation, updateInvestigations])
 
   const rename = useCallback(async (investigationId: string, title: string, description?: string) => {
     await patch(investigationId, { title, ...(description === undefined ? {} : { description }) })
@@ -139,18 +197,32 @@ export function useInvestigations(): UseInvestigationsResult {
   }, [patch])
 
   const remove = useCallback(async (investigationId: string) => {
-    setLoading(true)
-    try {
-      await requestJson(`/api/investigations/${investigationId}`, { method: 'DELETE' })
-      setInvestigations(current => current.filter(item => item.investigationId !== investigationId))
-      setError(null)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The investigation could not be deleted.')
-      throw cause
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+    return enqueueMutation(investigationId, async () => {
+      mutationVersionRef.current += 1
+      const previous = investigationsRef.current
+      const removedIndex = previous.findIndex(item => item.investigationId === investigationId)
+      const removed = removedIndex >= 0 ? previous[removedIndex] : null
+      updateInvestigations(current => current.filter(item => item.investigationId !== investigationId))
+      setLoading(true)
+      try {
+        await requestJson(`/api/investigations/${investigationId}`, { method: 'DELETE' })
+        setError(null)
+      } catch (cause) {
+        if (removed) {
+          updateInvestigations(current => {
+            if (current.some(item => item.investigationId === investigationId)) return current
+            const next = [...current]
+            next.splice(Math.min(removedIndex, next.length), 0, removed)
+            return next
+          })
+        }
+        setError(cause instanceof Error ? cause.message : 'The investigation could not be deleted.')
+        throw cause
+      } finally {
+        setLoading(false)
+      }
+    })
+  }, [enqueueMutation, updateInvestigations])
 
   return useMemo(() => ({ investigations, nextCursor, loading, error, refresh, loadMore, create, rename, archive, restore, remove }), [archive, create, error, investigations, loadMore, loading, nextCursor, refresh, remove, rename, restore])
 }

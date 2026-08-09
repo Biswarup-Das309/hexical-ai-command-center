@@ -676,6 +676,7 @@ export function HexicalConsole() {
       setWorkspaceRevision(current => current + 1)
     } catch (cause) {
       toast.error('Could not rename investigation.', { description: cause instanceof Error ? cause.message : 'Please try again.' })
+      throw cause
     }
   }, [investigationManager.rename])
 

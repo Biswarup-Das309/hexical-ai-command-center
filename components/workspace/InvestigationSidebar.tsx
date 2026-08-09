@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import {
   Archive,
@@ -46,7 +46,7 @@ interface InvestigationSidebarProps {
   readonly onOpenUpgrade: () => void
 }
 
-const MAX_TITLE_LENGTH = 120
+const MAX_TITLE_LENGTH = 200
 
 function formatUpdatedAt(value: string): string {
   const date = new Date(value)
@@ -79,6 +79,10 @@ export function InvestigationSidebar({
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
+  const [renameError, setRenameError] = useState<string | null>(null)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const renameInFlightRef = useRef(new Set<string>())
+  const loadMoreRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(() => {
     if (!menuOpenId) return
@@ -95,17 +99,55 @@ export function InvestigationSidebar({
     }
   }, [menuOpenId])
 
+  useEffect(() => {
+    if (editingId && !investigations.some(item => item.investigationId === editingId)) {
+      setEditingId(null)
+      setEditValue('')
+      setRenameError(null)
+    }
+  }, [editingId, investigations])
+
+  useEffect(() => {
+    const target = loadMoreRef.current
+    if (!target || !nextCursor || loading || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) void onLoadMore()
+    }, { rootMargin: '160px' })
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [loading, nextCursor, onLoadMore])
+
   const startRename = useCallback((investigation: PublicInvestigation) => {
     setEditingId(investigation.investigationId)
-    setEditValue(investigation.title.slice(0, MAX_TITLE_LENGTH))
+    setEditValue(investigation.title)
+    setRenameError(null)
     setMenuOpenId(null)
   }, [])
 
-  const submitRename = useCallback((id: string, value: string) => {
-    const title = value.trim().slice(0, MAX_TITLE_LENGTH)
-    if (title) void onRename(id, title)
-    setEditingId(null)
-    setEditValue('')
+  const submitRename = useCallback(async (id: string, value: string) => {
+    if (renameInFlightRef.current.has(id)) return
+    const title = value.trim()
+    if (!title) {
+      setRenameError('Investigation title cannot be empty.')
+      return
+    }
+    if (title.length > MAX_TITLE_LENGTH) {
+      setRenameError(`Investigation title must be ${MAX_TITLE_LENGTH} characters or fewer.`)
+      return
+    }
+    renameInFlightRef.current.add(id)
+    setRenamingId(id)
+    setRenameError(null)
+    try {
+      await onRename(id, title)
+      setEditingId(current => current === id ? null : current)
+      setEditValue('')
+    } catch (cause) {
+      setRenameError(cause instanceof Error ? cause.message : 'The investigation could not be renamed.')
+    } finally {
+      renameInFlightRef.current.delete(id)
+      setRenamingId(current => current === id ? null : current)
+    }
   }, [onRename])
 
   const activeCount = useMemo(() => investigations.filter(item => item.status === 'active').length, [investigations])
@@ -137,7 +179,7 @@ export function InvestigationSidebar({
             const selected = investigation.investigationId === activeId
             const editing = investigation.investigationId === editingId
             return <div key={investigation.investigationId} className={`group relative rounded-lg border ${selected ? 'border-cyan-400/20 bg-cyan-400/[0.06]' : 'border-transparent hover:border-white/10 hover:bg-white/[0.03]'}`}>
-              {editing ? <input autoFocus value={editValue} onChange={event => setEditValue(event.target.value.slice(0, MAX_TITLE_LENGTH))} onBlur={() => submitRename(investigation.investigationId, editValue)} onKeyDown={event => { if (event.key === 'Enter') submitRename(investigation.investigationId, editValue); if (event.key === 'Escape') { setEditingId(null); setEditValue('') } }} aria-label="Rename investigation" className="m-2 w-[calc(100%-1rem)] rounded border border-cyan-400/30 bg-black/40 px-2 py-1.5 font-mono text-xs text-cyan-100 outline-none" /> : <>
+              {editing ? <div className="p-2"><input autoFocus value={editValue} disabled={renamingId === investigation.investigationId} onChange={event => setEditValue(event.target.value)} onBlur={() => void submitRename(investigation.investigationId, editValue)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void submitRename(investigation.investigationId, editValue) } if (event.key === 'Escape') { setEditingId(null); setEditValue(''); setRenameError(null) } }} aria-label="Rename investigation" className="w-full rounded border border-cyan-400/30 bg-black/40 px-2 py-1.5 font-mono text-xs text-cyan-100 outline-none disabled:opacity-60" />{renameError && <p role="alert" className="mt-1 font-mono text-[9px] text-rose-300">{renameError}</p>}</div> : <>
                 <button type="button" onClick={() => onSelect(investigation.investigationId)} className="w-full px-3 py-2.5 pr-10 text-left">
                   <span className={`block truncate font-mono text-xs ${selected ? 'text-cyan-100' : 'text-zinc-300'}`}>{investigation.title}</span>
                   <span className="mt-1 flex items-center gap-2 font-mono text-[9px] uppercase tracking-wider text-zinc-600"><span>{investigation.status}</span><span>·</span><span>{formatUpdatedAt(investigation.updatedAt)}</span></span>
@@ -154,7 +196,7 @@ export function InvestigationSidebar({
           {investigations.length === 0 && <div className="rounded-lg border border-dashed border-white/10 px-4 py-6 text-center font-mono text-[10px] leading-relaxed text-zinc-600">No investigations yet.<br />Create one to establish a persistent evidence workspace.</div>}
         </div>
 
-        {nextCursor && <button type="button" onClick={() => void onLoadMore()} disabled={loading} className="flex w-full items-center justify-center gap-2 rounded border border-white/10 px-3 py-2 font-mono text-[10px] text-zinc-500 hover:border-cyan-400/30 hover:text-cyan-200 disabled:opacity-50"><RefreshCw size={12} className={loading ? 'animate-spin' : ''} />Load more</button>}
+        {nextCursor && <button ref={loadMoreRef} type="button" onClick={() => void onLoadMore()} disabled={loading} className="flex w-full items-center justify-center gap-2 rounded border border-white/10 px-3 py-2 font-mono text-[10px] text-zinc-500 hover:border-cyan-400/30 hover:text-cyan-200 disabled:opacity-50"><RefreshCw size={12} className={loading ? 'animate-spin' : ''} />Load more</button>}
         {errorMessage(loading, error)}
       </div>}
 

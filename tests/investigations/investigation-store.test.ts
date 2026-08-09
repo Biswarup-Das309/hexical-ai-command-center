@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { InvestigationStore } from '../../lib/investigations/investigation-store'
+import { investigationRecordKey } from '../../lib/investigations/investigation-keys'
 import { FakeInvestigationRedis } from './fake-investigation-redis'
 
 const OWNER = 'user-investigation-owner'
@@ -52,6 +53,39 @@ test('paginates investigations and execution history without loading the full in
   assert.equal(second.investigations.length, 2)
   assert.equal(third.investigations.length, 1)
   assert.equal(new Set([...first.investigations, ...second.investigations, ...third.investigations].map(item => item.investigationId)).size, records.length)
+})
+
+test('paginates past stale owner-index entries without underfilling a page', async () => {
+  const redis = new FakeInvestigationRedis()
+  const investigations = store(redis)
+  const first = await investigations.create(OWNER, { title: 'First visible', description: '' }, '2026-08-09T10:00:00.000Z')
+  const second = await investigations.create(OWNER, { title: 'Second visible', description: '' }, '2026-08-09T10:01:00.000Z')
+  const third = await investigations.create(OWNER, { title: 'Third visible', description: '' }, '2026-08-09T10:02:00.000Z')
+  await redis.del(investigationRecordKey(`${third.investigationId}` as never))
+
+  const page = await investigations.list(OWNER, { limit: 2 })
+
+  assert.deepEqual(page.investigations.map(item => item.investigationId), [second.investigationId, first.investigationId])
+  assert.equal(page.investigations.length, 2)
+  assert.equal(page.nextCursor, null)
+})
+
+test('edits and deletes notes through replayable timeline events', async () => {
+  const investigations = store()
+  const created = await investigations.create(OWNER, { title: 'Note lifecycle', description: '' }, FIXED_TIME)
+  await investigations.recordNote(OWNER, created.investigationId, 'Original note', FIXED_TIME)
+  const original = (await investigations.get(OWNER, created.investigationId))?.notes[0]
+  assert.ok(original)
+
+  await investigations.updateNote(OWNER, created.investigationId, original.noteId, 'Edited note', '2026-08-09T10:01:00.000Z')
+  const edited = await investigations.get(OWNER, created.investigationId)
+  assert.equal(edited?.notes[0]?.body, 'Edited note')
+
+  await investigations.deleteNote(OWNER, created.investigationId, original.noteId, '2026-08-09T10:02:00.000Z')
+  const deleted = await investigations.get(OWNER, created.investigationId)
+  assert.equal(deleted?.notes.length, 0)
+  assert.equal(deleted?.timeline.some(event => event.type === 'note_edited'), true)
+  assert.equal(deleted?.timeline.some(event => event.type === 'note_deleted'), true)
 })
 
 test('archives, restores, soft-deletes, and hides an investigation while retaining an audit timeline', async () => {
