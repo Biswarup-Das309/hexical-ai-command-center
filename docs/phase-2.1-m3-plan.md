@@ -63,3 +63,13 @@ Milestone 3B adds `TTYWorkerPoller` as a discovery-only service. It performs an 
 ## Phase C scope checkpoint
 
 Milestone 3C adds `TTYWorkerClaimService` on top of the existing atomic lease manager and worker lease observer. It claims each discovered execution at most once, tracks secret-free ownership metadata, records conflicts and stale leases, recovers expired leases without an immediate re-claim, and exposes the claim layer to the poller through its pending-ID callback. Job execution and coordinator integration remain out of scope.
+
+## Phase D scope checkpoint
+
+Milestone 3D adds `TTYWorkerRecoveryService` as an additive, lifecycle-managed recovery layer. The daemon can start it after registration, authentication, and the initial heartbeat; the immediate scan must complete before the daemon reports ready, and shutdown awaits any in-flight scan before releasing resources.
+
+The service composes the existing `TTYRecoveryManager`, `TTYExecutionCoordinator.recoverExecution`, and `TTYWorkerLeaseObserver`. It cleans orphaned runtime processes, reconciles active execution state after worker restart, scans the global worker lease index for expired leases, and exposes cumulative secret-free recovery metrics. Expired leases are requeued only when the authoritative state is still `leased`; active runtime states are left to orphan recovery and uncertain or terminal states are deferred. Scans are serialized, deterministic, retryable, and bounded by an injected interval.
+
+Phase D does not execute jobs, change lease or coordinator contracts, add distributed scheduling, or expose lease tokens. Queue polling and claim services remain responsible for discovering and claiming executions returned to `queued`.
+
+See [`tty-worker-recovery.md`](./tty-worker-recovery.md) for architecture, lifecycle, ownership, failure modes, recovery behavior, metrics, security, and operational guidance.

@@ -33,10 +33,17 @@ export interface TTYWorkerDaemonSignalSource {
   removeListener(signal: 'SIGINT' | 'SIGTERM', listener: () => void): unknown
 }
 
+export interface TTYWorkerDaemonRecovery {
+  start(): Promise<unknown>
+  stop(): Promise<unknown>
+}
+
 export interface TTYWorkerDaemonDependencies {
   readonly registry: Pick<TTYWorkerRegistry, 'registerWorker'>
   readonly authenticator: Pick<TTYWorkerAuthenticator, 'authenticateWorker'>
   readonly heartbeat: Pick<TTYWorkerHeartbeatService, 'recordHeartbeat'>
+  /** Recovery completes its immediate scan before the worker is marked ready. */
+  readonly recovery?: TTYWorkerDaemonRecovery
   readonly token: string
   readonly registration: TTYWorkerRegistration
   readonly requiredCapability?: TTYWorkerCapability
@@ -169,6 +176,10 @@ export class TTYWorkerDaemon {
       this.assertStartupActive()
       if (!heartbeat.recorded) throw new Error(`Initial worker heartbeat failed: ${heartbeat.reason}`)
 
+      if (this.dependencies.recovery) {
+        await this.dependencies.recovery.start()
+        this.assertStartupActive()
+      }
       this.attachSignalHandlers()
       this.heartbeatTimer = this.setTimer(() => { void this.heartbeatTick() }, this.intervalMs)
       this.startedAt = this.now().toISOString()
@@ -177,6 +188,7 @@ export class TTYWorkerDaemon {
       return this.getStatus()
     } catch (error) {
       this.clearHeartbeatResources()
+      await this.stopRecovery()
       this.authenticated = false
       if (error instanceof TTYWorkerDaemonStartupCancelled) {
         this.state = 'stopped'
@@ -193,6 +205,7 @@ export class TTYWorkerDaemon {
 
   private async stopInternal(reason: 'manual' | 'SIGINT' | 'SIGTERM'): Promise<TTYWorkerDaemonStatus> {
     this.clearHeartbeatResources()
+    await this.stopRecovery()
     this.authenticated = false
     this.state = 'stopped'
     this.logger.info('daemon_stopped', { workerId: this.workerId, reason, heartbeatSequence: this.heartbeatSequence })
@@ -234,6 +247,15 @@ export class TTYWorkerDaemon {
 
   private authenticationFields(context: TTYWorkerAuthContext): Readonly<Record<string, unknown>> {
     return { workerId: this.workerId, capability: context.capability, expiresAt: context.expiresAt }
+  }
+
+  private async stopRecovery(): Promise<void> {
+    if (!this.dependencies.recovery) return
+    try {
+      await this.dependencies.recovery.stop()
+    } catch (error) {
+      this.logger.warn('recovery_shutdown_failed', { workerId: this.workerId, errorCode: error instanceof Error && error.name.length > 0 ? error.name : 'unknown_error' })
+    }
   }
 
   private assertStartupActive(): void {

@@ -82,6 +82,7 @@ function successfulHeartbeat(sequence: number, now: string): TTYWorkerHeartbeatR
 function createHarness(options: {
   readonly authenticate?: () => Promise<{ readonly authenticated: false; readonly reason: 'invalid_token' } | { readonly authenticated: true; readonly context: TTYWorkerAuthContext }>
   readonly heartbeat?: (sequence: number, now: string) => Promise<TTYWorkerHeartbeatResult>
+  readonly recovery?: { readonly start: () => Promise<unknown>; readonly stop: () => Promise<unknown> }
 } = {}) {
   const events: string[] = []
   const timer = new ManualTimer()
@@ -119,6 +120,7 @@ function createHarness(options: {
         return options.heartbeat?.(input.sequence, sentAt) ?? successfulHeartbeat(input.sequence, sentAt)
       }
     },
+    recovery: options.recovery,
     now: () => new Date(nowMs),
     setInterval: (callback, delayMs) => timer.setInterval(callback, delayMs),
     clearInterval: handle => timer.clearInterval(handle),
@@ -146,6 +148,24 @@ test('starts by registering, authenticating, and heartbeating without executing 
   assert.ok(harness.logger.entries.some(entry => entry.event === 'daemon_started'))
 
   await harness.daemon.stop()
+})
+
+test('recovery completes its restart scan before readiness and stops with the daemon', async () => {
+  const lifecycle: string[] = []
+  const harness = createHarness({
+    recovery: {
+      start: async () => { lifecycle.push('start') },
+      stop: async () => { lifecycle.push('stop') }
+    }
+  })
+
+  const status = await harness.daemon.start()
+  assert.equal(status.state, 'running')
+  assert.deepEqual(lifecycle, ['start'])
+  assert.deepEqual(harness.events, ['register', 'authenticate', 'heartbeat:1'])
+
+  await harness.daemon.stop()
+  assert.deepEqual(lifecycle, ['start', 'stop'])
 })
 
 test('SIGTERM performs graceful shutdown and removes heartbeat resources', async () => {
