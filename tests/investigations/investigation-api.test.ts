@@ -157,6 +157,28 @@ test('investigation execution attachment composes with the frozen admission boun
   assert.equal(admissions, 1)
 })
 
+test('investigation persists its execution attachment before coordinator activation and withholds failed starts', async () => {
+  const store = new InvestigationStore(new FakeInvestigationRedis())
+  const api = createInvestigationApi({ authenticate: async () => OWNER, getStore: () => store })
+  const created = await api.create(request('POST', '/api/investigations', { title: 'Activation ordering' }))
+  const investigationId = String(((await read(created)).investigation as Record<string, unknown>).investigationId)
+  let persistedBeforeStart = false
+  const executionApi = createInvestigationExecutionApi({
+    authenticate: async () => OWNER,
+    getStore: () => store,
+    admitExecution: async () => new Response(JSON.stringify({ ok: true, duplicate: false, job: { executionId: EXECUTION_ID, sessionId: SESSION_ID, status: 'queued' } }), { status: 202 }),
+    startExecution: async () => {
+      persistedBeforeStart = (await store.get(OWNER, investigationId as never))?.executions.some(execution => execution.executionId === EXECUTION_ID) === true
+      return { accepted: false }
+    }
+  })
+
+  const response = await executionApi.attach(request('POST', `/api/investigations/${investigationId}/executions`, { sessionId: SESSION_ID, input: 'echo hello', idempotencyKey: 'investigation-idempotency-3' }), investigationId)
+  assert.equal(response.status, 503)
+  assert.equal(persistedBeforeStart, true)
+  assert.deepEqual(await read(response), { ok: false, code: 'EXECUTION_NOT_STARTED', message: 'The execution could not be started.' })
+})
+
 test('investigation session lifecycle is owner-scoped, durable, reusable, and terminable', async () => {
   const store = new InvestigationStore(new FakeInvestigationRedis())
   let user: string | null = OWNER

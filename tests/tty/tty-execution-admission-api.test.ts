@@ -73,6 +73,23 @@ test('derives classification and returns only the browser-safe queued job', asyn
   assert.equal('resource' in body.job, false)
 })
 
+test('does not return an execution id until the coordinator accepts the persisted job', async () => {
+  const starts: string[] = []
+  const unavailable = await api({
+    startExecution: async (executionId, sessionId) => {
+      starts.push(`${executionId}:${sessionId}`)
+      return { accepted: false }
+    }
+  }).admit(request({ input: 'echo hello', idempotencyKey: 'abcdefghijklmnop' }), session.sessionId)
+  assert.equal(unavailable.status, 503)
+  assert.deepEqual(await unavailable.json(), { ok: false, code: 'EXECUTION_NOT_STARTED', message: 'The execution could not be started.' })
+  assert.deepEqual(starts, [`${job.executionId}:${session.sessionId}`])
+
+  const accepted = await api({ startExecution: async () => ({ accepted: true }) }).admit(request({ input: 'echo hello', idempotencyKey: 'abcdefghijklmnop' }), session.sessionId)
+  assert.equal(accepted.status, 202)
+  assert.equal((await accepted.json() as { job: { executionId: string } }).job.executionId, job.executionId)
+})
+
 test('fails closed when authorization denies or the session is not owned', async () => {
   const denied = await api({ admission: { admit: async () => ({ admitted: false, reason: 'authorization_required' }) } as never }).admit(request({ input: 'recon example.com', idempotencyKey: 'abcdefghijklmnop' }), session.sessionId)
   assert.equal(denied.status, 403)

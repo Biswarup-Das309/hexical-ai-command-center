@@ -138,7 +138,7 @@ export function validateRawTerminalInput(rawInput: RawTerminalInput): TTYPolicyD
 // of input this is. Section 8 below decides WHETHER its target is allowed.
 // Neither calls into the other.
 
-export const SESSION_UTILITY_KEYWORDS = ['clear', 'help', 'whoami', 'history', 'status', 'exit', 'ls', 'pwd'] as const
+export const SESSION_UTILITY_KEYWORDS = ['clear', 'help', 'whoami', 'history', 'status', 'exit', 'ls', 'pwd', 'echo'] as const
 export const RECON_PROBE_KEYWORDS = ['nmap', 'recon', 'enum', 'whois', 'dig', 'nslookup', 'subfinder', 'amass'] as const
 export const FUZZ_PROBE_KEYWORDS = ['ffuf', 'fuzz', 'wfuzz', 'gobuster', 'dirbuster', 'dirb'] as const
 export const NETWORK_PROBE_KEYWORDS = ['curl', 'wget', 'ping', 'traceroute', 'nc', 'telnet', 'openssl'] as const
