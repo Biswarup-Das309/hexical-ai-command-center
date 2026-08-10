@@ -3,9 +3,12 @@ import { test } from 'node:test'
 
 import { createInvestigationApi, createInvestigationExecutionApi, createInvestigationSessionApi } from '../../lib/investigations/investigation-api'
 import { investigationRecordKey } from '../../lib/investigations/investigation-keys'
+import type { InvestigationLogger } from '../../lib/investigations/investigation-logger'
 import { resolveCanonicalInvestigation } from '../../lib/investigations/investigation-resolver'
 import { InvestigationStore, type InvestigationRedis } from '../../lib/investigations/investigation-store'
 import type { InvestigationId } from '../../lib/investigations/investigation-types'
+import { raceActivationBudget } from '../../lib/tty/tty-activation-budget'
+import { resetActivationMetricsForTests, snapshotActivationMetrics } from '../../lib/tty/tty-activation-metrics'
 import { FakeInvestigationRedis } from './fake-investigation-redis'
 
 const OWNER = 'session-404-owner'
@@ -181,6 +184,25 @@ test('authorization mismatch: a different owner never sees the investigation and
   assert.equal((await fixture.workspaceApi.get(request('GET', `/api/investigations/${id}`), id)).status, 404)
 })
 
+test('diagnoseAbsence categorizes a 404 correctly: absent, owner_mismatch, and deleted are distinguishable', async () => {
+  const redis = new FakeInvestigationRedis()
+  const store = new InvestigationStore(redis)
+
+  const neverExisted = await store.diagnoseAbsence('00000000-0000-4000-8000-000000000000' as InvestigationId, OWNER)
+  assert.deepEqual(neverExisted, { present: false, ownerMatches: false, status: null })
+
+  const investigation = await store.create(OWNER, { title: 'Diagnosis case', description: '' })
+  const ownerMismatch = await store.diagnoseAbsence(investigation.investigationId, OTHER)
+  assert.deepEqual(ownerMismatch, { present: true, ownerMatches: false, status: 'active' })
+
+  const ownerMatches = await store.diagnoseAbsence(investigation.investigationId, OWNER)
+  assert.deepEqual(ownerMatches, { present: true, ownerMatches: true, status: 'active' })
+
+  await store.delete(OWNER, investigation.investigationId)
+  const deleted = await store.diagnoseAbsence(investigation.investigationId, OWNER)
+  assert.deepEqual(deleted, { present: true, ownerMatches: true, status: 'deleted' })
+})
+
 test('deleted investigation: session creation 404s permanently, not transiently, after deletion', async () => {
   const fixture = sessionApiFixture(new FakeInvestigationRedis())
   const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })))
@@ -250,6 +272,127 @@ test('split-brain reproduction: POST /session returns 200/201, not 404, despite 
   assert.equal(sessionResponse.status, 201)
   const body = await read(sessionResponse)
   assert.ok(typeof body.sessionId === 'string')
+})
+
+test('activation response budget: a slow startExecution degrades to 202 activationPending instead of blocking the request', async () => {
+  const fixture = sessionApiFixture(new FakeInvestigationRedis())
+  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Slow activation' })))
+  const id = String((created.investigation as Record<string, unknown>).investigationId)
+  const session = await read(await fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id))
+
+  let lateSettleObserved: { accepted: boolean } | null = null
+  const store = fixture.store
+  const executionApi = createInvestigationExecutionApi({
+    authenticate: async () => OWNER,
+    getStore: () => store,
+    activationResponseBudgetMs: 30,
+    admitExecution: async () => new Response(JSON.stringify({ ok: true, duplicate: false, job: { executionId: '00000000-0000-4000-8000-0000000000aa', sessionId: session.sessionId, status: 'queued' } }), { status: 202 }),
+    startExecution: async () => {
+      await new Promise(resolve => setTimeout(resolve, 80))
+      const result = { accepted: true }
+      lateSettleObserved = result
+      return result
+    }
+  })
+
+  const started = Date.now()
+  const response = await executionApi.attach(request('POST', `/api/investigations/${id}/executions`, { sessionId: session.sessionId, input: 'run', idempotencyKey: 'slow-activation-1' }), id)
+  const elapsedMs = Date.now() - started
+  assert.equal(response.status, 202)
+  const body = await read(response)
+  assert.equal(body.activationPending, true)
+  assert.ok(elapsedMs < 80, `attach() should return before startExecution settles (took ${elapsedMs}ms)`)
+
+  // The activation keeps running in the background rather than being abandoned.
+  await new Promise(resolve => setTimeout(resolve, 100))
+  assert.deepEqual(lateSettleObserved, { accepted: true })
+})
+
+test('activation response budget: a fast rejection (resource_denied/session_terminated/etc.) still returns synchronously as 503', async () => {
+  const fixture = sessionApiFixture(new FakeInvestigationRedis())
+  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Fast rejection' })))
+  const id = String((created.investigation as Record<string, unknown>).investigationId)
+  const session = await read(await fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id))
+
+  const executionApi = createInvestigationExecutionApi({
+    authenticate: async () => OWNER,
+    getStore: () => fixture.store,
+    activationResponseBudgetMs: 3000,
+    admitExecution: async () => new Response(JSON.stringify({ ok: true, duplicate: false, job: { executionId: '00000000-0000-4000-8000-0000000000bb', sessionId: session.sessionId, status: 'queued' } }), { status: 202 }),
+    startExecution: async () => ({ accepted: false, reason: 'resource_denied' })
+  })
+
+  const response = await executionApi.attach(request('POST', `/api/investigations/${id}/executions`, { sessionId: session.sessionId, input: 'run', idempotencyKey: 'fast-rejection-1' }), id)
+  assert.equal(response.status, 503)
+  const body = await read(response)
+  assert.equal(body.code, 'EXECUTION_NOT_STARTED')
+})
+
+test('activation metrics: pending/late-settlement counters and latency samples reflect raceActivationBudget outcomes', async () => {
+  resetActivationMetricsForTests()
+
+  await raceActivationBudget(async () => ({ accepted: true }), 50, {})
+  const afterFastAccept = snapshotActivationMetrics()
+  assert.equal(afterFastAccept.sampleCount, 0) // raceActivationBudget itself does not record latency samples; the activator does.
+  assert.equal(afterFastAccept.pendingCount, 0)
+
+  await raceActivationBudget(async () => ({ accepted: false, reason: 'resource_denied' }), 50, {})
+  assert.equal(snapshotActivationMetrics().pendingCount, 0)
+
+  const slow = raceActivationBudget(async () => {
+    await new Promise(resolve => setTimeout(resolve, 60))
+    return { accepted: true }
+  }, 10, {})
+  const pendingResult = await slow
+  assert.equal(pendingResult.kind, 'pending')
+  assert.equal(snapshotActivationMetrics().pendingCount, 1)
+
+  await new Promise(resolve => setTimeout(resolve, 80))
+  const finalSnapshot = snapshotActivationMetrics()
+  assert.equal(finalSnapshot.pendingCount, 1)
+  assert.equal(finalSnapshot.lateSettledAcceptedCount, 1)
+})
+
+test('phase timing: attach() logs a per-phase breakdown so a slow-but-resolved request is attributable, not opaque', async () => {
+  const fixture = sessionApiFixture(new FakeInvestigationRedis())
+  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Phase timing case' })))
+  const id = String((created.investigation as Record<string, unknown>).investigationId)
+  const session = await read(await fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id))
+
+  const logged: Array<{ event: string; fields: Record<string, unknown> }> = []
+  const logger: InvestigationLogger = {
+    info: (event, fields) => logged.push({ event, fields }),
+    warn: (event, fields) => logged.push({ event, fields }),
+    error: (event, fields) => logged.push({ event, fields })
+  }
+
+  const executionApi = createInvestigationExecutionApi({
+    authenticate: async () => OWNER,
+    getStore: () => fixture.store,
+    logger,
+    admitExecution: async () => {
+      await new Promise(resolve => setTimeout(resolve, 15))
+      return new Response(JSON.stringify({ ok: true, duplicate: false, job: { executionId: '00000000-0000-4000-8000-0000000000cc', sessionId: session.sessionId, status: 'queued' } }), { status: 202 })
+    },
+    startExecution: async () => {
+      await new Promise(resolve => setTimeout(resolve, 15))
+      return { accepted: true }
+    }
+  })
+
+  await executionApi.attach(request('POST', `/api/investigations/${id}/executions`, { sessionId: session.sessionId, input: 'run', idempotencyKey: 'phase-timing-case-1' }), id)
+
+  const phaseLog = logged.find(entry => entry.event === 'investigation.execution_attach_phases')
+  assert.ok(phaseLog, 'expected a phase breakdown log line')
+  assert.equal(typeof phaseLog!.fields.resolve, 'number')
+  assert.equal(typeof phaseLog!.fields.admit, 'number')
+  assert.equal(typeof phaseLog!.fields.attach, 'number')
+  assert.equal(typeof phaseLog!.fields.activate, 'number')
+  assert.equal(typeof phaseLog!.fields.totalMs, 'number')
+  // admit and activate each slept ~15ms, so activate's cumulative mark should clearly
+  // exceed admit's — proving the marks are genuinely sequential elapsed-time checkpoints,
+  // not all reporting the same total.
+  assert.ok((phaseLog!.fields.activate as number) > (phaseLog!.fields.admit as number))
 })
 
 test('100 repeated create/restore/execute cycles remain consistent', async () => {
