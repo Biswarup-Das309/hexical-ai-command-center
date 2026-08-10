@@ -72,12 +72,8 @@ import {
   MARGIN_CHAR_LIMITS,
   PLAN_FEATURES,
   FEATURE_FLAGS,
-  HEAVY_QUEUE_THRESHOLD_CHARS,
   NONCE_TTL_SECS,
   MONTHLY_TOKEN_BUDGETS,
-  VALID_TIERS,
-  normalizeTier,
-  resolveEntitlement,
   providerAvailable,
   ERROR_CODES,
 } from '@/lib/hexical/types';
@@ -111,6 +107,8 @@ import { buildPromptPayload, buildSafeSystemContext, buildIsolatedUserMessage, b
 import { chooseModelRoute, hasSensitiveCacheMarkers, fallbackProviders } from '@/lib/hexical/routing';
 import { buildCacheKey, readCachedResponse, writeCachedResponse, estimateCostPaise, allocatedRevenuePaise } from '@/lib/hexical/cache';
 import { log } from '@/lib/hexical/telemetry';
+import { verifyAuthorization } from '@/lib/hexical/authorization';
+import { getCanonicalEntitlement } from '@/lib/canonical-entitlement';
 
 export const runtime = 'nodejs';
 
@@ -127,14 +125,6 @@ function redisClient(): Redis {
 async function logUsage(supabase: SupabaseClient, event: UsageEvent): Promise<void> {
   const { error } = await supabase.from('usage_events').insert(event);
   if (error) log.warn('usage_log_skipped', { error: error.message });
-}
-
-async function enqueueExecutionJob(redis: Redis, userId: string, tier: Tier, payload: ExecutionPayload): Promise<string> {
-  const jobId = randomUUID();
-  const job = { jobId, userId, tier, createdAt: new Date().toISOString(), payload };
-  await redis.set(`job:hexical:${jobId}`, JSON.stringify(job), { ex: 60 * 60 * 24 * 7 });
-  await redis.lpush('queue:hexical:execution', jobId);
-  return jobId;
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -182,26 +172,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     }
   }
 
-  // --- tier lookup / seed -----------------------------------------------
-  // Pull tier_expires_at + subscription_status alongside tier so we can
-  // resolve a real, expiry-aware entitlement instead of trusting a plan
-  // string that may be stale (e.g. a manual Supabase edit that was never
-  // paired with an expiry, or a cancelled subscription whose row was never
-  // swept back to 'free'). See resolveEntitlement() in types.ts.
-  let { data: userProfile } = await supabase
-    .from('profiles')
-    .select('tier, tier_expires_at, subscription_status')
-    .eq('user_id', userId)
-    .maybeSingle();
-
-  if (!userProfile) {
-    const { data: seeded } = await supabase
-      .from('profiles')
-      .insert({ user_id: userId, tier: 'free' })
-      .select('tier, tier_expires_at, subscription_status')
-      .maybeSingle();
-    if (seeded) userProfile = seeded;
-  }
+  // --- canonical entitlement lookup -------------------------------------
+  // The subscription ledger is authoritative. The resolver retains profiles
+  // only as a read-only migration bridge until the production backfill runs.
+  const entitlement = await getCanonicalEntitlement(supabase, userId);
+  const activeTier: Tier = entitlement.tier;
 
   // Structured warnings so a "why isn't my tier applying" report is a log
   // grep away instead of a guessing game. None of these change behavior —
@@ -210,18 +185,6 @@ export async function POST(req: Request): Promise<NextResponse> {
   //      user was upgraded in a table Supabase-side that this route never reads)
   //   2. a tier string that doesn't match any VALID_TIERS entry (typo)
   //   3. a tier that resolved but whose tier_expires_at has already passed
-  if (!userProfile) {
-    log.warn('tier_profile_missing_after_seed', { userId });
-  } else if (userProfile.tier && !VALID_TIERS.includes(String(userProfile.tier).trim().toLowerCase() as Tier)) {
-    log.warn('tier_value_unrecognized', { userId, rawTier: userProfile.tier });
-  }
-
-  const entitlement = resolveEntitlement(userProfile?.tier, userProfile?.tier_expires_at, userProfile?.subscription_status);
-  if (entitlement.expired) {
-    log.warn('tier_expired_fallback', { userId, storedTier: userProfile?.tier, expiresAt: userProfile?.tier_expires_at });
-  }
-  const activeTier: Tier = entitlement.tier;
-
   const maxChars = MARGIN_CHAR_LIMITS[activeTier];
   if (payload.logic.length > maxChars) {
     return NextResponse.json(
@@ -277,18 +240,24 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   // ---------------------------------------------------------------------------
-// Authorization
-// ---------------------------------------------------------------------------
-// Authorization is currently disabled for all profiles.
-// Keep the object shape because later code references
-// authDecision.scopeId and authDecision.expiresInHours.
+  // Authorization
+  // ---------------------------------------------------------------------------
+  const authDecision = await verifyAuthorization({
+    supabase,
+    redis,
+    userId,
+    profile: payload.profile,
+    targetScope: payload.targetScope,
+    extractedTargets: payload.extractedTargets,
+    authorizationRef: payload.authorizationRef,
+  });
 
-const authDecision = {
-  allowed: true as const,
-  reason: null as string | null,
-  scopeId: null as string | null,
-  expiresInHours: null as number | null,
-};
+  if (!authDecision.allowed) {
+    return NextResponse.json(
+      { error: authDecision.reason, code: ERROR_CODES.AUTHORIZATION_REQUIRED },
+      { status: 403, headers: jsonHeaders() },
+    );
+  }
 
   // --- daily swarm cap (Pro only) ----------------------------------------
   if (FEATURE_FLAGS.swarmEnabled && activeTier === 'pro' && payload.profile === 'swarm') {
@@ -300,13 +269,9 @@ const authDecision = {
 
   const promptPayload = buildPromptPayload(payload.logic, payload.conversation, maxChars);
 
-  if (payload.asyncMode && promptPayload.promptLogic.length >= HEAVY_QUEUE_THRESHOLD_CHARS) {
-    const jobId = await enqueueExecutionJob(redis, userId, activeTier, payload);
-    return NextResponse.json(
-      { status: 'queued', job_id: jobId, jobId, position: null },
-      { status: 202, headers: jsonHeaders({ 'X-RateLimit-Remaining': String(rl.remaining) }) },
-    );
-  }
+  // Heavy requests stay on the same budgeted provider path as every other
+  // request. The former Redis-only queue returned job IDs without a worker or
+  // status contract, which could strand paid work indefinitely.
 
   const dailySpend = await readDailySpend(redis);
   const route = chooseModelRoute({ tier: activeTier, payload, promptLogic: promptPayload.promptLogic, dailySpend });

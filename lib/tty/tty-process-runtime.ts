@@ -126,7 +126,7 @@ export class TTYProcessRuntime {
   private readonly handles = new Map<string, InternalProcessHandle>()
 
   constructor(options: TTYProcessRuntimeOptions = {}) {
-    this.rootDir = resolve(options.rootDir ?? join(tmpdir(), `${DEFAULT_ROOT_NAME}${process.pid}`))
+    this.rootDir = resolve(options.rootDir ?? join(/* turbopackIgnore: true */ tmpdir(), `${DEFAULT_ROOT_NAME}${process.pid}`))
     this.baseEnv = Object.freeze({ ...(options.baseEnv ?? {}) })
     this.killGraceMs = Math.max(50, Math.floor(options.killGraceMs ?? 1_000))
   }
@@ -136,7 +136,7 @@ export class TTYProcessRuntime {
     await mkdir(this.rootDir, { recursive: true, mode: 0o700 })
     await bestEffortPrivateDirectory(this.rootDir)
 
-    const cwd = await mkdtemp(join(this.rootDir, 'execution-'))
+    const cwd = await mkdtemp(join(/* turbopackIgnore: true */ this.rootDir, 'execution-'))
     await bestEffortPrivateDirectory(cwd)
     const env = { ...this.baseEnv, ...(spec.env ?? {}) } as NodeJS.ProcessEnv
     const spawnOptions: SpawnOptions = {
@@ -297,7 +297,7 @@ export class TTYProcessRuntime {
         windowsHide: true,
         stdio: 'ignore'
       }
-      const taskkill: ChildProcess = spawn(join(systemRoot, 'System32', 'taskkill.exe'), ['/pid', String(pid), '/t', '/f'], taskkillOptions)
+      const taskkill: ChildProcess = spawn(join(/* turbopackIgnore: true */ systemRoot, 'System32', 'taskkill.exe'), ['/pid', String(pid), '/t', '/f'], taskkillOptions)
       await new Promise<number | null>(resolvePromise => {
         taskkill.once('close', code => resolvePromise(code))
         taskkill.once('error', () => resolvePromise(null))

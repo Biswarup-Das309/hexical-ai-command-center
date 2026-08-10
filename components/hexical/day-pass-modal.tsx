@@ -8,6 +8,38 @@ interface DayPassModalProps {
   onSuccess?: () => void; // Triggers a UI refresh when the DB updates
 }
 
+interface RazorpayPaymentResponse {
+  readonly razorpay_payment_id: string;
+  readonly razorpay_order_id: string;
+  readonly razorpay_signature: string;
+}
+
+interface RazorpayFailureResponse {
+  readonly error?: { readonly description?: string };
+}
+
+interface RazorpayOptions {
+  readonly key?: string;
+  readonly amount: number;
+  readonly currency: string;
+  readonly name: string;
+  readonly description: string;
+  readonly order_id: string;
+  readonly handler: (response: RazorpayPaymentResponse) => Promise<void>;
+  readonly theme: { readonly color: string };
+}
+
+interface RazorpayInstance {
+  on(event: 'payment.failed', handler: (response: RazorpayFailureResponse) => void): void;
+  open(): void;
+}
+
+declare global {
+  interface Window {
+    Razorpay?: new (options: RazorpayOptions) => RazorpayInstance;
+  }
+}
+
 export function DayPassModal({ onClose, onSuccess }: DayPassModalProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -39,10 +71,10 @@ export function DayPassModal({ onClose, onSuccess }: DayPassModalProps) {
 
       // ELITE FIX 2: Server-Side Order Generation. 
       // The frontend never dictates the price. It asks the server for a secure Order ID.
-      const orderResponse = await fetch('/api/payments/create-order', {
+      const orderResponse = await fetch('/api/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tier: 'day_pass' }) 
+        body: JSON.stringify({ tier: 'go' })
       });
       
       if (!orderResponse.ok) {
@@ -58,17 +90,18 @@ export function DayPassModal({ onClose, onSuccess }: DayPassModalProps) {
         name: "Hexical AI",
         description: "24-Hour Swarm Engine Pass",
         order_id: orderData.id,
-        handler: async function (response: any) {
+        handler: async function (response: RazorpayPaymentResponse) {
           try {
             // ELITE FIX 3: Cryptographic Backend Verification.
             // Do NOT grant access until the server validates the HMAC SHA256 signature.
-            const verifyRes = await fetch('/api/payments/verify', {
+            const verifyRes = await fetch('/api/verify-payment', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 razorpay_payment_id: response.razorpay_payment_id,
                 razorpay_order_id: response.razorpay_order_id,
                 razorpay_signature: response.razorpay_signature,
+                tier: 'go',
               })
             });
 
@@ -76,8 +109,8 @@ export function DayPassModal({ onClose, onSuccess }: DayPassModalProps) {
             
             if (onSuccess) onSuccess();
             onClose();
-          } catch (err: any) {
-            setErrorMsg(err.message || "Payment verification failed. Contact support.");
+          } catch (err: unknown) {
+            setErrorMsg(err instanceof Error ? err.message : "Payment verification failed. Contact support.");
             setIsProcessing(false);
           }
         },
@@ -86,17 +119,18 @@ export function DayPassModal({ onClose, onSuccess }: DayPassModalProps) {
         }
       };
 
-      const paymentObject = new (window as any).Razorpay(options);
+      if (!window.Razorpay) throw new Error('Razorpay SDK is unavailable. Please retry.');
+      const paymentObject = new window.Razorpay(options);
       
-      paymentObject.on('payment.failed', function (response: any) {
-         setErrorMsg(response.error.description || "Transaction declined by bank.");
+      paymentObject.on('payment.failed', function (response: RazorpayFailureResponse) {
+         setErrorMsg(response.error?.description || "Transaction declined by bank.");
          setIsProcessing(false);
       });
       
       paymentObject.open();
 
-    } catch (err: any) {
-      setErrorMsg(err.message || "An unexpected error occurred during checkout.");
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : "An unexpected error occurred during checkout.");
       setIsProcessing(false);
     }
   };
@@ -118,9 +152,9 @@ export function DayPassModal({ onClose, onSuccess }: DayPassModalProps) {
             <Zap className="size-8 text-amber-400" />
           </div>
           
-          <h2 className="text-2xl font-bold mb-2">Swarm Limit Reached</h2>
+          <h2 className="text-2xl font-bold mb-2">Upgrade to Go</h2>
           <p className="text-sm text-zinc-400 mb-6">
-            You have exhausted your free tier execution limits. Unlock the full power of the Llama 3.3 70B Swarm Engine for the next 24 hours.
+            You have exhausted your free tier execution limits. Upgrade to Go for more throughput and faster analysis.
           </p>
 
           <div className="w-full bg-black/50 border border-white/5 rounded-xl p-4 mb-4 text-left">
@@ -151,7 +185,7 @@ export function DayPassModal({ onClose, onSuccess }: DayPassModalProps) {
                 Initializing Secure Gateway...
               </>
             ) : (
-              "Unlock Day Pass - ₹99"
+              "Upgrade to Go - ₹299"
             )}
           </button>
           

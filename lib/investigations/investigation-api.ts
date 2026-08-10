@@ -46,6 +46,8 @@ export interface InvestigationSessionApiDependencies extends InvestigationApiDep
 }
 
 export interface InvestigationExecutionApiDependencies extends InvestigationApiDependencies {
+  /** Revalidates or creates the canonical TTY session before admission. */
+  readonly ensureSession?: (request: Request, investigationId: InvestigationId) => Promise<Response>
   readonly admitExecution: (request: Request, sessionId: string) => Promise<Response>
   readonly startExecution?: (executionId: string, sessionId: string) => Promise<{ readonly accepted: boolean; readonly reason?: string }>
   /** How long attach() will wait for startExecution before degrading to a 202 activationPending response instead of blocking. Defaults to 3000ms. */
@@ -152,7 +154,7 @@ export function createInvestigationApi(dependencies: InvestigationApiDependencie
         if (parsedExecutionLimit !== undefined && (!Number.isSafeInteger(parsedExecutionLimit) || parsedExecutionLimit < 1 || parsedExecutionLimit > 50)) return failure(400, 'INVALID_PAGINATION', 'The execution page size is invalid.')
         if (timelineCursor !== null && !/^\d+-\d+$/.test(timelineCursor)) return failure(400, 'INVALID_PAGINATION', 'The timeline cursor is invalid.')
         if (executionCursor !== null && !/^\d+$/.test(executionCursor)) return failure(400, 'INVALID_PAGINATION', 'The execution cursor is invalid.')
-        const requestId = newRequestId()
+        const requestId = newRequestId(request)
         const logger = dependencies.logger ?? NOOP_INVESTIGATION_LOGGER
         await dependencies.synchronize?.(user, investigationId)
         const hydration = await resolveCanonicalInvestigation(
@@ -276,7 +278,7 @@ function emptyRequest(url: string, method: 'GET' | 'POST' | 'DELETE'): Request {
 export function createInvestigationSessionApi(dependencies: InvestigationSessionApiDependencies) {
   return {
     async ensure(request: Request, rawId: string): Promise<Response> {
-      const requestId = newRequestId()
+      const requestId = newRequestId(request)
       const logger = dependencies.logger ?? NOOP_INVESTIGATION_LOGGER
       try {
         const user = await requireUser(dependencies)
@@ -365,7 +367,7 @@ export function createInvestigationSessionApi(dependencies: InvestigationSession
     },
 
     async terminate(request: Request, rawId: string): Promise<Response> {
-      const requestId = newRequestId()
+      const requestId = newRequestId(request)
       const logger = dependencies.logger ?? NOOP_INVESTIGATION_LOGGER
       try {
         const user = await requireUser(dependencies)
@@ -401,8 +403,10 @@ export function createInvestigationSessionApi(dependencies: InvestigationSession
 export function createInvestigationExecutionApi(dependencies: InvestigationExecutionApiDependencies) {
   return {
     async attach(request: Request, rawId: string): Promise<Response> {
-      const requestId = newRequestId()
+      const requestId = newRequestId(request)
       const logger = dependencies.logger ?? NOOP_INVESTIGATION_LOGGER
+      const startedAt = Date.now()
+      const elapsed = () => Date.now() - startedAt
       try {
         const user = await requireUser(dependencies)
         if (user instanceof Response) return user
@@ -412,24 +416,55 @@ export function createInvestigationExecutionApi(dependencies: InvestigationExecu
         if (!parsed.success) return failure(400, 'INVALID_INPUT', 'The execution attachment payload is invalid.')
         const investigation = await resolveCanonicalInvestigation(dependencies.getStore(), user, investigationId, { executionLimit: 1, timelineLimit: 1 })
         if (!investigation) return failure(404, 'NOT_FOUND', 'Investigation not found.')
+        const resolvePhaseMs = elapsed()
 
-        const admissionRequest = new Request(request.url, {
+        // The caller's session id is only a hint. The investigation's session
+        // route is the authority and repairs stale/terminated attachments.
+        let sessionId = parsed.data.sessionId
+        if (dependencies.ensureSession) {
+          const ensured = await dependencies.ensureSession(new Request(request.url, { method: 'POST' }), investigationId)
+          const ensuredBody: unknown = await ensured.json().catch(() => null)
+          if (ensured.status < 200 || ensured.status >= 300) {
+            logger.warn('investigation.execution_session_ensure_failed', { requestId, investigationId, userId: user, status: ensured.status })
+            return json(ensuredBody ?? { ok: false, code: 'SESSION_UNAVAILABLE', message: 'The execution session could not be attached.' }, ensured.status)
+          }
+          const ensuredSessionId = typeof ensuredBody === 'object' && ensuredBody !== null && 'sessionId' in ensuredBody && typeof ensuredBody.sessionId === 'string' ? ensuredBody.sessionId : null
+          if (!ensuredSessionId) return failure(502, 'INVALID_SESSION_RESPONSE', 'The session response was invalid.')
+          sessionId = ensuredSessionId
+        }
+
+        const createAdmissionRequest = () => new Request(request.url, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ input: parsed.data.input, idempotencyKey: parsed.data.idempotencyKey })
         })
-        const admitted = await dependencies.admitExecution(admissionRequest, parsed.data.sessionId)
-        const admittedBody: unknown = await admitted.json().catch(() => null)
-        if (admitted.status < 200 || admitted.status >= 300) return json(admittedBody ?? { ok: false, code: 'EXECUTION_NOT_ADMITTED', message: 'The execution was not admitted.' }, admitted.status)
+        let admitted = await dependencies.admitExecution(createAdmissionRequest(), sessionId)
+        let admittedBody: unknown = await admitted.json().catch(() => null)
+        const admissionCode = () => typeof admittedBody === 'object' && admittedBody !== null && 'code' in admittedBody && typeof admittedBody.code === 'string' ? admittedBody.code : null
+        if ((admitted.status === 404 || admitted.status === 409) && dependencies.ensureSession && (admissionCode() === 'SESSION_NOT_FOUND' || admissionCode() === 'SESSION_TERMINATED')) {
+          const rebound = await dependencies.ensureSession(new Request(request.url, { method: 'POST' }), investigationId)
+          const reboundBody: unknown = await rebound.json().catch(() => null)
+          const reboundSessionId = rebound.status >= 200 && rebound.status < 300 && typeof reboundBody === 'object' && reboundBody !== null && 'sessionId' in reboundBody && typeof reboundBody.sessionId === 'string' ? reboundBody.sessionId : null
+          if (!reboundSessionId) return json(reboundBody ?? { ok: false, code: 'SESSION_UNAVAILABLE', message: 'The execution session could not be restored.' }, rebound.status)
+          sessionId = reboundSessionId
+          admitted = await dependencies.admitExecution(createAdmissionRequest(), sessionId)
+          admittedBody = await admitted.json().catch(() => null)
+        }
+        if (admitted.status < 200 || admitted.status >= 300) {
+          const admitPhaseMs = elapsed()
+          logger.info('investigation.execution_attach_phases', { requestId, investigationId, userId: user, resolve: resolvePhaseMs, admit: admitPhaseMs, attach: admitPhaseMs, activate: admitPhaseMs, totalMs: admitPhaseMs })
+          return json(admittedBody ?? { ok: false, code: 'EXECUTION_NOT_ADMITTED', message: 'The execution was not admitted.' }, admitted.status)
+        }
         if (typeof admittedBody !== 'object' || admittedBody === null) return failure(502, 'INVALID_ADMISSION_RESPONSE', 'The execution admission response was invalid.')
         const body = admittedBody as { ok?: boolean; duplicate?: boolean; job?: { executionId?: string; sessionId?: string } }
-        if (!body.ok || !body.job?.executionId || body.job.sessionId !== parsed.data.sessionId) return failure(502, 'INVALID_ADMISSION_RESPONSE', 'The execution admission response was invalid.')
-        const attached = await dependencies.getStore().attachExecution(user, investigationId, { executionId: body.job.executionId, sessionId: parsed.data.sessionId })
+        if (!body.ok || !body.job?.executionId || body.job.sessionId !== sessionId) return failure(502, 'INVALID_ADMISSION_RESPONSE', 'The execution admission response was invalid.')
+        const admitPhaseMs = elapsed()
+        const attached = await dependencies.getStore().attachExecution(user, investigationId, { executionId: body.job.executionId, sessionId })
         if (!attached) return failure(404, 'NOT_FOUND', 'Investigation not found.')
+        const attachPhaseMs = elapsed()
 
         if (dependencies.startExecution) {
           const executionId = body.job.executionId
-          const sessionId = parsed.data.sessionId
           const budgetMs = dependencies.activationResponseBudgetMs
           const result = await raceActivationBudget(
             () => dependencies.startExecution!(executionId, sessionId),
@@ -443,9 +478,17 @@ export function createInvestigationExecutionApi(dependencies: InvestigationExecu
               onAccepted: () => logger.info('investigation.execution_activation_accepted', { requestId, investigationId, userId: user, executionId, sessionId })
             }
           )
-          if (result.kind === 'pending') return json({ ok: true, investigationId, execution: attached, job: body.job, duplicate: body.duplicate === true, activationPending: true }, 202)
+          const activatePhaseMs = elapsed()
+          if (result.kind === 'pending') {
+            logger.info('investigation.execution_attach_phases', { requestId, investigationId, userId: user, resolve: resolvePhaseMs, admit: admitPhaseMs, attach: attachPhaseMs, activate: activatePhaseMs, totalMs: activatePhaseMs })
+            return json({ ok: true, investigationId, execution: attached, job: body.job, duplicate: body.duplicate === true, activationPending: true }, 202)
+          }
           if (result.kind === 'rejected') return failure(503, 'EXECUTION_NOT_STARTED', 'The execution could not be started.')
+          logger.info('investigation.execution_attach_phases', { requestId, investigationId, userId: user, resolve: resolvePhaseMs, admit: admitPhaseMs, attach: attachPhaseMs, activate: activatePhaseMs, totalMs: activatePhaseMs })
+          return json({ ok: true, investigationId, execution: attached, job: body.job, duplicate: body.duplicate === true }, admitted.status)
         }
+        const activatePhaseMs = elapsed()
+        logger.info('investigation.execution_attach_phases', { requestId, investigationId, userId: user, resolve: resolvePhaseMs, admit: admitPhaseMs, attach: attachPhaseMs, activate: activatePhaseMs, totalMs: activatePhaseMs })
         return json({ ok: true, investigationId, execution: attached, job: body.job, duplicate: body.duplicate === true }, admitted.status)
       } catch (error) {
         logger.error('investigation.execution_attach_internal_error', { requestId, investigationId: rawId, message: error instanceof Error ? error.message : String(error) })

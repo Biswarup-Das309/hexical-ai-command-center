@@ -4,10 +4,13 @@ import { useMemo, useRef, useState } from 'react'
 import { Activity, Boxes, FileSearch, GitBranch, Play, Search, Wifi, WifiOff } from 'lucide-react'
 
 import { EvidenceBookmarks, type TTYEvidenceCandidate } from '@/components/tty/EvidenceBookmarks'
+import { ExecutionArtifactPanel } from '@/components/tty/ExecutionArtifactPanel'
 import type { TTYEvidenceBookmark } from '@/lib/tty/tty-evidence-bookmarks'
 import { ExecutionControls } from '@/components/tty/ExecutionControls'
 import { ExecutionHistory, type TTYExecutionHistoryEntry } from '@/components/tty/ExecutionHistory'
 import { ExecutionMetadata } from '@/components/tty/ExecutionMetadata'
+import { ExecutionProcessTree } from '@/components/tty/ExecutionProcessTree'
+import { ExecutionResourceMonitor } from '@/components/tty/ExecutionResourceMonitor'
 import { ExecutionTimeline } from '@/components/tty/ExecutionTimeline'
 import { InvestigationTerminal, type InvestigationTerminalHandle } from '@/components/tty/InvestigationTerminal'
 import { useTTYExecutionStream } from '@/hooks/useTTYExecutionStream'
@@ -76,6 +79,13 @@ export function InvestigationWorkspace({
   const connection = connectionLabel(stream.connectionState)
   const outputText = useMemo(() => stream.events.filter((event): event is Extract<TTYStreamEvent, { type: 'stdout' | 'stderr' }> => event.type === 'stdout' || event.type === 'stderr').map(event => event.payload.text).join(''), [stream.events])
   const completion = stream.events.find((event): event is Extract<TTYStreamEvent, { type: 'completion' }> => event.type === 'completion')
+  const runtimeMetrics = useMemo(() => {
+    const values: Record<string, number> = {}
+    for (const event of stream.events) {
+      if (event.type === 'metric') values[event.payload.name] = event.payload.value
+    }
+    return values
+  }, [stream.events])
   const candidates = useMemo<readonly TTYEvidenceCandidate[]>(() => {
     const errors = stream.events.filter((event): event is Extract<TTYStreamEvent, { type: 'error' }> => event.type === 'error').slice(-4).map(event => ({ sequence: event.sequence, lineNumber: null, kind: 'error' as const, label: event.payload.code, excerpt: event.payload.message }))
     const states = stream.events.filter((event): event is Extract<TTYStreamEvent, { type: 'state' }> => event.type === 'state').slice(-4).map(event => ({ sequence: event.sequence, lineNumber: null, kind: 'state' as const, label: `state ${event.payload.state}`, excerpt: new Date(event.timestamp).toLocaleTimeString([], { hour12: false }) }))
@@ -111,14 +121,14 @@ export function InvestigationWorkspace({
   }
 
   return (
-    <main className="hud-grid min-h-screen bg-[#070709] p-3 text-zinc-200 sm:p-4" aria-label="Investigation workspace">
+    <main className="hud-grid min-h-screen bg-[#070709] p-3 text-zinc-200 sm:p-4" aria-label="Autonomous execution runtime">
       <div className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-[1800px] flex-col gap-3">
         <header className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-white/10 bg-black/30 px-3 py-2">
           <div className="flex min-w-0 items-center gap-3">
             <Boxes className="size-4 shrink-0 text-cyan-300" />
             <div className="min-w-0">
-              <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.24em] text-cyan-300">Investigation workspace</div>
-              <div className="truncate font-mono text-xs text-zinc-500">{command}</div>
+              <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.24em] text-cyan-300">Autonomous execution runtime</div>
+              <div className="truncate font-mono text-xs text-zinc-500">sandbox // {command}</div>
             </div>
           </div>
           <div className="flex items-center gap-3 font-mono text-[10px] uppercase tracking-wider">
@@ -137,6 +147,7 @@ export function InvestigationWorkspace({
               <div className="mb-3 flex items-center gap-2 font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-400"><FileSearch className="size-3 text-amber-300" /> Findings</div>
               {findingsPanel ?? <p className="font-mono text-[10px] leading-relaxed text-zinc-600">Verified findings will appear here when the investigation attaches evidence.</p>}
             </section>
+            <ExecutionProcessTree executionId={executionId} state={state} />
             <ExecutionHistory entries={history} selectedExecutionId={executionId} onSelect={onSelectHistory} />
           </aside>
 
@@ -156,7 +167,7 @@ export function InvestigationWorkspace({
                 <button type="button" className="px-1 font-mono text-xs text-zinc-500 hover:text-cyan-300" onClick={() => jumpToMatch(-1)} disabled={!matches.length} aria-label="Previous match">↑</button>
                 <button type="button" className="px-1 font-mono text-xs text-zinc-500 hover:text-cyan-300" onClick={() => jumpToMatch(1)} disabled={!matches.length} aria-label="Next match">↓</button>
               </div>
-              <ExecutionControls executionId={executionId} state={state} outputText={outputText} onCancel={onCancel} onRestart={onRestart} onClear={clear} />
+              <ExecutionControls executionId={executionId} state={state} outputText={outputText} onCancel={onCancel} onRestart={onRestart} onReplay={() => { clear(); stream.reconnect() }} onClear={clear} />
             </div>
             {stream.error && <div className="rounded border border-amber-400/20 bg-amber-400/5 px-2 py-1 font-mono text-[10px] text-amber-200" role="status">{stream.error}</div>}
             {stream.error === 'No active execution' ? <div role="status" className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-amber-400/20 bg-amber-400/[0.03] font-mono text-xs uppercase tracking-widest text-amber-200">No active execution</div> : <InvestigationTerminal ref={terminalRef} events={stream.events} title="LIVE EXECUTION" status={<span className="font-mono text-[9px] uppercase tracking-widest text-zinc-600">{executionId.slice(0, 8)}</span>} className="min-h-0 flex-1" />}
@@ -165,6 +176,8 @@ export function InvestigationWorkspace({
           <aside className="order-3 flex min-h-0 flex-col gap-3">
             <ExecutionTimeline events={stream.events} currentState={state} />
             <ExecutionMetadata execution={execution} completion={completion} verificationStatus={verificationStatus} />
+            <ExecutionResourceMonitor metrics={runtimeMetrics} />
+            <ExecutionArtifactPanel state={state} />
             <EvidenceBookmarks executionId={executionId} candidates={candidates} initialBookmarks={initialBookmarks} onBookmarkAdded={onBookmarkAdded} onJump={bookmark => { if (bookmark.lineNumber) terminalRef.current?.scrollToLine(bookmark.lineNumber) }} />
             <div className="flex items-center gap-2 rounded border border-white/10 bg-black/20 px-3 py-2 font-mono text-[10px] text-zinc-600"><Activity className="size-3" /> replay window bounded to 20k events</div>
           </aside>

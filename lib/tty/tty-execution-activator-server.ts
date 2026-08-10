@@ -162,3 +162,19 @@ export async function activateTTYExecution(rawExecutionId: string, rawSessionId:
 
   return Promise.race([accepted, timeout])
 }
+
+/** Owner-authorized repair hook for a stale running/leased execution. It is
+ * deliberately conservative: queued and terminal executions are returned as
+ * is, while only an active execution is handed to the coordinator's fenced
+ * lease recovery path. */
+export async function repairTTYExecution(rawExecutionId: string, rawSessionId: string): Promise<{ readonly repaired: boolean; readonly state: Awaited<ReturnType<TTYExecutionCoordinator['getState']>> }> {
+  const executionId = rawExecutionId as TTYExecutionId
+  const sessionId = rawSessionId as TTYSessionId
+  const coordinator = getRuntime().coordinator
+  const current = await coordinator.getState(executionId)
+  if (current === null || current.sessionId !== sessionId || current.state === 'queued' || current.state === 'succeeded' || current.state === 'failed' || current.state === 'cancelled' || current.state === 'timed_out' || current.state === 'expired') {
+    return { repaired: false, state: current }
+  }
+  const recovered = await coordinator.recoverExecution(executionId, sessionId)
+  return { repaired: recovered?.state === 'queued', state: recovered }
+}

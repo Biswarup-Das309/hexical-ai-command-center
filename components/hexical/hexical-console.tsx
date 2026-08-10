@@ -151,6 +151,19 @@ interface SwarmEvaluation {
 interface GraphNode { id: string; label: string; type: 'entry' | 'vuln' | 'pivot' | 'impact'; x: number; y: number; }
 interface GraphEdge { source: string; target: string; label: string; }
 interface AttackGraph { nodes: GraphNode[]; edges: GraphEdge[]; }
+interface VerifyApiResponse {
+  status?: string;
+  job_id?: string;
+  position?: number | null;
+  data?: VerifyApiResponse;
+  analysis?: string;
+  steps?: unknown;
+  valid?: boolean;
+  metrics?: Partial<TraceMetrics>;
+  graphData?: AttackGraph;
+  swarmConsensus?: SwarmEvaluation;
+  traceEvents?: TraceEvent[];
+}
 interface ChatState {
   id: string;
   title: string;
@@ -192,7 +205,7 @@ const createFreshChatState = (id: string): ChatState => ({
     ts: '00:00', 
     steps: [], 
     valid: true,
-    route: 'system' as any // Fulfills the required route property
+    route: 'unknown'
   }]
 })
 
@@ -286,7 +299,7 @@ function clampNumber(value: string, min: number, max: number, fallback: number):
   return Math.min(max, Math.max(min, parsed));
 }
 
-async function parseJsonResponse<T = any>(response: Response): Promise<T | null> {
+async function parseJsonResponse<T = unknown>(response: Response): Promise<T | null> {
   const contentType = response.headers.get('content-type') || '';
   if (!contentType.includes('application/json')) return null;
   return response.json().catch(() => null);
@@ -586,7 +599,7 @@ export function HexicalConsole() {
   // and threw at render time, since this gates the Topology/Payloads/TTY
   // tab icons and the profile menu unconditionally in the header.
   const hasFeatureAccess = useCallback((requiredFeature: string) => {
-    return PLAN_LIMITS[currentTier].capabilities.includes(requiredFeature as any);
+    return PLAN_LIMITS[currentTier].capabilities.includes(requiredFeature);
   }, [currentTier]);
 
   const logToTerminal = useCallback((msg: string) => {
@@ -917,7 +930,7 @@ export function HexicalConsole() {
               ts: new Date(m.created_at).toLocaleTimeString('en-GB', { hour12: false, fractionalSecondDigits: 2 }),
               steps: m.role === 'hexical' ? ['REHYDRATED_STATE'] : [], 
               valid: true,
-              route: 'system' as any // ADDED THIS TO SATISFY TYPESCRIPT
+              route: 'unknown'
           })) : []
         }));
 
@@ -1006,11 +1019,11 @@ export function HexicalConsole() {
     if (!checkLimit()) {
       const systemWarning: ExtendedStreamMessage = { 
         id: generateUniqueID(), role: 'hexical', text: `**LOCKOUT:** Guest Limit reached.`, 
-        steps: ['GUEST_LIMIT_REACHED'], valid: false, route: 'unknown' as any, ts: generateTimestamp() 
+        steps: ['GUEST_LIMIT_REACHED'], valid: false, route: 'unknown', ts: generateTimestamp()
       }
       const userMsg: ExtendedStreamMessage = {
         id: generateUniqueID(), role: 'user', text: trimmedLogic, ts: generateTimestamp(),
-        steps: [], valid: true, route: 'user_input' as any
+        steps: [], valid: true, route: 'unknown'
       }
       dispatch({ type: 'APPEND_MESSAGES', chatId: activeId, messages: [userMsg, systemWarning] })
       openSignIn(); 
@@ -1040,7 +1053,7 @@ export function HexicalConsole() {
 
     const userMsg: ExtendedStreamMessage = { 
       id: generateUniqueID(), role: 'user', text: safeLogic, ts: generateTimestamp(),
-      steps: [], valid: true, route: 'user_input' as any
+      steps: [], valid: true, route: 'unknown'
     }
     const isNewChat = currentChatContext.messages.length <= 1;
     const generatedTitle = isNewChat ? safeLogic.split(' ').slice(0, 4).join(' ') + '...' : currentChatContext.title;
@@ -1115,7 +1128,7 @@ export function HexicalConsole() {
            const systemWarning: ExtendedStreamMessage = { 
              id: generateUniqueID(), role: 'hexical', 
              text: `**SYSTEM HALT:** ${errorMsg}`, 
-             steps: ['LIMIT_REACHED'], valid: false, route: 'unknown' as any, ts: generateTimestamp() 
+             steps: ['LIMIT_REACHED'], valid: false, route: 'unknown', ts: generateTimestamp()
            }
            dispatch({ type: 'APPEND_MESSAGES', chatId: activeId, messages: [systemWarning] });
            
@@ -1127,7 +1140,7 @@ export function HexicalConsole() {
         throw new Error(errData?.error || `HTTP_${res.status}`);
       }
       
-      const initData = await parseJsonResponse(res);
+      const initData = await parseJsonResponse<VerifyApiResponse>(res);
       if (!initData) {
         throw new Error('EMPTY_RESPONSE');
       }
@@ -1168,7 +1181,7 @@ export function HexicalConsole() {
             if (!statusRes.ok) {
               throw new Error(`POLL_HTTP_${statusRes.status}`);
             }
-            const statusData = await parseJsonResponse(statusRes);
+            const statusData = await parseJsonResponse<VerifyApiResponse>(statusRes);
             if (!statusData) {
               throw new Error('POLL_EMPTY_RESPONSE');
             }
@@ -1178,15 +1191,16 @@ export function HexicalConsole() {
             } else if (statusData.status === 'processing') { 
               setLoadingPhase('Processing investigation...');
             } else if (statusData.status === 'completed') {
-              finalData = statusData.data; 
+              if (!statusData.data) throw new Error('POLL_EMPTY_RESULT');
+              finalData = statusData.data;
               isPolling = false;
             } else if (statusData.status === 'error') {
               throw new Error('VERIFY_JOB_ERROR');
             } else if (statusData.status === 'not_found') { 
               throw new Error("Job lost in server queue."); 
             }
-          } catch (pollErr: any) {
-            if (pollErr?.name === 'AbortError') { isPolling = false; return; }
+          } catch (pollErr: unknown) {
+            if (pollErr instanceof DOMException && pollErr.name === 'AbortError') { isPolling = false; return; }
             logToTerminal(`[ERR] Polling error. Retrying...`); 
           }
         }
@@ -1269,7 +1283,7 @@ export function HexicalConsole() {
       logToTerminal(`[ERR] Pipeline crash during remote execution: ${safeErrorText}`); 
       const errorMsg: ExtendedStreamMessage = { 
         id: generateUniqueID(), role: 'hexical', text: `**FATAL ERROR:** ${safeErrorText}`, 
-        steps: ['SYSTEM_CRASH'], valid: false, route: 'unknown' as any, ts: generateTimestamp() 
+        steps: ['SYSTEM_CRASH'], valid: false, route: 'unknown', ts: generateTimestamp()
       }
       dispatch({ type: 'APPEND_MESSAGES', chatId: activeId, messages: [errorMsg] });
     } finally { 

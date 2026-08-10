@@ -38,6 +38,7 @@ export function createInvestigationLogger(sink: ConsoleSink = console): Investig
   }
 }
 
-export function newRequestId(): string {
-  return crypto.randomUUID()
+export function newRequestId(request?: Request): string {
+  const supplied = request?.headers.get('x-request-id') ?? request?.headers.get('x-correlation-id')
+  return supplied && /^[A-Za-z0-9._:-]{1,128}$/.test(supplied) ? supplied : crypto.randomUUID()
 }

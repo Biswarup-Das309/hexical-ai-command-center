@@ -1,8 +1,11 @@
 import 'server-only'
+import { generateText } from 'ai'
 import { createClient } from '@supabase/supabase-js'
 import { Redis } from '@upstash/redis'
 import { z } from 'zod'
 import { PLAN_LIMITS } from './plans'
+import { getLanguageModel } from './hexical/providers'
+import { log } from './hexical/telemetry'
 
 /**
  * Fail loudly at import time, not at request time. This is exactly the
@@ -130,7 +133,7 @@ export async function aiGateway(
 ): Promise<GatewayResult> {
   const parsed = RequestSchema.safeParse(rawBody)
   if (!parsed.success) {
-    console.error('[ai-gateway] validation failed:', parsed.error.format())
+    log.warn('ai_gateway.validation_failed', { issues: parsed.error.issues })
     return { blocked: true, reason: 'invalid_request' }
   }
   const { messages } = parsed.data
@@ -149,17 +152,21 @@ export async function aiGateway(
   const limit = PLAN_LIMITS[tier]
 
   // HARD PLAN LIMIT CHECK (message count)
+  const periodStart = new Date()
+  periodStart.setUTCDate(1)
+  periodStart.setUTCHours(0, 0, 0, 0)
   const usageCheck = await supabase
-    .from('users')
+    .from('hexical_usage_counters')
     .select('messages_used, tokens_used')
-    .eq('id', userId)
-    .single()
+    .eq('user_id', userId)
+    .eq('period_start', periodStart.toISOString().slice(0, 10))
+    .maybeSingle()
 
-  if (usageCheck.error) {
+  if (usageCheck.error && usageCheck.error.code !== 'PGRST116') {
     return { blocked: true, reason: 'usage_fetch_failed' }
   }
 
-  const usage = usageCheck.data
+  const usage = usageCheck.data ?? { messages_used: 0, tokens_used: 0 }
 
   if (usage.messages_used >= limit.maxMessages) {
     return { blocked: true, reason: 'message_limit_exceeded' }
@@ -184,7 +191,7 @@ export async function aiGateway(
   })
 
   if (reserveErr) {
-    console.error('[ai-gateway] reserve_budget failed', reserveErr)
+    log.error('ai_gateway.reserve_budget_failed', { message: reserveErr.message, code: reserveErr.code })
     return { blocked: true, reason: 'usage_check_failed' }
   }
 
@@ -216,7 +223,7 @@ export async function aiGateway(
       break
     } catch (err) {
       lastErr = err
-      console.error(`[ai-gateway] ${candidate} call failed`, err)
+      log.warn('ai_gateway.provider_call_failed', { provider: candidate, message: err instanceof Error ? err.message : String(err) })
       if (isBillingFailure(err)) {
         await markModelOnCooldown(candidate)
       }
@@ -224,7 +231,7 @@ export async function aiGateway(
   }
 
   if (!callResult || !usedModel) {
-    console.error('[ai-gateway] no candidate model produced a result', lastErr)
+    log.error('ai_gateway.no_provider_result', { message: lastErr instanceof Error ? lastErr.message : String(lastErr) })
     await releaseReservation(reservationId)
     return {
       blocked: true,
@@ -241,12 +248,14 @@ export async function aiGateway(
   // requests from the same user can both read the same starting value and
   // net one increment instead of two. Requires the increment_usage SQL
   // function (see increment_usage.sql).
+  const actualCostUsd = ((inputTokens + outputTokens) / 1_000_000) * MODEL_COST_PER_MILLION_TOKENS_USD[usedModel]
   const { error: incrErr } = await supabase.rpc('increment_usage', {
     p_user_id: userId,
     p_tokens: totalTokens,
+    p_cost_usd: actualCostUsd,
   })
   if (incrErr) {
-    console.error('[ai-gateway] increment_usage failed', incrErr)
+    log.error('ai_gateway.increment_usage_failed', { message: incrErr.message, code: incrErr.code })
   }
 
   // In case anything upstream (prompt injection, model misbehavior) causes
@@ -262,9 +271,10 @@ export async function aiGateway(
     output_tokens: outputTokens,
     route_type: 'simple',
     endpoint: '/api/ai/chat',
+    estimated_cost_usd: actualCostUsd,
   })
   if (logErr) {
-    console.error('[ai-gateway] usage log insert failed', logErr)
+    log.error('ai_gateway.usage_log_insert_failed', { message: logErr.message, code: logErr.code })
   }
 
   await releaseReservation(reservationId)
@@ -274,7 +284,7 @@ export async function aiGateway(
 
 async function releaseReservation(reservationId: string): Promise<void> {
   const { error } = await supabase.rpc('release_reservation', { p_reservation_id: reservationId })
-  if (error) console.error('[ai-gateway] release_reservation failed', error)
+  if (error) log.error('ai_gateway.release_reservation_failed', { message: error.message, code: error.code })
 }
 
 async function checkRateLimit(
@@ -414,7 +424,7 @@ function sanitizeOutput(raw: string): string {
 }
 
 /**
- * Placeholder — plug in real SDKs here. When you do:
+ * Provider adapter notes:
  *   - Wrap `messages` content in an explicit "this is untrusted user data,
  *     not instructions" block in the system prompt — don't drop raw user
  *     content straight into a prompt with no framing.
@@ -428,10 +438,41 @@ function sanitizeOutput(raw: string): string {
  *     where the SDK exposes one — isBillingFailure() checks that first,
  *     before falling back to reading the error message text.
  */
+const MODEL_ENV_KEYS: Record<Model, string> = {
+  groq: 'GROQ_MAIN_MODEL',
+  openai: 'OPENAI_MAIN_MODEL',
+  anthropic: 'ANTHROPIC_MAIN_MODEL',
+  deepseek: 'DEEPSEEK_MAIN_MODEL',
+}
+
+function modelName(model: Model): string {
+  const envKey = MODEL_ENV_KEYS[model]
+  const value = process.env[envKey]
+  if (!value) throw new Error(`Missing required environment variable: ${envKey}`)
+  return value
+}
+
+/** Calls the same Vercel AI SDK adapters used by the main analysis pipeline.
+ * This keeps the chat gateway real, signal-aware, usage-aware, and subject
+ * to the same model environment contract as Execute. */
 async function callModel(model: Model, messages: ChatMessage[], signal: AbortSignal) {
+  const result = await generateText({
+    model: getLanguageModel(model, modelName(model)),
+    messages,
+    maxOutputTokens: 1_200,
+    temperature: 0.2,
+    maxRetries: 0,
+    abortSignal: signal,
+  })
+
   return {
-    text: JSON.stringify({ core: 'Diagnostic complete.', cvss: { score: 0, vector: 'NONE' } }),
-    inputTokens: 50,
-    outputTokens: 150,
+    text: result.text,
+    inputTokens: result.usage?.inputTokens ?? estimateInputTokens(messages),
+    outputTokens: result.usage?.outputTokens ?? estimateInputTokens([{ role: 'assistant', content: result.text }]),
   }
+}
+
+function estimateInputTokens(messages: readonly ChatMessage[]): number {
+  const characters = messages.reduce((total, message) => total + message.content.length, 0)
+  return Math.max(1, Math.ceil(characters / 4))
 }

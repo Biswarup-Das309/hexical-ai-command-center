@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Check, Clipboard, Download, Play, RotateCcw, Square, Trash2 } from 'lucide-react'
+import { Check, Clipboard, Download, Play, RefreshCw, RotateCcw, Square, Trash2 } from 'lucide-react'
 
 import type { TTYExecutionState } from '@/lib/tty/tty-execution-state'
 
@@ -11,6 +11,7 @@ export interface ExecutionControlsProps {
   readonly outputText: string
   readonly onCancel?: () => Promise<void> | void
   readonly onRestart?: () => Promise<void> | void
+  readonly onReplay?: () => Promise<void> | void
   readonly onClear: () => void
 }
 
@@ -18,12 +19,12 @@ function terminalState(state: TTYExecutionState | null): boolean {
   return state === 'succeeded' || state === 'failed' || state === 'cancelled' || state === 'timed_out' || state === 'expired'
 }
 
-export function ExecutionControls({ executionId, state, outputText, onCancel, onRestart, onClear }: ExecutionControlsProps) {
-  const [busy, setBusy] = useState<'cancel' | 'restart' | null>(null)
+export function ExecutionControls({ executionId, state, outputText, onCancel, onRestart, onReplay, onClear }: ExecutionControlsProps) {
+  const [busy, setBusy] = useState<'cancel' | 'restart' | 'replay' | null>(null)
   const [copied, setCopied] = useState(false)
   const isTerminal = terminalState(state)
 
-  const run = async (action: 'cancel' | 'restart', callback?: () => Promise<void> | void) => {
+  const run = async (action: 'cancel' | 'restart' | 'replay', callback?: () => Promise<void> | void) => {
     if (!callback || busy) return
     setBusy(action)
     try { await callback() } finally { setBusy(null) }
@@ -54,6 +55,9 @@ export function ExecutionControls({ executionId, state, outputText, onCancel, on
       </button>
       <button type="button" className={buttonClass} onClick={() => void run('restart', onRestart)} disabled={!onRestart || busy !== null}>
         {isTerminal ? <RotateCcw className="size-3" /> : <Play className="size-3" />} {busy === 'restart' ? 'starting' : 'restart'}
+      </button>
+      <button type="button" className={buttonClass} onClick={() => void run('replay', onReplay)} disabled={!onReplay || busy !== null}>
+        <RefreshCw className="size-3" /> {busy === 'replay' ? 'replaying' : 'replay'}
       </button>
       <button type="button" className={buttonClass} onClick={() => void copyOutput()} disabled={!outputText}>
         {copied ? <Check className="size-3 text-emerald-400" /> : <Clipboard className="size-3" />} {copied ? 'copied' : 'copy'}

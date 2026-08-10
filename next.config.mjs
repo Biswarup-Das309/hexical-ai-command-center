@@ -6,9 +6,6 @@ const nextConfig = {
     // app root in both local development and Vercel builds.
     root: process.cwd(),
   },
-  typescript: {
-    ignoreBuildErrors: true,
-  },
   images: {
     unoptimized: true,
   },

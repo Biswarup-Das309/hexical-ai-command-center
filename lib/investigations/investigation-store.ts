@@ -23,6 +23,7 @@ import type {
   InvestigationTimelineEvent,
   InvestigationTimelineEventType
 } from './investigation-types'
+import { canTransitionInvestigationExecutionState } from './investigation-types'
 
 const MAX_LIST_LIMIT = 50
 const MAX_EXECUTION_LIMIT = 50
@@ -369,6 +370,7 @@ export class InvestigationStore {
     if (!investigation || investigation.status === 'deleted') return null
     const current = await this.readExecution(investigationId, executionId)
     if (!current) return null
+    if (!canTransitionInvestigationExecutionState(current.state, state)) return current
     const updatedAt = fields.updatedAt ?? new Date().toISOString()
     const next: InvestigationExecution = {
       ...current,

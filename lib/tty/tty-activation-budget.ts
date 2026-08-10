@@ -60,6 +60,24 @@ export async function raceActivationBudget(
     return { kind: 'pending' }
   }
 
+  // A response without a definitive reason is an indeterminate activation,
+  // not a safe synchronous rejection. Keep the durable job pending and
+  // observe the late result instead of returning a misleading 503.
+  if (!budgetResult.result.accepted && budgetResult.result.reason === undefined) {
+    recordActivationPending()
+    logger.onPending?.(budgetMs)
+    void pending
+      .then(result => {
+        recordActivationLateSettlement(result.accepted ? 'accepted' : 'rejected')
+        logger.onSettledLate?.(result)
+      })
+      .catch(error => {
+        recordActivationLateSettlement('error')
+        logger.onErroredLate?.(error instanceof Error ? error.message : String(error))
+      })
+    return { kind: 'pending' }
+  }
+
   if (!budgetResult.result.accepted) {
     logger.onRejected?.(budgetResult.result.reason)
     return { kind: 'rejected', reason: budgetResult.result.reason }

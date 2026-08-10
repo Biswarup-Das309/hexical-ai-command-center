@@ -4,6 +4,26 @@ import { createClient } from '@supabase/supabase-js';
 import { clerkClient } from '@clerk/nextjs/server';
 import crypto from 'crypto';
 import { PRICING } from '@/lib/pricing.config';
+import { log } from '@/lib/hexical/telemetry';
+
+interface RazorpayEntity {
+  readonly id?: unknown;
+  readonly order_id?: unknown;
+  readonly amount?: unknown;
+  readonly notes?: unknown;
+}
+
+interface RazorpayWebhookEvent {
+  readonly event?: unknown;
+  readonly payload?: {
+    readonly payment?: { readonly entity?: RazorpayEntity };
+    readonly order?: { readonly entity?: RazorpayEntity };
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+}
 
 function normalizeTier(requestedTier: unknown): string | null {
   if (typeof requestedTier !== 'string') return null;
@@ -59,31 +79,33 @@ export async function POST(req: Request) {
     }
 
     // 3. Safe JSON parse — only after the signature is trusted.
-    let event: any;
+    let event: RazorpayWebhookEvent;
     try {
-      event = JSON.parse(bodyText);
+      event = JSON.parse(bodyText) as RazorpayWebhookEvent;
     } catch {
       console.warn('[WEBHOOK_WARNING]: Malformed JSON body after valid signature.');
       return NextResponse.json({ error: 'Invalid JSON payload' }, { status: 400 });
     }
 
-    const eventType = event?.event;
+    const eventType = typeof event.event === 'string' ? event.event : '';
 
     if (eventType !== 'payment.captured' && eventType !== 'order.paid') {
       // Not an event we act on — acknowledge so Razorpay doesn't retry.
       return NextResponse.json({ status: 'ok', reason: 'event_ignored' });
     }
 
-    const paymentEntity = event?.payload?.payment?.entity;
-    const orderEntity = event?.payload?.order?.entity;
+    const paymentEntity = event.payload?.payment?.entity;
+    const orderEntity = event.payload?.order?.entity;
 
     if (!paymentEntity) {
       console.error(`[WEBHOOK_ERROR]: Missing payment entity in payload for event "${eventType}".`);
       return NextResponse.json({ status: 'ignored', reason: 'malformed_payload' }, { status: 200 });
     }
 
-    const paymentId: string | undefined = paymentEntity.id;
-    const orderId: string | undefined = paymentEntity.order_id || orderEntity?.id;
+    const paymentId = typeof paymentEntity.id === 'string' ? paymentEntity.id : undefined;
+    const orderId = typeof paymentEntity.order_id === 'string'
+      ? paymentEntity.order_id
+      : typeof orderEntity?.id === 'string' ? orderEntity.id : undefined;
     const amountPaid: unknown = paymentEntity.amount;
 
     // 🔑 FIX: merge notes from both entities. Order notes are where your
@@ -91,10 +113,11 @@ export async function POST(req: Request) {
     // payment entity does not reliably inherit them. Order notes win on
     // conflict since they're the authoritative source written by your server.
     const notes = {
-      ...(paymentEntity?.notes || {}),
-      ...(orderEntity?.notes || {}),
+      ...asRecord(paymentEntity.notes),
+      ...asRecord(orderEntity?.notes),
     };
-    const { clerkUserId, requestedTier } = notes;
+    const clerkUserId = typeof notes.clerkUserId === 'string' ? notes.clerkUserId : undefined;
+    const requestedTier = typeof notes.requestedTier === 'string' ? notes.requestedTier : undefined;
 
     if (!paymentId || !clerkUserId || typeof clerkUserId !== 'string' || !requestedTier) {
       console.error(
@@ -172,8 +195,8 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ status: 'ok' });
 
-  } catch (err: any) {
-    console.error('[WEBHOOK_CRITICAL_ERROR]:', err);
+  } catch (err: unknown) {
+    log.error('razorpay_webhook_failed', { error: err instanceof Error ? err.message : String(err) });
     // 500 tells Razorpay to retry — correct behavior for a genuine failure
     // (e.g. Supabase RPC threw), since the payment did happen and the user
     // still needs to be entitled.
