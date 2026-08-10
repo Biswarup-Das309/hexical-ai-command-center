@@ -295,10 +295,20 @@ redis.call('DEL', KEYS[1])
 return {1, raw}
 `
 
-function parseResult(result: unknown): [number, string, string | undefined] {
-  if (!Array.isArray(result) || typeof result[0] !== 'number' || typeof result[1] !== 'string')
+function parseResult(result: unknown): [number, unknown, string | undefined] {
+  if (!Array.isArray(result) || typeof result[0] !== 'number' || result.length < 2)
     return [0, 'internal_error', undefined]
   return [result[0], result[1], typeof result[2] === 'string' ? result[2] : undefined]
+}
+
+function resultReason(value: unknown): string {
+  return typeof value === 'string' ? value : 'internal_error'
+}
+
+function decodeJsonResult<T>(value: unknown): T {
+  if (typeof value === 'string') return JSON.parse(value) as T
+  if (typeof value === 'object' && value !== null) return value as T
+  throw new Error('Invalid JSON result from TTY lease script.')
 }
 
 export class TTYExecutionLeaseManager {
@@ -357,8 +367,8 @@ export class TTYExecutionLeaseManager {
           ],
         ),
       )
-      if (result[0] !== 1) return { claimed: false, reason: claimReason(result[1]) }
-      const job = JSON.parse(result[1]) as TTYLeasedJob
+      if (result[0] !== 1) return { claimed: false, reason: claimReason(resultReason(result[1])) }
+      const job = decodeJsonResult<TTYLeasedJob>(result[1])
       await this.notify(() => this.dependencies.observer?.observeLeaseClaimed(job))
       return { claimed: true, job }
     } catch {
@@ -399,9 +409,9 @@ export class TTYExecutionLeaseManager {
                 sessionId,
               ),
           )
-        return { renewed: false, reason: renewReason(result[1]) }
+        return { renewed: false, reason: renewReason(resultReason(result[1])) }
       }
-      const job = JSON.parse(result[1]) as TTYLeasedJob
+      const job = decodeJsonResult<TTYLeasedJob>(result[1])
       await this.notify(() => this.dependencies.observer?.observeLeaseRenewed(job))
       return { renewed: true, job }
     } catch {
@@ -441,8 +451,8 @@ export class TTYExecutionLeaseManager {
           ],
         ),
       )
-      if (result[0] !== 1) return { released: false, reason: releaseReason(result[1]) }
-      const job = JSON.parse(result[1]) as TTYRecoverableJob
+      if (result[0] !== 1) return { released: false, reason: releaseReason(resultReason(result[1])) }
+      const job = decodeJsonResult<TTYRecoverableJob>(result[1])
       await this.notify(
         () => this.dependencies.observer?.observeLeaseReleased(job, this.workerId, leaseToken as TTYLeaseId),
       )
@@ -480,8 +490,8 @@ export class TTYExecutionLeaseManager {
         ),
       )
       await this.notifyExpired(result[2], executionId, sessionId)
-      if (result[0] !== 1) return { recovered: false, reason: recoveryReason(result[1]) }
-      return { recovered: true, job: JSON.parse(result[1]) as TTYRecoverableJob }
+      if (result[0] !== 1) return { recovered: false, reason: recoveryReason(resultReason(result[1])) }
+      return { recovered: true, job: decodeJsonResult<TTYRecoverableJob>(result[1]) }
     } catch {
       return { recovered: false, reason: 'internal_error' }
     }
@@ -513,8 +523,8 @@ export class TTYExecutionLeaseManager {
           [this.workerId, leaseToken, String(this.now()), executionId, sessionId],
         ),
       )
-      if (result[0] !== 1) return { completed: false, reason: completeReason(result[1]) }
-      const job = JSON.parse(result[1]) as TTYLeasedJob
+      if (result[0] !== 1) return { completed: false, reason: completeReason(resultReason(result[1])) }
+      const job = decodeJsonResult<TTYLeasedJob>(result[1])
       await this.notify(
         () => this.dependencies.observer?.observeLeaseCompleted(job, leaseToken as TTYLeaseId, terminalState),
       )

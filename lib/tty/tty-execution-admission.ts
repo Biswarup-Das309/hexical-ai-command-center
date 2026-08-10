@@ -189,7 +189,7 @@ export class TTYExecutionAdmission {
     }
     const serialized = JSON.stringify({ job, fingerprint: args.rawInput })
     const idempotency = idempotencyKey(args.session.sessionId, args.session.ownerUserId, args.idempotencyKey)
-    const result = (await this.redis.eval(
+    const result = await this.redis.eval<unknown[]>(
       RESERVE_JOB_SCRIPT,
       [
         idempotency,
@@ -215,10 +215,16 @@ export class TTYExecutionAdmission {
         serialized,
         String(IDEMPOTENCY_TTL_SECONDS),
       ],
-    )) as [number, string]
+    )
+
+    if (!Array.isArray(result) || typeof result[0] !== 'number' || result.length < 2)
+      return { admitted: false, reason: 'internal_error' }
 
     if (result[0] === 2) {
-      const stored = JSON.parse(result[1]) as { job: TTYQueuedJob; fingerprint: string }
+      const stored =
+        typeof result[1] === 'string'
+          ? (JSON.parse(result[1]) as { job: TTYQueuedJob; fingerprint: string })
+          : (result[1] as { job: TTYQueuedJob; fingerprint: string })
       if (stored.fingerprint !== args.rawInput) return { admitted: false, reason: 'input_rejected' }
       const existing = stored.job
       if (existing.ownerUserId !== args.session.ownerUserId || existing.sessionId !== args.session.sessionId)
