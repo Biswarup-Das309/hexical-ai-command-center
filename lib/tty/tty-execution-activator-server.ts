@@ -4,22 +4,41 @@ import { Redis } from '@upstash/redis'
 
 import { log } from '@/lib/hexical/telemetry'
 
-import { TTYExecutionCoordinator } from './tty-execution-coordinator'
-import { TTYExecutionActivator, type TTYExecutionActivationOptions, type TTYExecutionActivationResult } from './tty-execution-activator'
+import { TTYExecutionCoordinator, type TTYExecutionCoordinatorFailureReason } from './tty-execution-coordinator'
 import { TTYExecutionLeaseManager } from './tty-execution-lease'
+import { recordActivationLatency, recordActivationTimeout } from './tty-activation-metrics'
+import { TTYOutputStreamManager } from './tty-output-stream'
 import { createDefaultTTYProcessRuntime } from './tty-process-runtime'
 import { TTYResourceGuard } from './tty-resource-guard'
 import { createTTYSessionStore } from './tty-session-store'
-import { TTYStreamBroker, type TTYStreamRedis } from './tty-stream-broker'
-import { TTYStreamingOutputStreamManager } from './tty-stream-runtime-bridge'
+import type { TTYExecutionId, TTYSessionId } from './tty-types'
 import { createTTYWorkerId, type TTYWorkerAuthContext } from './tty-worker-types'
 
 const WORKER_CONTEXT_TTL_MS = 365 * 24 * 60 * 60 * 1_000
 const DEFAULT_MAX_OUTPUT_BYTES_PER_SECOND = 1_048_576
-interface TTYExecutionActivationRuntime {
-  readonly activator: TTYExecutionActivator
+
+/**
+ * Hard ceiling on how long activateTTYExecution() will wait for the coordinator
+ * to either accept (transition to 'leased') or fail fast (resource_denied,
+ * session_terminated, invalid_job, etc.). This exists because every step
+ * between here and 'leased' is a single Upstash REST round trip with no
+ * client-side timeout of its own — if one of those calls stalls on the
+ * network, the coordinator's promise never settles, and without this bound
+ * the caller would block until an upstream platform/gateway timeout kills
+ * the request with a bare, undiagnosable 503. This turns that failure mode
+ * into a deterministic, logged one instead.
+ */
+const DEFAULT_ACTIVATION_TIMEOUT_MS = 8_000
+
+export interface TTYExecutionActivationResult {
+  readonly accepted: boolean
+  readonly state: Awaited<ReturnType<TTYExecutionCoordinator['getState']>>
+  readonly reason?: TTYExecutionCoordinatorFailureReason
 }
-export { TTYExecutionActivator, type TTYExecutionActivationOptions, type TTYExecutionActivationResult, type TTYExecutionActivatorDependencies } from './tty-execution-activator'
+
+interface TTYExecutionActivationRuntime {
+  readonly coordinator: TTYExecutionCoordinator
+}
 
 let runtime: TTYExecutionActivationRuntime | null = null
 
@@ -52,7 +71,6 @@ function createRuntime(): TTYExecutionActivationRuntime {
   const redis = requiredRedis()
   const sessionStore = createTTYSessionStore(redis)
   const context = workerContext()
-  const broker = new TTYStreamBroker(redis as unknown as TTYStreamRedis)
   const coordinator = new TTYExecutionCoordinator({
     redis,
     workerId: context.workerId,
@@ -64,16 +82,9 @@ function createRuntime(): TTYExecutionActivationRuntime {
       maxStdoutBytesPerSecond: positiveInteger(process.env.TTY_MAX_STDOUT_BYTES_PER_SECOND, DEFAULT_MAX_OUTPUT_BYTES_PER_SECOND),
       maxStderrBytesPerSecond: positiveInteger(process.env.TTY_MAX_STDERR_BYTES_PER_SECOND, DEFAULT_MAX_OUTPUT_BYTES_PER_SECOND)
     }),
-    outputStream: new TTYStreamingOutputStreamManager(redis, broker)
+    outputStream: new TTYOutputStreamManager(redis)
   })
-  return {
-    activator: new TTYExecutionActivator({
-      coordinator,
-      onFailure: ({ executionId, sessionId, reason, phase, correlationId }) => {
-        log.error('tty.execution.activation_failed', { executionId, sessionId, reason, phase, ...(correlationId ? { correlationId } : {}) })
-      }
-    })
-  }
+  return { coordinator }
 }
 
 function getRuntime(): TTYExecutionActivationRuntime {
@@ -81,15 +92,73 @@ function getRuntime(): TTYExecutionActivationRuntime {
   return runtime
 }
 
-export async function activateTTYExecution(executionId: string, sessionId: string, options: TTYExecutionActivationOptions = {}): Promise<TTYExecutionActivationResult> {
-  log.info('tty.execution.activation_started', { executionId, sessionId, ...(options.correlationId ? { correlationId: options.correlationId } : {}) })
-  const result = await getRuntime().activator.activate(executionId, sessionId, options)
-  log.info(result.accepted ? 'tty.execution.activation_accepted' : 'tty.execution.activation_rejected', {
-    executionId,
-    sessionId,
-    state: result.state?.state ?? null,
-    reason: result.reason ?? null,
-    ...(options.correlationId ? { correlationId: options.correlationId } : {})
+/**
+ * Starts a queued execution without holding the HTTP request open for the
+ * process lifetime. The promise resolves as soon as one of three things
+ * happens, whichever comes first:
+ *  - the coordinator claims the job and persists its first accepted state
+ *    ('leased'), or
+ *  - the coordinator fails fast (resource_denied, session_terminated,
+ *    invalid_job, unauthorized_worker, etc.), or
+ *  - DEFAULT_ACTIVATION_TIMEOUT_MS elapses with neither of the above having
+ *    happened, in which case this resolves with accepted:false,
+ *    reason:'internal_error' and the underlying run() is left to continue
+ *    and settle on its own — it is not cancelled, since a spawned process
+ *    must not be abandoned mid-flight, but the caller is no longer blocked
+ *    waiting on it.
+ * Every phase is logged with executionId/sessionId and elapsed time so a
+ * stall can be attributed to "claim never returned" vs. "claimed but never
+ * transitioned" vs. "transitioned but activator never observed it" instead
+ * of showing up as an opaque timeout with no diagnostic value.
+ */
+export async function activateTTYExecution(rawExecutionId: string, rawSessionId: string): Promise<TTYExecutionActivationResult> {
+  const executionId = rawExecutionId as TTYExecutionId
+  const sessionId = rawSessionId as TTYSessionId
+  const startedAt = Date.now()
+  const elapsed = () => Date.now() - startedAt
+  log.info('tty.activation.requested', { executionId, sessionId })
+
+  const coordinator = getRuntime().coordinator
+  const existing = await coordinator.getState(executionId)
+  if (existing && existing.state !== 'queued') {
+    log.info('tty.activation.already_settled', { executionId, sessionId, state: existing.state, elapsedMs: elapsed() })
+    return { accepted: true, state: existing }
+  }
+
+  let resolveAccepted!: (result: TTYExecutionActivationResult) => void
+  const accepted = new Promise<TTYExecutionActivationResult>(resolve => { resolveAccepted = resolve })
+  let settled = false
+  const settle = (result: TTYExecutionActivationResult, phase: string) => {
+    if (settled) return
+    settled = true
+    const elapsedMs = elapsed()
+    log.info('tty.activation.settled', { executionId, sessionId, phase, accepted: result.accepted, reason: result.reason, state: result.state?.state ?? null, elapsedMs })
+    recordActivationLatency(elapsedMs)
+    resolveAccepted(result)
+  }
+
+  const run = coordinator.run(executionId, sessionId, {
+    onAccepted: state => {
+      log.info('tty.activation.leased', { executionId, sessionId, elapsedMs: elapsed() })
+      settle({ accepted: true, state }, 'leased')
+    }
   })
-  return result
+  void run.then(result => {
+    if (result.accepted) settle({ accepted: true, state: result.state }, 'run_completed')
+    else settle({ accepted: false, state: result.state, reason: result.reason }, 'run_rejected')
+  }).catch(error => {
+    log.error('tty.activation.run_threw', { executionId, sessionId, elapsedMs: elapsed(), message: error instanceof Error ? error.message : String(error) })
+    settle({ accepted: false, state: null, reason: 'internal_error' }, 'run_threw')
+  })
+
+  const timeout = new Promise<TTYExecutionActivationResult>(resolve => {
+    setTimeout(() => {
+      if (settled) return
+      log.warn('tty.activation.timeout', { executionId, sessionId, elapsedMs: elapsed(), timeoutMs: DEFAULT_ACTIVATION_TIMEOUT_MS })
+      recordActivationTimeout()
+      resolve({ accepted: false, state: null, reason: 'internal_error' })
+    }, DEFAULT_ACTIVATION_TIMEOUT_MS)
+  })
+
+  return Promise.race([accepted, timeout])
 }

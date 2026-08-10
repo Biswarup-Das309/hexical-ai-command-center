@@ -2,6 +2,7 @@ import { z } from 'zod'
 
 import { NOOP_INVESTIGATION_LOGGER, newRequestId, type InvestigationLogger } from './investigation-logger'
 import { resolveCanonicalInvestigation } from './investigation-resolver'
+import { raceActivationBudget } from '@/lib/tty/tty-activation-budget'
 import type { InvestigationStore } from './investigation-store'
 import type {
   InvestigationBookmark,
@@ -46,7 +47,9 @@ export interface InvestigationSessionApiDependencies extends InvestigationApiDep
 
 export interface InvestigationExecutionApiDependencies extends InvestigationApiDependencies {
   readonly admitExecution: (request: Request, sessionId: string) => Promise<Response>
-  readonly startExecution?: (executionId: string, sessionId: string) => Promise<{ readonly accepted: boolean }>
+  readonly startExecution?: (executionId: string, sessionId: string) => Promise<{ readonly accepted: boolean; readonly reason?: string }>
+  /** How long attach() will wait for startExecution before degrading to a 202 activationPending response instead of blocking. Defaults to 3000ms. */
+  readonly activationResponseBudgetMs?: number
 }
 
 function json(body: unknown, status: number): Response {
@@ -398,6 +401,8 @@ export function createInvestigationSessionApi(dependencies: InvestigationSession
 export function createInvestigationExecutionApi(dependencies: InvestigationExecutionApiDependencies) {
   return {
     async attach(request: Request, rawId: string): Promise<Response> {
+      const requestId = newRequestId()
+      const logger = dependencies.logger ?? NOOP_INVESTIGATION_LOGGER
       try {
         const user = await requireUser(dependencies)
         if (user instanceof Response) return user
@@ -421,12 +426,29 @@ export function createInvestigationExecutionApi(dependencies: InvestigationExecu
         if (!body.ok || !body.job?.executionId || body.job.sessionId !== parsed.data.sessionId) return failure(502, 'INVALID_ADMISSION_RESPONSE', 'The execution admission response was invalid.')
         const attached = await dependencies.getStore().attachExecution(user, investigationId, { executionId: body.job.executionId, sessionId: parsed.data.sessionId })
         if (!attached) return failure(404, 'NOT_FOUND', 'Investigation not found.')
+
         if (dependencies.startExecution) {
-          const started = await dependencies.startExecution(body.job.executionId, parsed.data.sessionId)
-          if (!started.accepted) return failure(503, 'EXECUTION_NOT_STARTED', 'The execution could not be started.')
+          const executionId = body.job.executionId
+          const sessionId = parsed.data.sessionId
+          const budgetMs = dependencies.activationResponseBudgetMs
+          const result = await raceActivationBudget(
+            () => dependencies.startExecution!(executionId, sessionId),
+            budgetMs,
+            {
+              onRequested: () => logger.info('investigation.execution_activation_requested', { requestId, investigationId, userId: user, executionId, sessionId }),
+              onPending: budget => logger.info('investigation.execution_activation_pending', { requestId, investigationId, userId: user, executionId, sessionId, budgetMs: budget }),
+              onSettledLate: settled => logger.info('investigation.execution_activation_settled_late', { requestId, investigationId, userId: user, executionId, sessionId, accepted: settled.accepted, reason: settled.reason }),
+              onErroredLate: message => logger.error('investigation.execution_activation_errored_late', { requestId, investigationId, userId: user, executionId, sessionId, message }),
+              onRejected: reason => logger.warn('investigation.execution_activation_rejected', { requestId, investigationId, userId: user, executionId, sessionId, reason }),
+              onAccepted: () => logger.info('investigation.execution_activation_accepted', { requestId, investigationId, userId: user, executionId, sessionId })
+            }
+          )
+          if (result.kind === 'pending') return json({ ok: true, investigationId, execution: attached, job: body.job, duplicate: body.duplicate === true, activationPending: true }, 202)
+          if (result.kind === 'rejected') return failure(503, 'EXECUTION_NOT_STARTED', 'The execution could not be started.')
         }
         return json({ ok: true, investigationId, execution: attached, job: body.job, duplicate: body.duplicate === true }, admitted.status)
-      } catch {
+      } catch (error) {
+        logger.error('investigation.execution_attach_internal_error', { requestId, investigationId: rawId, message: error instanceof Error ? error.message : String(error) })
         return failure(500, 'INTERNAL_ERROR', 'The execution could not be attached to the investigation.')
       }
     }

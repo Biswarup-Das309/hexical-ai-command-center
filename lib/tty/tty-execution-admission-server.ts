@@ -5,6 +5,7 @@ import { createClient } from '@supabase/supabase-js'
 import { Redis } from '@upstash/redis'
 
 import { getUserTier } from '@/lib/get-user-tier'
+import { log } from '@/lib/hexical/telemetry'
 import { extractTargetCandidates, isTargetGatedExecutionKind } from './tty-policy'
 import { verifyAuthorization } from '@/lib/hexical/authorization'
 import { TTYExecutionAdmission } from './tty-execution-admission'
@@ -40,11 +41,7 @@ export function createTTYAdmissionApiForRequest(options: { readonly activate?: b
     resolveTier: getUserTier,
     getSession: (sessionId, ownerUserId) => store.getSession(sessionId, ownerUserId),
     admission,
-    ...(options.activate === false ? {} : {
-      startExecution: async (executionId: string, sessionId: string, activationOptions?: { readonly correlationId?: string }) => {
-        const result = await activateTTYExecution(executionId, sessionId, activationOptions)
-        return { accepted: result.accepted, state: result.state?.state ?? null, reason: result.reason }
-      }
-    })
+    log: (event, fields) => log.info(event, fields),
+    ...(options.activate === false ? {} : { startExecution: activateTTYExecution })
   })
 }
