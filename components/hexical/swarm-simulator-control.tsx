@@ -8,18 +8,12 @@ interface SwarmSimulatorControlProps {
   onStop: () => void
 }
 
-export default function SwarmSimulatorControl({
-  isSimulating,
-  onStart,
-  onStop,
-}: SwarmSimulatorControlProps) {
+export default function SwarmSimulatorControl({ isSimulating, onStart, onStop }: SwarmSimulatorControlProps) {
   return (
     <div className="flex items-center justify-between gap-4 border border-white/5 bg-black/20 rounded-xl p-4">
       <div>
         <h4 className="text-xs font-bold text-white uppercase tracking-widest">Simulation Engine</h4>
-        <p className="text-[10px] text-white/40 mt-1">
-          Stress-test local topology animations and vector rendering.
-        </p>
+        <p className="text-[10px] text-white/40 mt-1">Stress-test local topology animations and vector rendering.</p>
       </div>
 
       <button

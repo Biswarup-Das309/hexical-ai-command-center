@@ -19,24 +19,29 @@ export const TTY_EXECUTION_STATES = [
   'failed',
   'cancelled',
   'timed_out',
-  'expired'
+  'expired',
 ] as const
 
 export type TTYExecutionState = (typeof TTY_EXECUTION_STATES)[number]
-export type TTYTerminalExecutionState = Extract<TTYExecutionState, 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'expired'>
+export type TTYTerminalExecutionState = Extract<
+  TTYExecutionState,
+  'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'expired'
+>
 
 export const TTY_EXECUTION_TRANSITIONS: Readonly<Record<TTYExecutionState, readonly TTYExecutionState[]>> = {
   queued: ['queued', 'leased', 'failed', 'cancelled', 'expired'],
-  leased: ['leased', 'starting', 'failed', 'cancelled', 'expired', 'queued'],
-  starting: ['starting', 'running', 'failed', 'cancelled', 'timed_out', 'expired', 'queued'],
-  running: ['running', 'streaming', 'succeeded', 'failed', 'cancelled', 'timed_out', 'expired', 'queued'],
-  streaming: ['streaming', 'succeeded', 'failed', 'cancelled', 'timed_out', 'expired', 'queued'],
+  leased: ['leased', 'starting', 'failed', 'cancelled', 'expired'],
+  starting: ['starting', 'running', 'failed', 'cancelled', 'timed_out', 'expired'],
+  running: ['running', 'streaming', 'succeeded', 'failed', 'cancelled', 'timed_out', 'expired'],
+  streaming: ['streaming', 'succeeded', 'failed', 'cancelled', 'timed_out', 'expired'],
   succeeded: ['succeeded'],
   failed: ['failed'],
   cancelled: ['cancelled'],
   timed_out: ['timed_out'],
-  expired: ['expired']
+  expired: ['expired'],
 }
+
+const RECOVERABLE_EXECUTION_STATES: readonly TTYExecutionState[] = ['leased', 'starting', 'running', 'streaming']
 
 export interface TTYExecutionStateRecord {
   readonly executionId: TTYExecutionId
@@ -74,7 +79,10 @@ export interface TTYExecutionStatePatch {
 }
 
 export class IllegalTTYExecutionTransitionError extends Error {
-  constructor(readonly from: TTYExecutionState, readonly to: TTYExecutionState) {
+  constructor(
+    readonly from: TTYExecutionState,
+    readonly to: TTYExecutionState,
+  ) {
     super(`Illegal TTY execution transition: ${from} -> ${to}.`)
     this.name = 'IllegalTTYExecutionTransitionError'
   }
@@ -85,17 +93,23 @@ export function isTTYExecutionState(value: string): value is TTYExecutionState {
 }
 
 export function isTerminalTTYExecutionState(state: TTYExecutionState): state is TTYTerminalExecutionState {
-  return state === 'succeeded' || state === 'failed' || state === 'cancelled' || state === 'timed_out' || state === 'expired'
+  return (
+    state === 'succeeded' || state === 'failed' || state === 'cancelled' || state === 'timed_out' || state === 'expired'
+  )
 }
 
 export function canTransitionTTYExecutionState(from: TTYExecutionState, to: TTYExecutionState): boolean {
   return TTY_EXECUTION_TRANSITIONS[from].includes(to)
 }
 
+export function canRecoverTTYExecutionState(from: TTYExecutionState, to: TTYExecutionState): boolean {
+  return to === 'queued' && RECOVERABLE_EXECUTION_STATES.includes(from)
+}
+
 export function createQueuedTTYExecutionState(
   executionId: TTYExecutionId,
   sessionId: TTYSessionId,
-  queuedAt: string
+  queuedAt: string,
 ): TTYExecutionStateRecord {
   return Object.freeze({
     executionId,
@@ -117,7 +131,7 @@ export function createQueuedTTYExecutionState(
     queueWaitMs: null,
     startupMs: null,
     durationMs: null,
-    completionReason: null
+    completionReason: null,
   })
 }
 
@@ -125,18 +139,26 @@ export function transitionTTYExecutionState(
   current: TTYExecutionStateRecord,
   next: TTYExecutionState,
   at: string,
-  patch: TTYExecutionStatePatch = {}
+  patch: TTYExecutionStatePatch = {},
 ): TTYExecutionStateRecord {
-  if (!canTransitionTTYExecutionState(current.state, next)) throw new IllegalTTYExecutionTransitionError(current.state, next)
+  if (!canTransitionTTYExecutionState(current.state, next))
+    throw new IllegalTTYExecutionTransitionError(current.state, next)
   const queuedAtMs = Date.parse(current.queuedAt)
   const leasedAt = next === 'leased' && current.leasedAt === null ? at : current.leasedAt
   const startedAt = next === 'running' && current.startedAt === null ? at : current.startedAt
   const finishedAt = isTerminalTTYExecutionState(next) && current.finishedAt === null ? at : current.finishedAt
   const startedAtMs = startedAt === null ? Number.NaN : Date.parse(startedAt)
   const leasedAtMs = leasedAt === null ? Number.NaN : Date.parse(leasedAt)
-  const durationMs = finishedAt !== null && startedAt !== null ? Math.max(0, Date.parse(finishedAt) - startedAtMs) : current.durationMs
-  const queueWaitMs = leasedAt !== null && Number.isFinite(queuedAtMs) && Number.isFinite(leasedAtMs) ? Math.max(0, leasedAtMs - queuedAtMs) : current.queueWaitMs
-  const startupMs = next === 'running' && startedAt !== null && leasedAt !== null ? Math.max(0, startedAtMs - leasedAtMs) : current.startupMs
+  const durationMs =
+    finishedAt !== null && startedAt !== null ? Math.max(0, Date.parse(finishedAt) - startedAtMs) : current.durationMs
+  const queueWaitMs =
+    leasedAt !== null && Number.isFinite(queuedAtMs) && Number.isFinite(leasedAtMs)
+      ? Math.max(0, leasedAtMs - queuedAtMs)
+      : current.queueWaitMs
+  const startupMs =
+    next === 'running' && startedAt !== null && leasedAt !== null
+      ? Math.max(0, startedAtMs - leasedAtMs)
+      : current.startupMs
   return Object.freeze({
     ...current,
     ...patch,
@@ -147,6 +169,25 @@ export function transitionTTYExecutionState(
     finishedAt,
     queueWaitMs,
     startupMs,
-    durationMs
+    durationMs,
+  })
+}
+
+export function recoverTTYExecutionState(
+  current: TTYExecutionStateRecord,
+  at: string,
+  patch: TTYExecutionStatePatch = {},
+): TTYExecutionStateRecord {
+  if (!canRecoverTTYExecutionState(current.state, 'queued'))
+    throw new IllegalTTYExecutionTransitionError(current.state, 'queued')
+  return Object.freeze({
+    ...current,
+    ...patch,
+    state: 'queued' as const,
+    updatedAt: at,
+    leasedAt: null,
+    workerId: null,
+    leaseId: null,
+    finishedAt: null,
   })
 }

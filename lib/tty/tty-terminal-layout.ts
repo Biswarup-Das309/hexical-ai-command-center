@@ -10,7 +10,7 @@ export function calculateTTYTerminalGeometry(
   width: number,
   height: number,
   cellWidth = DEFAULT_CELL_WIDTH,
-  cellHeight = DEFAULT_CELL_HEIGHT
+  cellHeight = DEFAULT_CELL_HEIGHT,
 ): TTYTerminalGeometry {
   const safeWidth = Number.isFinite(width) ? Math.max(0, width) : 0
   const safeHeight = Number.isFinite(height) ? Math.max(0, height) : 0
@@ -18,7 +18,6 @@ export function calculateTTYTerminalGeometry(
   const safeCellHeight = Number.isFinite(cellHeight) && cellHeight > 0 ? cellHeight : DEFAULT_CELL_HEIGHT
   return Object.freeze({
     cols: Math.max(1, Math.floor(safeWidth / safeCellWidth)),
-    rows: Math.max(1, Math.floor(safeHeight / safeCellHeight))
+    rows: Math.max(1, Math.floor(safeHeight / safeCellHeight)),
   })
 }
-

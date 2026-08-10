@@ -8,7 +8,11 @@ type Store = Pick<InvestigationStore, 'get' | 'updateExecution' | 'recordExecuti
 
 export interface InvestigationExecutionSource {
   readonly getExecution: (executionId: string, ownerUserId: string) => Promise<TTYBrowserExecutionView | null>
-  readonly getOutput: (executionId: string, ownerUserId: string, options: { readonly count: number }) => Promise<readonly TTYBrowserOutputEvent[] | null>
+  readonly getOutput: (
+    executionId: string,
+    ownerUserId: string,
+    options: { readonly count: number },
+  ) => Promise<readonly TTYBrowserOutputEvent[] | null>
 }
 
 function investigationState(state: TTYBrowserExecutionView['state']): InvestigationExecutionState {
@@ -16,35 +20,51 @@ function investigationState(state: TTYBrowserExecutionView['state']): Investigat
 }
 
 export class InvestigationExecutionSynchronizer {
-  constructor(private readonly store: Store, private readonly source: InvestigationExecutionSource) {}
+  constructor(
+    private readonly store: Store,
+    private readonly source: InvestigationExecutionSource,
+  ) {}
 
   async synchronize(ownerUserId: string, investigationId: InvestigationId): Promise<void> {
     const hydration = await this.store.get(ownerUserId, investigationId, { executionLimit: 50, timelineLimit: 1 })
     if (!hydration) return
-    await Promise.all(hydration.executions.map(execution => this.synchronizeExecution(ownerUserId, investigationId, execution.executionId)))
+    await Promise.all(
+      hydration.executions.map((execution) =>
+        this.synchronizeExecution(ownerUserId, investigationId, execution.executionId),
+      ),
+    )
   }
 
-  private async synchronizeExecution(ownerUserId: string, investigationId: InvestigationId, executionId: string): Promise<void> {
+  private async synchronizeExecution(
+    ownerUserId: string,
+    investigationId: InvestigationId,
+    executionId: string,
+  ): Promise<void> {
     const execution = await this.source.getExecution(executionId, ownerUserId)
     if (!execution) return
     await this.store.updateExecution(ownerUserId, investigationId, executionId, investigationState(execution.state), {
       updatedAt: execution.timestamps.updatedAt,
       finishedAt: execution.timestamps.finishedAt,
-      durationMs: execution.resourceUsage.durationMs
+      durationMs: execution.resourceUsage.durationMs,
     })
     const output = await this.source.getOutput(executionId, ownerUserId, { count: MAX_OUTPUT_EVENTS_PER_SYNC })
     if (!output) return
     for (const event of output) await this.persistOutputEvent(ownerUserId, investigationId, executionId, event)
   }
 
-  private async persistOutputEvent(ownerUserId: string, investigationId: InvestigationId, executionId: string, event: TTYBrowserOutputEvent): Promise<void> {
+  private async persistOutputEvent(
+    ownerUserId: string,
+    investigationId: InvestigationId,
+    executionId: string,
+    event: TTYBrowserOutputEvent,
+  ): Promise<void> {
     if (event.type === 'stdout' || event.type === 'stderr') {
       await this.store.recordExecutionEvent(ownerUserId, investigationId, {
         type: event.type,
         executionId,
         sequence: event.sequence,
         occurredAt: event.timestamp,
-        payload: { text: event.text }
+        payload: { text: event.text },
       })
       return
     }
@@ -54,7 +74,7 @@ export class InvestigationExecutionSynchronizer {
         executionId,
         sequence: event.sequence,
         occurredAt: event.timestamp,
-        payload: { state: event.state }
+        payload: { state: event.state },
       })
       return
     }
@@ -65,7 +85,7 @@ export class InvestigationExecutionSynchronizer {
         executionId,
         sequence: event.sequence,
         occurredAt: event.timestamp,
-        payload: { state: event.state }
+        payload: { state: event.state },
       })
     }
   }

@@ -1,9 +1,9 @@
+import { ClerkProvider } from '@clerk/nextjs'
+import { dark } from '@clerk/themes'
 import { Analytics } from '@vercel/analytics/next'
 import { SpeedInsights } from '@vercel/speed-insights/next'
 import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono, JetBrains_Mono } from 'next/font/google'
-import { ClerkProvider } from '@clerk/nextjs'
-import { dark } from '@clerk/themes'
 import { Toaster } from 'sonner'
 import './globals.css'
 
@@ -25,7 +25,13 @@ export const metadata: Metadata = {
   description:
     'Hexical AI is an engineering command center for investigating problems, planning work, coordinating agents, executing safely, and verifying results.',
   applicationName: 'Hexical AI',
-  keywords: ['Hexical AI', 'engineering command center', 'repository intelligence', 'agent coordination', 'verified engineering'],
+  keywords: [
+    'Hexical AI',
+    'engineering command center',
+    'repository intelligence',
+    'agent coordination',
+    'verified engineering',
+  ],
   authors: [{ name: 'Hexical AI' }],
   formatDetection: { telephone: false, email: false, address: false },
   icons: {

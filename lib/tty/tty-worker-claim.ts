@@ -1,13 +1,12 @@
 import { log } from '@/lib/hexical/telemetry'
-
-import type { TTYExecutionId, TTYSessionId } from './tty-types'
 import {
   TTYExecutionLeaseManager,
   type TTYLeaseClaimResult,
   type TTYLeaseReleaseResult,
   type TTYLeaseRecoveryResult,
-  type TTYLeasedJob
+  type TTYLeasedJob,
 } from './tty-execution-lease'
+import type { TTYExecutionId, TTYSessionId } from './tty-types'
 import { detectStaleLease, type TTYLeaseObservation, type TTYWorkerLeaseObserver } from './tty-worker-observer'
 import type { TTYLeaseId, TTYWorkerId } from './tty-worker-types'
 
@@ -42,7 +41,17 @@ export type TTYWorkerCoordinatorClaimResult =
 
 export type TTYWorkerReleaseResult =
   | { readonly released: true }
-  | { readonly released: false; readonly reason: 'unknown_ownership' | 'missing_job' | 'not_owner' | 'lease_expired' | 'session_terminated' | 'attempts_exhausted' | 'internal_error' }
+  | {
+      readonly released: false
+      readonly reason:
+        | 'unknown_ownership'
+        | 'missing_job'
+        | 'not_owner'
+        | 'lease_expired'
+        | 'session_terminated'
+        | 'attempts_exhausted'
+        | 'internal_error'
+    }
 
 export interface TTYWorkerClaimLogger {
   info(message: string, fields?: Readonly<Record<string, unknown>>): void
@@ -70,7 +79,7 @@ export interface TTYWorkerClaimDependencies {
 const defaultLogger: TTYWorkerClaimLogger = {
   info: (message, fields) => log.info(message, { component: 'tty-worker-claim', ...fields }),
   warn: (message, fields) => log.warn(message, { component: 'tty-worker-claim', ...fields }),
-  error: (message, fields) => log.error(message, { component: 'tty-worker-claim', ...fields })
+  error: (message, fields) => log.error(message, { component: 'tty-worker-claim', ...fields }),
 }
 
 function safeOwnership(ownership: TTYWorkerOwnership): TTYWorkerOwnership {
@@ -85,7 +94,7 @@ function ownershipFromJob(job: TTYLeasedJob): TTYWorkerOwnership {
     leaseId: job.lease.leaseId,
     claimedAt: new Date(job.lease.claimedAtMs).toISOString(),
     renewedAt: new Date(job.lease.renewedAtMs).toISOString(),
-    expiresAt: new Date(job.lease.expiresAtMs).toISOString()
+    expiresAt: new Date(job.lease.expiresAtMs).toISOString(),
   })
 }
 
@@ -97,7 +106,7 @@ function ownershipFromObservation(observation: TTYLeaseObservation): TTYWorkerOw
     leaseId: observation.leaseId,
     claimedAt: observation.claimedAt ?? observation.renewedAt ?? new Date().toISOString(),
     renewedAt: observation.renewedAt ?? observation.claimedAt ?? new Date().toISOString(),
-    expiresAt: observation.expiresAt
+    expiresAt: observation.expiresAt,
   })
 }
 
@@ -137,7 +146,8 @@ export class TTYWorkerClaimService {
 
   async claimExecution(executionId: TTYExecutionId, knownSessionId?: TTYSessionId): Promise<TTYWorkerClaimResult> {
     const attempt = await this.claimLease(executionId, knownSessionId)
-    if (attempt.sessionId === null || attempt.result === null) return { claimed: false, reason: 'missing_execution_context' }
+    if (attempt.sessionId === null || attempt.result === null)
+      return { claimed: false, reason: 'missing_execution_context' }
     const { sessionId, result } = attempt
 
     if (result.claimed) {
@@ -153,9 +163,13 @@ export class TTYWorkerClaimService {
    * boundary. This method is deliberately separate from the browser-safe
    * claim result above.
    */
-  async claimExecutionForCoordinator(executionId: TTYExecutionId, knownSessionId?: TTYSessionId): Promise<TTYWorkerCoordinatorClaimResult> {
+  async claimExecutionForCoordinator(
+    executionId: TTYExecutionId,
+    knownSessionId?: TTYSessionId,
+  ): Promise<TTYWorkerCoordinatorClaimResult> {
     const attempt = await this.claimLease(executionId, knownSessionId)
-    if (attempt.sessionId === null || attempt.result === null) return { claimed: false, reason: 'missing_execution_context' }
+    if (attempt.sessionId === null || attempt.result === null)
+      return { claimed: false, reason: 'missing_execution_context' }
     const { sessionId, result } = attempt
     if (result.claimed) {
       return { claimed: true, ownership: await this.recordClaimedOwnership(result.job), job: result.job }
@@ -193,13 +207,15 @@ export class TTYWorkerClaimService {
   }
 
   getStatus(): TTYWorkerClaimStatus {
-    const activeOwnerships = [...this.ownerships.values()].sort((left, right) => left.executionId.localeCompare(right.executionId)).map(safeOwnership)
+    const activeOwnerships = [...this.ownerships.values()]
+      .sort((left, right) => left.executionId.localeCompare(right.executionId))
+      .map(safeOwnership)
     return Object.freeze({
       claimAttempts: this.claimAttempts,
       claimSuccesses: this.claimSuccesses,
       claimConflicts: this.claimConflicts,
       leaseExpirationsObserved: this.leaseExpirationsObserved,
-      activeOwnerships: Object.freeze(activeOwnerships)
+      activeOwnerships: Object.freeze(activeOwnerships),
     })
   }
 
@@ -214,7 +230,7 @@ export class TTYWorkerClaimService {
 
   private async claimLease(executionId: TTYExecutionId, knownSessionId?: TTYSessionId): Promise<TTYWorkerClaimAttempt> {
     this.claimAttempts += 1
-    const sessionId = knownSessionId ?? await this.resolveSessionId(executionId)
+    const sessionId = knownSessionId ?? (await this.resolveSessionId(executionId))
     if (sessionId === null) return { sessionId: null, result: null }
 
     try {
@@ -225,7 +241,11 @@ export class TTYWorkerClaimService {
     }
   }
 
-  private async resolveClaimFailure(executionId: TTYExecutionId, sessionId: TTYSessionId, result: Exclude<TTYLeaseClaimResult, { claimed: true }>): Promise<TTYWorkerClaimFailure> {
+  private async resolveClaimFailure(
+    executionId: TTYExecutionId,
+    sessionId: TTYSessionId,
+    result: Exclude<TTYLeaseClaimResult, { claimed: true }>,
+  ): Promise<TTYWorkerClaimFailure> {
     if (result.reason !== 'not_queued') return result.reason
     this.claimConflicts += 1
     const recoveredExpiredLease = await this.observePossibleExpiration(executionId, sessionId)
@@ -237,9 +257,12 @@ export class TTYWorkerClaimService {
     let ownership: TTYWorkerOwnership
     try {
       const observation = await this.dependencies.observer.getLeaseObservation(job.executionId)
-      ownership = observation === null || observation.workerId !== this.dependencies.workerId || observation.sessionId !== job.sessionId
-        ? ownershipFromJob(job)
-        : ownershipFromObservation(observation)
+      ownership =
+        observation === null ||
+        observation.workerId !== this.dependencies.workerId ||
+        observation.sessionId !== job.sessionId
+          ? ownershipFromJob(job)
+          : ownershipFromObservation(observation)
     } catch {
       ownership = ownershipFromJob(job)
     }
@@ -263,7 +286,7 @@ export class TTYWorkerClaimService {
       executionId,
       workerId: observation.workerId,
       leaseId: observation.leaseId,
-      expiresAt: observation.expiresAt
+      expiresAt: observation.expiresAt,
     })
     try {
       const recovery: TTYLeaseRecoveryResult = await this.dependencies.leaseManager.recover(executionId, sessionId)
@@ -284,7 +307,7 @@ export class TTYWorkerClaimService {
       leaseId: ownership.leaseId,
       claimedAt: ownership.claimedAt,
       renewedAt: ownership.renewedAt,
-      expiresAt: ownership.expiresAt
+      expiresAt: ownership.expiresAt,
     }
   }
 }

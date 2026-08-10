@@ -2,7 +2,6 @@
 
 import { memo, type ComponentPropsWithoutRef, type JSX } from 'react'
 import ReactMarkdown from 'react-markdown'
-
 import { type StreamMessage } from '@/lib/hexical/types'
 
 interface DataStreamProps {
@@ -38,7 +37,10 @@ const markdownComponents = {
     <ul className="list-disc list-outside ml-6 mb-4 space-y-2 marker:text-[var(--accent-text)]" {...props} />
   ),
   ol: ({ node: _node, ...props }: MarkdownComponentProps<'ol'>) => (
-    <ol className="list-decimal list-outside ml-6 mb-4 space-y-2 marker:text-[var(--accent-text)] font-mono" {...props} />
+    <ol
+      className="list-decimal list-outside ml-6 mb-4 space-y-2 marker:text-[var(--accent-text)] font-mono"
+      {...props}
+    />
   ),
   li: ({ node: _node, ...props }: MarkdownComponentProps<'li'>) => <li className="pl-1" {...props} />,
   strong: ({ node: _node, ...props }: MarkdownComponentProps<'strong'>) => (

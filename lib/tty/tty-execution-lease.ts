@@ -1,9 +1,14 @@
 import type { Redis } from '@upstash/redis'
-
-import type { TTYExecutionId, TTYExecutionKind, TTYSessionId } from './tty-types'
 import { hasAuthenticatedTTYLeaseCapability } from './tty-execution-admission'
+import type { TTYExecutionId, TTYExecutionKind, TTYSessionId } from './tty-types'
+import {
+  ttyExecutionJobKey,
+  ttySessionKey as workerSessionKey,
+  ttyWorkerActiveLeaseIndexKey,
+  ttyWorkerActiveLeasesKey,
+  ttyWorkerLeaseIndexMember,
+} from './tty-worker-keys'
 import type { TTYLeaseObserver } from './tty-worker-observer'
-import { ttyExecutionJobKey, ttySessionKey as workerSessionKey, ttyWorkerActiveLeaseIndexKey, ttyWorkerActiveLeasesKey, ttyWorkerLeaseIndexMember } from './tty-worker-keys'
 import { parseTTYWorkerId, type TTYLeaseId, type TTYWorkerAuthContext, type TTYWorkerId } from './tty-worker-types'
 
 export const TTY_LEASE_DURATION_MS = 30_000
@@ -71,25 +76,58 @@ export interface TTYRecoverableJob {
 
 export type TTYLeaseClaimResult =
   | { readonly claimed: true; readonly job: TTYLeasedJob }
-  | { readonly claimed: false; readonly reason: 'missing_job' | 'not_queued' | 'session_terminated' | 'attempts_exhausted' | 'unauthorized_worker' | 'internal_error' }
+  | {
+      readonly claimed: false
+      readonly reason:
+        | 'missing_job'
+        | 'not_queued'
+        | 'session_terminated'
+        | 'attempts_exhausted'
+        | 'unauthorized_worker'
+        | 'internal_error'
+    }
 
 export type TTYLeaseRenewResult =
   | { readonly renewed: true; readonly job: TTYLeasedJob }
-  | { readonly renewed: false; readonly reason: 'missing_job' | 'not_owner' | 'lease_expired' | 'session_terminated' | 'internal_error' }
+  | {
+      readonly renewed: false
+      readonly reason: 'missing_job' | 'not_owner' | 'lease_expired' | 'session_terminated' | 'internal_error'
+    }
 
 export type TTYLeaseReleaseResult =
   | { readonly released: true; readonly job: TTYRecoverableJob }
-  | { readonly released: false; readonly reason: 'missing_job' | 'not_owner' | 'lease_expired' | 'session_terminated' | 'attempts_exhausted' | 'internal_error' }
+  | {
+      readonly released: false
+      readonly reason:
+        | 'missing_job'
+        | 'not_owner'
+        | 'lease_expired'
+        | 'session_terminated'
+        | 'attempts_exhausted'
+        | 'internal_error'
+    }
 
 export type TTYLeaseRecoveryResult =
   | { readonly recovered: true; readonly job: TTYRecoverableJob }
-  | { readonly recovered: false; readonly reason: 'missing_job' | 'not_expired' | 'not_leased' | 'session_terminated' | 'attempts_exhausted' | 'internal_error' }
+  | {
+      readonly recovered: false
+      readonly reason:
+        | 'missing_job'
+        | 'not_expired'
+        | 'not_leased'
+        | 'session_terminated'
+        | 'attempts_exhausted'
+        | 'internal_error'
+    }
 
 export type TTYLeaseCompletionState = 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'expired'
 
 export type TTYLeaseCompleteResult =
   | { readonly completed: true; readonly job: TTYLeasedJob }
-  | { readonly completed: false; readonly reason: 'missing_job' | 'not_owner' | 'lease_expired' | 'session_terminated' | 'internal_error' }
+  | {
+      readonly completed: false
+      readonly reason: 'missing_job' | 'not_owner' | 'lease_expired' | 'session_terminated' | 'internal_error'
+    }
 
 interface LeaseDependencies {
   readonly now?: () => number
@@ -105,7 +143,20 @@ if not raw then return {0, 'missing_job'} end
 local job = cjson.decode(raw)
 if job.status ~= 'queued' then return {0, 'not_queued'} end
 if job.sessionId ~= ARGV[8] then return {0, 'session_terminated'} end
-if redis.call('EXISTS', KEYS[4]) == 1 or redis.call('EXISTS', KEYS[2]) == 0 or redis.call('EXISTS', KEYS[3]) == 0 then return {0, 'session_terminated'} end
+if redis.call('EXISTS', KEYS[4]) == 1 or redis.call('EXISTS', KEYS[2]) == 0 or redis.call('EXISTS', KEYS[3]) == 0 then
+  -- A lazy idle expiry has no terminate request to clean queued jobs.  Once
+  -- the matching worker observes the dead session, remove the job and repair
+  -- both admission counters atomically so it cannot remain orphaned forever.
+  redis.call('DECR', KEYS[5])
+  if tonumber(redis.call('GET', KEYS[5]) or '0') < 0 then redis.call('SET', KEYS[5], '0') end
+  redis.call('EXPIRE', KEYS[5], ARGV[7])
+  redis.call('DECR', KEYS[6])
+  if tonumber(redis.call('GET', KEYS[6]) or '0') < 0 then redis.call('SET', KEYS[6], '0') end
+  redis.call('EXPIRE', KEYS[6], ARGV[7])
+  redis.call('DEL', KEYS[1])
+  redis.call('SREM', KEYS[9], job.executionId)
+  return {0, 'session_terminated'}
+end
 local attempt = tonumber(job.attempt or '0') + 1
 if attempt > tonumber(ARGV[4]) then return {0, 'attempts_exhausted'} end
 local now = tonumber(ARGV[3])
@@ -236,7 +287,8 @@ return {1, raw}
 `
 
 function parseResult(result: unknown): [number, string, string | undefined] {
-  if (!Array.isArray(result) || typeof result[0] !== 'number' || typeof result[1] !== 'string') return [0, 'internal_error', undefined]
+  if (!Array.isArray(result) || typeof result[0] !== 'number' || typeof result[1] !== 'string')
+    return [0, 'internal_error', undefined]
   return [result[0], result[1], typeof result[2] === 'string' ? result[2] : undefined]
 }
 
@@ -247,7 +299,11 @@ export class TTYExecutionLeaseManager {
   private readonly token: () => string
   private readonly leaseId: () => string
 
-  constructor(private readonly redis: Redis, workerContext: TTYWorkerAuthContext, private readonly dependencies: LeaseDependencies = {}) {
+  constructor(
+    private readonly redis: Redis,
+    workerContext: TTYWorkerAuthContext,
+    private readonly dependencies: LeaseDependencies = {},
+  ) {
     const normalizedWorkerId = parseTTYWorkerId(workerContext.workerId)
     if (normalizedWorkerId === null) throw new Error('Invalid trusted worker identity.')
     this.workerId = normalizedWorkerId
@@ -265,7 +321,32 @@ export class TTYExecutionLeaseManager {
       const leaseId = this.leaseId()
       if (leaseId === token) return { claimed: false, reason: 'internal_error' }
       const credential = JSON.stringify({ token, leaseId })
-      const result = parseResult(await this.redis.eval(CLAIM_SCRIPT, [ttyExecutionJobKey(executionId), workerSessionKey(sessionId, 'core'), workerSessionKey(sessionId, 'status'), workerSessionKey(sessionId, 'terminal'), workerSessionKey(sessionId, 'queue-depth'), ttyWorkerActiveLeasesKey(this.workerId), ttyWorkerActiveLeaseIndexKey()], [this.workerId, credential, String(now), String(TTY_MAX_LEASE_ATTEMPTS), String(TTY_LEASE_DURATION_MS), String(TTY_MAX_LEASE_DURATION_MS), String(JOB_TTL_SECONDS), sessionId]))
+      const result = parseResult(
+        await this.redis.eval(
+          CLAIM_SCRIPT,
+          [
+            ttyExecutionJobKey(executionId),
+            workerSessionKey(sessionId, 'core'),
+            workerSessionKey(sessionId, 'status'),
+            workerSessionKey(sessionId, 'terminal'),
+            workerSessionKey(sessionId, 'queue-depth'),
+            workerSessionKey(sessionId, 'active-executions'),
+            ttyWorkerActiveLeasesKey(this.workerId),
+            ttyWorkerActiveLeaseIndexKey(),
+            workerSessionKey(sessionId, 'jobs'),
+          ],
+          [
+            this.workerId,
+            credential,
+            String(now),
+            String(TTY_MAX_LEASE_ATTEMPTS),
+            String(TTY_LEASE_DURATION_MS),
+            String(TTY_MAX_LEASE_DURATION_MS),
+            String(JOB_TTL_SECONDS),
+            sessionId,
+          ],
+        ),
+      )
       if (result[0] !== 1) return { claimed: false, reason: claimReason(result[1]) }
       const job = JSON.parse(result[1]) as TTYLeasedJob
       await this.notify(() => this.dependencies.observer?.observeLeaseClaimed(job))
@@ -278,9 +359,36 @@ export class TTYExecutionLeaseManager {
   async renew(executionId: TTYExecutionId, sessionId: TTYSessionId, leaseToken: string): Promise<TTYLeaseRenewResult> {
     if (!this.authorized('renew_lease')) return { renewed: false, reason: 'internal_error' }
     try {
-      const result = parseResult(await this.redis.eval(RENEW_SCRIPT, [ttyExecutionJobKey(executionId), workerSessionKey(sessionId, 'core'), workerSessionKey(sessionId, 'status'), workerSessionKey(sessionId, 'terminal')], [this.workerId, leaseToken, String(this.now()), String(TTY_LEASE_DURATION_MS), String(JOB_TTL_SECONDS), sessionId]))
+      const result = parseResult(
+        await this.redis.eval(
+          RENEW_SCRIPT,
+          [
+            ttyExecutionJobKey(executionId),
+            workerSessionKey(sessionId, 'core'),
+            workerSessionKey(sessionId, 'status'),
+            workerSessionKey(sessionId, 'terminal'),
+          ],
+          [
+            this.workerId,
+            leaseToken,
+            String(this.now()),
+            String(TTY_LEASE_DURATION_MS),
+            String(JOB_TTL_SECONDS),
+            sessionId,
+          ],
+        ),
+      )
       if (result[0] !== 1) {
-        if (result[1] === 'lease_expired') await this.notify(() => this.dependencies.observer?.observeLeaseExpired(this.workerId, executionId, leaseToken as TTYLeaseId, sessionId))
+        if (result[1] === 'lease_expired')
+          await this.notify(
+            () =>
+              this.dependencies.observer?.observeLeaseExpired(
+                this.workerId,
+                executionId,
+                leaseToken as TTYLeaseId,
+                sessionId,
+              ),
+          )
         return { renewed: false, reason: renewReason(result[1]) }
       }
       const job = JSON.parse(result[1]) as TTYLeasedJob
@@ -291,13 +399,42 @@ export class TTYExecutionLeaseManager {
     }
   }
 
-  async release(executionId: TTYExecutionId, sessionId: TTYSessionId, leaseToken: string): Promise<TTYLeaseReleaseResult> {
+  async release(
+    executionId: TTYExecutionId,
+    sessionId: TTYSessionId,
+    leaseToken: string,
+  ): Promise<TTYLeaseReleaseResult> {
     if (!this.authorized('renew_lease')) return { released: false, reason: 'internal_error' }
     try {
-      const result = parseResult(await this.redis.eval(RELEASE_SCRIPT, [ttyExecutionJobKey(executionId), workerSessionKey(sessionId, 'core'), workerSessionKey(sessionId, 'status'), workerSessionKey(sessionId, 'terminal'), workerSessionKey(sessionId, 'queue-depth'), ttyWorkerActiveLeasesKey(this.workerId), ttyWorkerActiveLeaseIndexKey(), workerSessionKey(sessionId, 'jobs')], [this.workerId, leaseToken, String(this.now()), String(JOB_TTL_SECONDS), executionId, String(TTY_MAX_LEASE_ATTEMPTS), sessionId]))
+      const result = parseResult(
+        await this.redis.eval(
+          RELEASE_SCRIPT,
+          [
+            ttyExecutionJobKey(executionId),
+            workerSessionKey(sessionId, 'core'),
+            workerSessionKey(sessionId, 'status'),
+            workerSessionKey(sessionId, 'terminal'),
+            workerSessionKey(sessionId, 'queue-depth'),
+            ttyWorkerActiveLeasesKey(this.workerId),
+            ttyWorkerActiveLeaseIndexKey(),
+            workerSessionKey(sessionId, 'jobs'),
+          ],
+          [
+            this.workerId,
+            leaseToken,
+            String(this.now()),
+            String(JOB_TTL_SECONDS),
+            executionId,
+            String(TTY_MAX_LEASE_ATTEMPTS),
+            sessionId,
+          ],
+        ),
+      )
       if (result[0] !== 1) return { released: false, reason: releaseReason(result[1]) }
       const job = JSON.parse(result[1]) as TTYRecoverableJob
-      await this.notify(() => this.dependencies.observer?.observeLeaseReleased(job, this.workerId, leaseToken as TTYLeaseId))
+      await this.notify(
+        () => this.dependencies.observer?.observeLeaseReleased(job, this.workerId, leaseToken as TTYLeaseId),
+      )
       return { released: true, job }
     } catch {
       return { released: false, reason: 'internal_error' }
@@ -307,7 +444,29 @@ export class TTYExecutionLeaseManager {
   async recover(executionId: TTYExecutionId, sessionId: TTYSessionId): Promise<TTYLeaseRecoveryResult> {
     if (!this.authorized('claim_lease')) return { recovered: false, reason: 'internal_error' }
     try {
-      const result = parseResult(await this.redis.eval(RECOVER_SCRIPT, [ttyExecutionJobKey(executionId), workerSessionKey(sessionId, 'core'), workerSessionKey(sessionId, 'status'), workerSessionKey(sessionId, 'terminal'), workerSessionKey(sessionId, 'queue-depth'), workerSessionKey(sessionId, 'active-executions'), workerSessionKey(sessionId, 'jobs'), ttyWorkerActiveLeaseIndexKey()], [executionId, this.workerId, String(this.now()), String(TTY_MAX_LEASE_ATTEMPTS), String(JOB_TTL_SECONDS), sessionId]))
+      const result = parseResult(
+        await this.redis.eval(
+          RECOVER_SCRIPT,
+          [
+            ttyExecutionJobKey(executionId),
+            workerSessionKey(sessionId, 'core'),
+            workerSessionKey(sessionId, 'status'),
+            workerSessionKey(sessionId, 'terminal'),
+            workerSessionKey(sessionId, 'queue-depth'),
+            workerSessionKey(sessionId, 'active-executions'),
+            workerSessionKey(sessionId, 'jobs'),
+            ttyWorkerActiveLeaseIndexKey(),
+          ],
+          [
+            executionId,
+            this.workerId,
+            String(this.now()),
+            String(TTY_MAX_LEASE_ATTEMPTS),
+            String(JOB_TTL_SECONDS),
+            sessionId,
+          ],
+        ),
+      )
       await this.notifyExpired(result[2], executionId, sessionId)
       if (result[0] !== 1) return { recovered: false, reason: recoveryReason(result[1]) }
       return { recovered: true, job: JSON.parse(result[1]) as TTYRecoverableJob }
@@ -316,14 +475,36 @@ export class TTYExecutionLeaseManager {
     }
   }
 
-  async complete(executionId: TTYExecutionId, sessionId: TTYSessionId, leaseToken: string, terminalState: TTYLeaseCompletionState): Promise<TTYLeaseCompleteResult> {
+  async complete(
+    executionId: TTYExecutionId,
+    sessionId: TTYSessionId,
+    leaseToken: string,
+    terminalState: TTYLeaseCompletionState,
+  ): Promise<TTYLeaseCompleteResult> {
     if (!this.authorized('renew_lease')) return { completed: false, reason: 'internal_error' }
     if (terminalState === 'expired') return { completed: false, reason: 'lease_expired' }
     try {
-      const result = parseResult(await this.redis.eval(COMPLETE_SCRIPT, [ttyExecutionJobKey(executionId), workerSessionKey(sessionId, 'core'), workerSessionKey(sessionId, 'status'), workerSessionKey(sessionId, 'terminal'), workerSessionKey(sessionId, 'active-executions'), ttyWorkerActiveLeasesKey(this.workerId), ttyWorkerActiveLeaseIndexKey(), workerSessionKey(sessionId, 'jobs')], [this.workerId, leaseToken, String(this.now()), executionId, sessionId]))
+      const result = parseResult(
+        await this.redis.eval(
+          COMPLETE_SCRIPT,
+          [
+            ttyExecutionJobKey(executionId),
+            workerSessionKey(sessionId, 'core'),
+            workerSessionKey(sessionId, 'status'),
+            workerSessionKey(sessionId, 'terminal'),
+            workerSessionKey(sessionId, 'active-executions'),
+            ttyWorkerActiveLeasesKey(this.workerId),
+            ttyWorkerActiveLeaseIndexKey(),
+            workerSessionKey(sessionId, 'jobs'),
+          ],
+          [this.workerId, leaseToken, String(this.now()), executionId, sessionId],
+        ),
+      )
       if (result[0] !== 1) return { completed: false, reason: completeReason(result[1]) }
       const job = JSON.parse(result[1]) as TTYLeasedJob
-      await this.notify(() => this.dependencies.observer?.observeLeaseCompleted(job, leaseToken as TTYLeaseId, terminalState))
+      await this.notify(
+        () => this.dependencies.observer?.observeLeaseCompleted(job, leaseToken as TTYLeaseId, terminalState),
+      )
       return { completed: true, job }
     } catch {
       return { completed: false, reason: 'internal_error' }
@@ -343,37 +524,66 @@ export class TTYExecutionLeaseManager {
     }
   }
 
-  private async notifyExpired(value: string | undefined, executionId: TTYExecutionId, sessionId: TTYSessionId): Promise<void> {
+  private async notifyExpired(
+    value: string | undefined,
+    executionId: TTYExecutionId,
+    sessionId: TTYSessionId,
+  ): Promise<void> {
     if (!value || !this.dependencies.observer) return
     const parts = value.split('|')
     if (parts.length !== 3) return
     const workerId = parseTTYWorkerId(parts[0])
     if (workerId === null) return
-    await this.notify(() => this.dependencies.observer?.observeLeaseExpired(workerId, executionId, parts[2] as TTYLeaseId, sessionId))
+    await this.notify(
+      () => this.dependencies.observer?.observeLeaseExpired(workerId, executionId, parts[2] as TTYLeaseId, sessionId),
+    )
   }
 }
 
 function claimReason(value: string): Exclude<TTYLeaseClaimResult, { claimed: true }>['reason'] {
-  if (value === 'missing_job' || value === 'not_queued' || value === 'session_terminated' || value === 'attempts_exhausted' || value === 'unauthorized_worker') return value
+  if (
+    value === 'missing_job' ||
+    value === 'not_queued' ||
+    value === 'session_terminated' ||
+    value === 'attempts_exhausted' ||
+    value === 'unauthorized_worker'
+  )
+    return value
   return 'internal_error'
 }
 
 function renewReason(value: string): Exclude<TTYLeaseRenewResult, { renewed: true }>['reason'] {
-  if (value === 'missing_job' || value === 'not_owner' || value === 'lease_expired' || value === 'session_terminated') return value
+  if (value === 'missing_job' || value === 'not_owner' || value === 'lease_expired' || value === 'session_terminated')
+    return value
   return 'internal_error'
 }
 
 function releaseReason(value: string): Exclude<TTYLeaseReleaseResult, { released: true }>['reason'] {
-  if (value === 'missing_job' || value === 'not_owner' || value === 'lease_expired' || value === 'session_terminated' || value === 'attempts_exhausted') return value
+  if (
+    value === 'missing_job' ||
+    value === 'not_owner' ||
+    value === 'lease_expired' ||
+    value === 'session_terminated' ||
+    value === 'attempts_exhausted'
+  )
+    return value
   return 'internal_error'
 }
 
 function recoveryReason(value: string): Exclude<TTYLeaseRecoveryResult, { recovered: true }>['reason'] {
-  if (value === 'missing_job' || value === 'not_expired' || value === 'not_leased' || value === 'session_terminated' || value === 'attempts_exhausted') return value
+  if (
+    value === 'missing_job' ||
+    value === 'not_expired' ||
+    value === 'not_leased' ||
+    value === 'session_terminated' ||
+    value === 'attempts_exhausted'
+  )
+    return value
   return 'internal_error'
 }
 
 function completeReason(value: string): Exclude<TTYLeaseCompleteResult, { completed: true }>['reason'] {
-  if (value === 'missing_job' || value === 'not_owner' || value === 'lease_expired' || value === 'session_terminated') return value
+  if (value === 'missing_job' || value === 'not_owner' || value === 'lease_expired' || value === 'session_terminated')
+    return value
   return 'internal_error'
 }

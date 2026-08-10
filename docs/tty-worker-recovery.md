@@ -48,14 +48,14 @@ The lease manager's existing Redis script remains the single atomic fence. If an
 
 ## Failure modes
 
-| Failure | Behavior | Recovery |
-| --- | --- | --- |
-| Redis read failure | The scan records a bounded error and the service remains available for the next interval. | Retry the next scheduled scan after connectivity returns. |
-| Orphan cleanup failure | The candidate is counted as failed; state is not guessed or requeued by this layer. | The next scan can retry cleanup. |
-| Lease already renewed or recovered | Atomic coordinator/lease checks return the current safe outcome. | Leave the current owner/state authoritative. |
-| Active or terminal state with an expired lease index member | Recovery is deferred; no process or terminal work is requeued from uncertain state. | Runtime recovery or operator reconciliation resolves the inconsistency. |
-| Malformed lease index member | It is counted and ignored; no Redis mutation is attempted. | Repair the index from authoritative job records. |
-| Shutdown during recovery | New scans stop, the current scan is awaited, and timers are cleared. | Restart performs a new immediate scan. |
+| Failure                                                     | Behavior                                                                                  | Recovery                                                                |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Redis read failure                                          | The scan records a bounded error and the service remains available for the next interval. | Retry the next scheduled scan after connectivity returns.               |
+| Orphan cleanup failure                                      | The candidate is counted as failed; state is not guessed or requeued by this layer.       | The next scan can retry cleanup.                                        |
+| Lease already renewed or recovered                          | Atomic coordinator/lease checks return the current safe outcome.                          | Leave the current owner/state authoritative.                            |
+| Active or terminal state with an expired lease index member | Recovery is deferred; no process or terminal work is requeued from uncertain state.       | Runtime recovery or operator reconciliation resolves the inconsistency. |
+| Malformed lease index member                                | It is counted and ignored; no Redis mutation is attempted.                                | Repair the index from authoritative job records.                        |
+| Shutdown during recovery                                    | New scans stop, the current scan is awaited, and timers are cleared.                      | Restart performs a new immediate scan.                                  |
 
 ## Metrics and observability
 

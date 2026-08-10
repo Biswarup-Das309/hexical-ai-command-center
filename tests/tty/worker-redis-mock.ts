@@ -16,7 +16,7 @@ export class WorkerRedisMock {
 
   async get<T>(key: string): Promise<T | null> {
     const value = this.values.get(key)
-    return value === undefined ? null : value as T
+    return value === undefined ? null : (value as T)
   }
 
   async set(key: string, value: unknown, options?: SetOptions): Promise<string | null> {
@@ -43,7 +43,7 @@ export class WorkerRedisMock {
   async sadd(key: string, ...members: string[]): Promise<number> {
     const set = this.sets.get(key) ?? new Set<string>()
     const before = set.size
-    members.forEach(member => set.add(member))
+    members.forEach((member) => set.add(member))
     this.sets.set(key, set)
     return set.size - before
   }
@@ -51,7 +51,7 @@ export class WorkerRedisMock {
   async srem(key: string, ...members: string[]): Promise<number> {
     const set = this.sets.get(key) ?? new Set<string>()
     const before = set.size
-    members.forEach(member => set.delete(member))
+    members.forEach((member) => set.delete(member))
     this.sets.set(key, set)
     return before - set.size
   }
@@ -65,17 +65,23 @@ export class WorkerRedisMock {
   async xadd(key: string, _id: '*', fields: Record<string, unknown>): Promise<string> {
     const id = `${Date.now()}-${++this.streamSequence}`
     const stream = this.streams.get(key) ?? []
-    stream.push({ id, fields: Object.fromEntries(Object.entries(fields).map(([name, value]) => [name, String(value)])) })
+    stream.push({
+      id,
+      fields: Object.fromEntries(Object.entries(fields).map(([name, value]) => [name, String(value)])),
+    })
     this.streams.set(key, stream)
     return id
   }
 
   async xrange(key: string, _start: string, _end: string, count?: number): Promise<unknown[]> {
     const stream = this.streams.get(key) ?? []
-    return stream.slice(0, count).map(entry => [entry.id, Object.entries(entry.fields).flat()])
+    return stream.slice(0, count).map((entry) => [entry.id, Object.entries(entry.fields).flat()])
   }
 
-  async xtrim(key: string, options: { readonly strategy: 'MAXLEN'; readonly threshold: number; readonly exactness?: '~' | '=' }): Promise<number> {
+  async xtrim(
+    key: string,
+    options: { readonly strategy: 'MAXLEN'; readonly threshold: number; readonly exactness?: '~' | '=' },
+  ): Promise<number> {
     if (options.strategy !== 'MAXLEN') return 0
     const stream = this.streams.get(key) ?? []
     const removeCount = Math.max(0, stream.length - Math.max(0, Math.floor(options.threshold)))
@@ -85,6 +91,32 @@ export class WorkerRedisMock {
 
   async eval(_script: string, keys: string[], args: string[]): Promise<unknown> {
     const script = _script
+    if (script.includes('tty-live-publish')) {
+      const sequence = await this.incr(keys[1]!)
+      await this.xadd(keys[0]!, '*', {
+        eventId: args[0]!,
+        sequence: String(sequence),
+        timestamp: args[1]!,
+        executionId: args[2]!,
+        sessionId: args[3]!,
+        type: args[4]!,
+        payload: args[5]!,
+      })
+      return sequence
+    }
+    if (script.includes('tty-output-append')) {
+      const sequence = await this.incr(keys[1]!)
+      await this.xadd(keys[0]!, '*', {
+        eventId: args[0]!,
+        sequence: String(sequence),
+        timestamp: args[1]!,
+        executionId: args[2]!,
+        sessionId: args[3]!,
+        type: args[4]!,
+        data: args[5]!,
+      })
+      return sequence
+    }
     if (script.includes('tty-execution-state-transition')) {
       const raw = this.values.get(keys[0])
       if (args[0] === '__missing__') {
@@ -143,7 +175,8 @@ export class WorkerRedisMock {
       const worker = JSON.parse(rawWorker) as Record<string, unknown>
       if (worker.status === 'inactive') return [0, 'inactive_worker']
       const oldRaw = this.values.get(keys[1])
-      if (oldRaw && (JSON.parse(oldRaw) as { sequence: number }).sequence >= Number(args[2])) return [0, 'duplicate_heartbeat']
+      if (oldRaw && (JSON.parse(oldRaw) as { sequence: number }).sequence >= Number(args[2]))
+        return [0, 'duplicate_heartbeat']
       this.values.set(keys[1], args[0])
       this.values.set(keys[2], args[1])
       if (worker.status === 'offline') {
@@ -160,7 +193,11 @@ export class WorkerRedisMock {
       const worker = JSON.parse(rawWorker) as Record<string, unknown>
       if (worker.status === 'inactive') return [0, 'inactive_worker']
       const heartbeatRaw = this.values.get(keys[1])
-      if (heartbeatRaw && Number(args[0]) - (JSON.parse(heartbeatRaw) as { receivedAtMs: number }).receivedAtMs <= Number(args[1])) return [0, 'not_stale']
+      if (
+        heartbeatRaw &&
+        Number(args[0]) - (JSON.parse(heartbeatRaw) as { receivedAtMs: number }).receivedAtMs <= Number(args[1])
+      )
+        return [0, 'not_stale']
       this.values.set(keys[2], args[2])
       worker.status = 'offline'
       worker.updatedAt = args[3]

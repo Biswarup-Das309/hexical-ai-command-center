@@ -1,21 +1,20 @@
-import test from 'node:test'
 import assert from 'node:assert/strict'
-
-import {
-  TTYWorkerClaimService,
-  type TTYWorkerClaimLogger,
-  type TTYWorkerOwnership
-} from '../../lib/tty/tty-worker-claim'
+import test from 'node:test'
 import type {
   TTYLeaseClaimResult,
   TTYLeaseReleaseResult,
   TTYLeaseRecoveryResult,
   TTYLeasedJob,
-  TTYRecoverableJob
+  TTYRecoverableJob,
 } from '../../lib/tty/tty-execution-lease'
-import { TTYWorkerPoller, type PendingExecutionQueue } from '../../lib/tty/tty-worker-poller'
-import type { TTYLeaseObservation } from '../../lib/tty/tty-worker-observer'
 import type { TTYExecutionId, TTYSessionId } from '../../lib/tty/tty-types'
+import {
+  TTYWorkerClaimService,
+  type TTYWorkerClaimLogger,
+  type TTYWorkerOwnership,
+} from '../../lib/tty/tty-worker-claim'
+import type { TTYLeaseObservation } from '../../lib/tty/tty-worker-observer'
+import { TTYWorkerPoller, type PendingExecutionQueue } from '../../lib/tty/tty-worker-poller'
 import { createTTYWorkerId, type TTYLeaseId, type TTYWorkerId } from '../../lib/tty/tty-worker-types'
 
 const executionId = '00000000-0000-4000-8000-000000000301' as TTYExecutionId
@@ -53,7 +52,7 @@ class AtomicLeaseStore {
       claimedAtMs: this.nowMs,
       renewedAtMs: this.nowMs,
       expiresAtMs: this.nowMs + 30_000,
-      maxExpiresAtMs: this.nowMs + 300_000
+      maxExpiresAtMs: this.nowMs + 300_000,
     }
     return { claimed: true, job: this.leasedJob() }
   }
@@ -68,7 +67,8 @@ class AtomicLeaseStore {
 
   async release(workerId: TTYWorkerId, token: string): Promise<TTYLeaseReleaseResult> {
     if (this.state.status !== 'leased' || this.state.lease === null) return { released: false, reason: 'not_owner' }
-    if (this.state.lease.workerId !== workerId || this.state.lease.token !== token) return { released: false, reason: 'not_owner' }
+    if (this.state.lease.workerId !== workerId || this.state.lease.token !== token)
+      return { released: false, reason: 'not_owner' }
     if (this.state.lease.expiresAtMs <= this.nowMs) return { released: false, reason: 'lease_expired' }
     this.state.status = 'queued'
     this.state.lease = null
@@ -87,7 +87,7 @@ class AtomicLeaseStore {
       renewedAt: new Date(lease.renewedAtMs).toISOString(),
       leaseAgeMs: Math.max(0, this.nowMs - lease.claimedAtMs),
       executionState: 'leased',
-      expiresAt: new Date(lease.expiresAtMs).toISOString()
+      expiresAt: new Date(lease.expiresAtMs).toISOString(),
     }
   }
 
@@ -104,7 +104,7 @@ class AtomicLeaseStore {
       authorizationScopeId: null,
       resource: { maxExecutionDurationMs: 30_000, maxOutputBytes: 1_024 },
       attempt: this.state.attempt,
-      lease: this.state.lease
+      lease: this.state.lease,
     }
   }
 
@@ -119,13 +119,16 @@ class AtomicLeaseStore {
       admittedAt: new Date(0).toISOString(),
       authorizationScopeId: null,
       resource: { maxExecutionDurationMs: 30_000, maxOutputBytes: 1_024 },
-      attempt: this.state.attempt
+      attempt: this.state.attempt,
     }
   }
 }
 
 class FakeLeaseManager {
-  constructor(private readonly store: AtomicLeaseStore, private readonly workerId: TTYWorkerId) {}
+  constructor(
+    private readonly store: AtomicLeaseStore,
+    private readonly workerId: TTYWorkerId,
+  ) {}
 
   claim(_executionId: TTYExecutionId, _sessionId: TTYSessionId): Promise<TTYLeaseClaimResult> {
     return this.store.claim(this.workerId)
@@ -141,14 +144,28 @@ class FakeLeaseManager {
 }
 
 class CaptureLogger implements TTYWorkerClaimLogger {
-  readonly entries: Array<{ readonly level: string; readonly message: string; readonly fields: Readonly<Record<string, unknown>> | undefined }> = []
+  readonly entries: Array<{
+    readonly level: string
+    readonly message: string
+    readonly fields: Readonly<Record<string, unknown>> | undefined
+  }> = []
 
-  info(message: string, fields?: Readonly<Record<string, unknown>>): void { this.entries.push({ level: 'info', message, fields }) }
-  warn(message: string, fields?: Readonly<Record<string, unknown>>): void { this.entries.push({ level: 'warn', message, fields }) }
-  error(message: string, fields?: Readonly<Record<string, unknown>>): void { this.entries.push({ level: 'error', message, fields }) }
+  info(message: string, fields?: Readonly<Record<string, unknown>>): void {
+    this.entries.push({ level: 'info', message, fields })
+  }
+  warn(message: string, fields?: Readonly<Record<string, unknown>>): void {
+    this.entries.push({ level: 'warn', message, fields })
+  }
+  error(message: string, fields?: Readonly<Record<string, unknown>>): void {
+    this.entries.push({ level: 'error', message, fields })
+  }
 }
 
-function service(store: AtomicLeaseStore, workerName: string, logger = new CaptureLogger()): { readonly claim: TTYWorkerClaimService; readonly logger: CaptureLogger } {
+function service(
+  store: AtomicLeaseStore,
+  workerName: string,
+  logger = new CaptureLogger(),
+): { readonly claim: TTYWorkerClaimService; readonly logger: CaptureLogger } {
   const workerId = createTTYWorkerId(workerName)
   return {
     logger,
@@ -158,8 +175,8 @@ function service(store: AtomicLeaseStore, workerName: string, logger = new Captu
       observer: { getLeaseObservation: async () => store.observation() },
       resolveSessionId: async () => sessionId,
       now: () => store.nowMs,
-      logger
-    })
+      logger,
+    }),
   }
 }
 
@@ -175,7 +192,7 @@ test('successfully claims a queued execution and returns browser-safe ownership 
   assert.equal(ownership.leaseId, 'claim-worker-a-opaque-lease-1')
   assert.equal(Object.hasOwn(ownership, 'token'), false)
   assert.equal(harness.claim.getStatus().claimSuccesses, 1)
-  assert.ok(harness.logger.entries.some(entry => entry.message === 'lease_claimed'))
+  assert.ok(harness.logger.entries.some((entry) => entry.message === 'lease_claimed'))
 })
 
 test('duplicate claim becomes a conflict and leaves exactly one active ownership', async () => {
@@ -188,16 +205,16 @@ test('duplicate claim becomes a conflict and leaves exactly one active ownership
   assert.deepEqual(conflict, { claimed: false, reason: 'not_queued' })
   assert.equal(first.claim.getStatus().activeOwnerships.length, 1)
   assert.equal(second.claim.getStatus().claimConflicts, 1)
-  assert.ok(second.logger.entries.some(entry => entry.message === 'lease_conflict'))
+  assert.ok(second.logger.entries.some((entry) => entry.message === 'lease_conflict'))
 })
 
 test('concurrent simulated workers produce one successful claim and no duplicate ownership', async () => {
   const store = new AtomicLeaseStore()
   const workers = Array.from({ length: 32 }, (_, index) => service(store, `race-worker-${index}`))
-  const results = await Promise.all(workers.map(worker => worker.claim.claimExecution(executionId)))
+  const results = await Promise.all(workers.map((worker) => worker.claim.claimExecution(executionId)))
 
-  assert.equal(results.filter(result => result.claimed).length, 1)
-  assert.equal(results.filter(result => !result.claimed).length, 31)
+  assert.equal(results.filter((result) => result.claimed).length, 1)
+  assert.equal(results.filter((result) => !result.claimed).length, 31)
   assert.equal(store.state.status, 'leased')
   assert.ok(store.state.lease)
 })
@@ -213,7 +230,7 @@ test('detects and recovers an expired lease without retrying in the same claim a
   assert.deepEqual(expired, { claimed: false, reason: 'lease_expired' })
   assert.equal(contender.claim.getStatus().leaseExpirationsObserved, 1)
   assert.equal(store.state.status, 'queued')
-  assert.ok(contender.logger.entries.some(entry => entry.message === 'stale_lease_observed'))
+  assert.ok(contender.logger.entries.some((entry) => entry.message === 'stale_lease_observed'))
 })
 
 test('retries successfully on the next claim after expiration recovery', async () => {
@@ -241,7 +258,7 @@ test('release removes private ownership while logging no lease secret', async ()
   assert.deepEqual(await harness.claim.releaseOwnership(result.ownership), { released: true })
   assert.equal(harness.claim.getStatus().activeOwnerships.length, 0)
   assert.equal(store.state.status, 'queued')
-  const releaseLog = harness.logger.entries.find(entry => entry.message === 'lease_released')
+  const releaseLog = harness.logger.entries.find((entry) => entry.message === 'lease_released')
   assert.ok(releaseLog)
   assert.equal(JSON.stringify(releaseLog?.fields).includes('secret-token'), false)
 })
@@ -254,10 +271,15 @@ test('poller discovery callback claims IDs without executing jobs', async () => 
   const poller = new TTYWorkerPoller({
     queue,
     jitterMs: 0,
-    setTimeout: callback => { timer = callback; return 1 },
-    clearTimeout: () => { timer = null },
-    onPendingExecutionIds: ids => harness.claim.claimPendingExecutionIds(ids),
-    logger: { info: () => undefined, warn: () => undefined, error: () => undefined }
+    setTimeout: (callback) => {
+      timer = callback
+      return 1
+    },
+    clearTimeout: () => {
+      timer = null
+    },
+    onPendingExecutionIds: (ids) => harness.claim.claimPendingExecutionIds(ids),
+    logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
   })
 
   await poller.startPolling()

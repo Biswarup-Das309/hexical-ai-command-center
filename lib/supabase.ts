@@ -1,5 +1,3 @@
-
-
 /**
  * ╔══════════════════════════════════════════════════════════════════════════════════════════════════════╗
  * ║                                     HEXICAL SECURITY OPERATING SYSTEM                                ║
@@ -8,8 +6,8 @@
  * ╚══════════════════════════════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import type { Database } from './database.types'; // Generated via Supabase CLI
+import { createClient, SupabaseClient } from '@supabase/supabase-js'
+import type { Database } from './database.types' // Generated via Supabase CLI
 import {
   ScanRecord,
   ProjectId,
@@ -23,8 +21,8 @@ import {
   ModelConfiguration,
   PluginId,
   PaginatedResult,
-  SwarmExecution
-} from './hexical-types';
+  SwarmExecution,
+} from './hexical-types'
 
 // ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
 //  ║ CUSTOM ERROR CLASSES & DEPENDENCY INJECTED LOGGING
@@ -32,49 +30,53 @@ import {
 
 export class ConfigurationError extends Error {
   constructor(message: string) {
-    super(message);
-    this.name = 'ConfigurationError';
+    super(message)
+    this.name = 'ConfigurationError'
   }
 }
 
 export class DatabaseError extends Error {
-  constructor(message: string, public readonly code?: string, public readonly details?: unknown) {
-    super(message);
-    this.name = 'DatabaseError';
+  constructor(
+    message: string,
+    public readonly code?: string,
+    public readonly details?: unknown,
+  ) {
+    super(message)
+    this.name = 'DatabaseError'
   }
 }
 
 // Logger Interface enables swapping console for Datadog/Winston in production
 export interface HexicalLogger {
-  info: (msg: string, meta?: unknown) => void;
-  warn: (msg: string, meta?: unknown) => void;
-  error: (msg: string, meta?: unknown) => void;
+  info: (msg: string, meta?: unknown) => void
+  warn: (msg: string, meta?: unknown) => void
+  error: (msg: string, meta?: unknown) => void
 }
 
 let logger: HexicalLogger = {
   info: (msg, meta) => console.log(JSON.stringify({ level: 'INFO', msg, meta })),
   warn: (msg, meta) => console.warn(JSON.stringify({ level: 'WARN', msg, meta })),
   error: (msg, meta) => console.error(JSON.stringify({ level: 'ERROR', msg, meta })),
-};
+}
 
 export const setLogger = (customLogger: HexicalLogger) => {
-  logger = customLogger;
-};
+  logger = customLogger
+}
 
 // ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
 //  ║ CLIENT INITIALIZATION
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════════
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
 if (!supabaseUrl || !supabaseAnonKey) {
-  throw new ConfigurationError('CRITICAL: Supabase deployment environment variables are missing.');
+  throw new ConfigurationError('CRITICAL: Supabase deployment environment variables are missing.')
 }
 
 const globalForSupabase = globalThis as unknown as {
-  supabasePublicSingleton: SupabaseClient<Database> | undefined;
-};
+  supabasePublicSingleton: SupabaseClient<Database> | undefined
+}
 
 export const createSupabaseClient = (token?: string): SupabaseClient<Database> => {
   const clientOptions = {
@@ -82,41 +84,42 @@ export const createSupabaseClient = (token?: string): SupabaseClient<Database> =
       persistSession: false,
       autoRefreshToken: false,
       detectSessionInUrl: false,
-      storageKey: process.env.NODE_ENV === 'development'
-        ? `hexical-dev-bypass-${crypto.randomUUID().substring(0, 8)}`
-        : 'hexical-prod-auth',
+      storageKey:
+        process.env.NODE_ENV === 'development'
+          ? `hexical-dev-bypass-${crypto.randomUUID().substring(0, 8)}`
+          : 'hexical-prod-auth',
     },
-  };
+  }
 
   if (token) {
     return createClient<Database>(supabaseUrl, supabaseAnonKey, {
       ...clientOptions,
       global: { headers: { Authorization: `Bearer ${token}` } },
-    });
+    })
   }
 
   if (!globalForSupabase.supabasePublicSingleton) {
-    globalForSupabase.supabasePublicSingleton = createClient<Database>(supabaseUrl, supabaseAnonKey, clientOptions);
+    globalForSupabase.supabasePublicSingleton = createClient<Database>(supabaseUrl, supabaseAnonKey, clientOptions)
   }
 
-  return globalForSupabase.supabasePublicSingleton;
-};
+  return globalForSupabase.supabasePublicSingleton
+}
 
 // ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
 //  ║ TYPE GUARDS, MAPPERS & RESILIENCE UTILITIES
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════════
 
 // Replaces `as any` by safely asserting complex objects to Supabase's expected JSON interface
-type DbJson = Database['public']['Tables']['scan_history']['Insert']['ast_context'];
-const toDbJson = <T>(data: T): DbJson => data as unknown as DbJson;
+type DbJson = Database['public']['Tables']['scan_history']['Insert']['ast_context']
+const toDbJson = <T>(data: T): DbJson => data as unknown as DbJson
 
 /**
  * Validates complex JSON structures at the database boundary.
  * (Integration point: Replace with Zod schemas e.g., `return FindingSchema.parse(data)` for runtime safety)
  */
 function validateBoundary<T>(data: unknown, fallback: T): T {
-  if (!data || typeof data !== 'object') return fallback;
-  return data as T;
+  if (!data || typeof data !== 'object') return fallback
+  return data as T
 }
 
 /**
@@ -138,38 +141,43 @@ function mapScanRecordRow(row: Database['public']['Tables']['scan_history']['Row
     findingsList: validateBoundary<Finding[]>(row.findings_list, []),
     overallRisk: row.overall_risk as RiskLevelType,
     performance: validateBoundary<ScanPerformanceMetrics>(row.performance, {} as ScanPerformanceMetrics),
-    swarmExecutionData: row.swarm_execution_data ? validateBoundary<SwarmExecution>(row.swarm_execution_data, {} as SwarmExecution) : undefined,
-  };
+    swarmExecutionData: row.swarm_execution_data
+      ? validateBoundary<SwarmExecution>(row.swarm_execution_data, {} as SwarmExecution)
+      : undefined,
+  }
 }
 
 /**
  * Centralized fault-tolerance policy for database operations.
  */
 function isTransientError(error: any): boolean {
-  if (!error) return false;
+  if (!error) return false
   const transientCodes = new Set([
     '53300', // too_many_connections
     '40001', // serialization_failure
     '08000', // connection_exception
     '08003', // connection_does_not_exist
     '08006', // connection_failure
-  ]);
-  return transientCodes.has(error.code) || (error.message && error.message.includes('fetch'));
+  ])
+  return transientCodes.has(error.code) || (error.message && error.message.includes('fetch'))
 }
 
 async function withRetry<T>(operation: () => Promise<T>, maxRetries = 3, baseDelayMs = 500): Promise<T> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      return await operation();
+      return await operation()
     } catch (error: any) {
-      if (attempt === maxRetries || !isTransientError(error)) throw error;
-      
-      const delay = baseDelayMs * Math.pow(2, attempt - 1);
-      logger.warn(`[Supabase Engine] Transient DB failure (Attempt ${attempt}/${maxRetries}). Retrying in ${delay}ms...`, { code: error.code });
-      await new Promise(resolve => setTimeout(resolve, delay));
+      if (attempt === maxRetries || !isTransientError(error)) throw error
+
+      const delay = baseDelayMs * Math.pow(2, attempt - 1)
+      logger.warn(
+        `[Supabase Engine] Transient DB failure (Attempt ${attempt}/${maxRetries}). Retrying in ${delay}ms...`,
+        { code: error.code },
+      )
+      await new Promise((resolve) => setTimeout(resolve, delay))
     }
   }
-  throw new Error('Unreachable execution path');
+  throw new Error('Unreachable execution path')
 }
 
 // ═╦═════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -178,7 +186,7 @@ async function withRetry<T>(operation: () => Promise<T>, maxRetries = 3, baseDel
 
 export async function getLatestProjectScan(
   client: SupabaseClient<Database>,
-  projectId: ProjectId
+  projectId: ProjectId,
 ): Promise<ScanRecord | null> {
   return withRetry(async () => {
     const { data, error } = await client
@@ -187,56 +195,56 @@ export async function getLatestProjectScan(
       .eq('project_id', projectId)
       .order('created_at', { ascending: false })
       .limit(1)
-      .maybeSingle();
+      .maybeSingle()
 
     if (error) {
-      throw new DatabaseError('Failed to fetch previous scan baseline.', error.code, error.details);
+      throw new DatabaseError('Failed to fetch previous scan baseline.', error.code, error.details)
     }
 
-    return data ? mapScanRecordRow(data) : null;
-  });
+    return data ? mapScanRecordRow(data) : null
+  })
 }
 
 export async function getProjectScansPaginated(
   client: SupabaseClient<Database>,
   projectId: ProjectId,
   pageNumber: number = 1,
-  pageSize: number = 10
+  pageSize: number = 10,
 ): Promise<PaginatedResult<ScanRecord>> {
   return withRetry(async () => {
-    const from = (pageNumber - 1) * pageSize;
-    const to = from + pageSize - 1;
+    const from = (pageNumber - 1) * pageSize
+    const to = from + pageSize - 1
 
     const { data, error, count } = await client
       .from('scan_history')
       .select('*', { count: 'exact' })
       .eq('project_id', projectId)
       .order('created_at', { ascending: false })
-      .range(from, to);
+      .range(from, to)
 
     if (error) {
-      throw new DatabaseError('Failed to fetch paginated scan history.', error.code, error.details);
+      throw new DatabaseError('Failed to fetch paginated scan history.', error.code, error.details)
     }
 
-    const totalCount = count || 0;
+    const totalCount = count || 0
     return {
       data: (data || []).map(mapScanRecordRow),
       totalCount,
       pageSize,
       pageNumber,
       hasNextPage: from + pageSize < totalCount,
-    };
-  });
+    }
+  })
 }
 
 /**
  * Persists a scan record to the ledger.
- * Note: If future architectures require atomic multi-table writes (e.g. Findings + Audit Log), 
+ * Note: If future architectures require atomic multi-table writes (e.g. Findings + Audit Log),
  * transition this logic to a Postgres Stored Procedure and invoke via `client.rpc('commit_scan_transaction', payload)`.
  */
 export async function saveScanRecord(
   client: SupabaseClient<Database>,
-  scanData: Omit<ScanRecord, 'id' | 'createdAt'>
+  scanData: Omit<ScanRecord, 'id' | 'createdAt'>,
 ): Promise<ScanId> {
   return withRetry(async () => {
     const { data, error } = await client
@@ -256,15 +264,15 @@ export async function saveScanRecord(
           overall_risk: scanData.overallRisk,
           swarm_execution_data: toDbJson(scanData.swarmExecutionData),
           performance: toDbJson(scanData.performance),
-        }
+        },
       ])
       .select('id')
-      .single();
+      .single()
 
     if (error) {
-      throw new DatabaseError('Failed to commit secure scan record.', error.code, error.details);
+      throw new DatabaseError('Failed to commit secure scan record.', error.code, error.details)
     }
 
-    return data.id as ScanId;
-  });
+    return data.id as ScanId
+  })
 }

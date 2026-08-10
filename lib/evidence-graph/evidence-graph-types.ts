@@ -22,7 +22,7 @@ export const EVIDENCE_GRAPH_ENTITY_TYPES = [
   'evidence',
   'file',
   'screenshot',
-  'note'
+  'note',
 ] as const
 
 export type EvidenceGraphEntityType = (typeof EVIDENCE_GRAPH_ENTITY_TYPES)[number]
@@ -37,7 +37,7 @@ export const EVIDENCE_GRAPH_RELATIONSHIPS = [
   'CONFIRMS',
   'EVIDENCE_FOR',
   'GENERATED_FROM',
-  'RELATED_TO'
+  'RELATED_TO',
 ] as const
 
 export type EvidenceGraphRelationship = (typeof EVIDENCE_GRAPH_RELATIONSHIPS)[number]

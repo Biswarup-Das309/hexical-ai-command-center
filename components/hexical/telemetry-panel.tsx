@@ -1,6 +1,5 @@
 'use client'
 
-import { memo } from 'react'
 import {
   Radar,
   CornerDownRight,
@@ -13,6 +12,7 @@ import {
   CheckCircle2,
   XCircle,
 } from 'lucide-react'
+import { memo } from 'react'
 import type { RoutePath, StreamMessage } from '@/lib/hexical/types'
 import { useSettingsStore } from '@/lib/store'
 
@@ -137,9 +137,7 @@ const RouteCell = memo(function RouteCell({ label, active, tone }: RouteCellProp
         />
       )}
       <p
-        className={`font-mono text-[11px] uppercase tracking-[0.2em] ${
-          active ? styles.icon : 'text-muted-foreground'
-        }`}
+        className={`font-mono text-[11px] uppercase tracking-[0.2em] ${active ? styles.icon : 'text-muted-foreground'}`}
       >
         {label}
       </p>
@@ -166,8 +164,7 @@ function TelemetryPanelImpl({ latest }: TelemetryPanelProps) {
   // Fall back to the "unknown" entry rather than trusting that a runtime
   // value always matches the RoutePath union — the type is a compile-time
   // promise, not a runtime guarantee, and this data is coming off a stream.
-  const meta: RouteMetaEntry | null =
-  route ? ROUTE_META[route] ?? ROUTE_META.unknown : null;
+  const meta: RouteMetaEntry | null = route ? ROUTE_META[route] ?? ROUTE_META.unknown : null
   // Guard against a malformed/partial payload arriving mid-stream.
   const steps = Array.isArray(latest?.steps) ? latest.steps : []
 
@@ -188,10 +185,7 @@ function TelemetryPanelImpl({ latest }: TelemetryPanelProps) {
     >
       <header className="flex items-center gap-2 border-b border-border px-4 py-3">
         <Radar aria-hidden="true" className="size-4 text-primary text-glow-cyan" />
-        <h2
-          id="telemetry-panel-heading"
-          className="font-mono text-[11px] uppercase tracking-[0.25em] text-foreground"
-        >
+        <h2 id="telemetry-panel-heading" className="font-mono text-[11px] uppercase tracking-[0.25em] text-foreground">
           Telemetry · Routing
         </h2>
       </header>
@@ -208,22 +202,20 @@ function TelemetryPanelImpl({ latest }: TelemetryPanelProps) {
             role="status"
             aria-live="polite"
             aria-atomic="true"
-            className={`animate-rise motion-reduce:animate-none mt-3 flex items-center gap-2 rounded-md border px-3 py-2 ${TONE_STYLES[meta.tone].badgeBorder} ${TONE_STYLES[meta.tone].badgeBg}`}
+            className={`animate-rise motion-reduce:animate-none mt-3 flex items-center gap-2 rounded-md border px-3 py-2 ${
+              TONE_STYLES[meta.tone].badgeBorder
+            } ${TONE_STYLES[meta.tone].badgeBg}`}
           >
             <meta.icon aria-hidden="true" className={`size-4 ${TONE_STYLES[meta.tone].icon}`} />
             <span className="text-sm font-medium text-foreground">{meta.label}</span>
           </div>
         ) : (
-          <p className="mt-3 font-mono text-[11px] text-muted-foreground">
-            Awaiting transmission…
-          </p>
+          <p className="mt-3 font-mono text-[11px] text-muted-foreground">Awaiting transmission…</p>
         )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
-          Routing Path
-        </span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">Routing Path</span>
 
         <ol aria-live="polite" aria-relevant="additions" className="mt-3 space-y-2">
           {steps.length ? (
@@ -240,8 +232,7 @@ function TelemetryPanelImpl({ latest }: TelemetryPanelProps) {
               >
                 <CornerDownRight aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-primary" />
                 <span className="break-words font-mono text-[11px] leading-relaxed text-foreground/90">
-                  <span className="text-muted-foreground">{String(i + 1).padStart(2, '0')}</span>{' '}
-                  {step}
+                  <span className="text-muted-foreground">{String(i + 1).padStart(2, '0')}</span> {step}
                 </span>
               </li>
             ))
@@ -255,9 +246,7 @@ function TelemetryPanelImpl({ latest }: TelemetryPanelProps) {
 
       <div className="border-t border-border p-4">
         <div className="flex items-center justify-between">
-          <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
-            Verification
-          </span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">Verification</span>
           <span role="status" aria-live="polite" aria-atomic="true">
             {latest && latest.role === 'hexical' ? (
               latest.valid ? (

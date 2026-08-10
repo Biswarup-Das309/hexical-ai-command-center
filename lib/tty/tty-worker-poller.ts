@@ -4,7 +4,7 @@ export const TTY_WORKER_POLLER_DEFAULTS = Object.freeze({
   baseIntervalMs: 1_000,
   maxIntervalMs: 15_000,
   jitterMs: 500,
-  batchSize: 100
+  batchSize: 100,
 })
 
 export interface PendingExecutionQueue {
@@ -74,7 +74,7 @@ export interface TTYWorkerPollerDependencies {
 const defaultLogger: TTYWorkerPollerLogger = {
   info: (message, fields) => log.info(message, { component: 'tty-worker-poller', ...fields }),
   warn: (message, fields) => log.warn(message, { component: 'tty-worker-poller', ...fields }),
-  error: (message, fields) => log.error(message, { component: 'tty-worker-poller', ...fields })
+  error: (message, fields) => log.error(message, { component: 'tty-worker-poller', ...fields }),
 }
 
 function validPositiveInteger(value: number): boolean {
@@ -119,7 +119,11 @@ export class TTYWorkerPoller {
     this.maxIntervalMs = dependencies.maxIntervalMs ?? TTY_WORKER_POLLER_DEFAULTS.maxIntervalMs
     this.jitterMs = dependencies.jitterMs ?? TTY_WORKER_POLLER_DEFAULTS.jitterMs
     this.batchSize = dependencies.batchSize ?? TTY_WORKER_POLLER_DEFAULTS.batchSize
-    if (!validPositiveInteger(this.baseIntervalMs) || !validPositiveInteger(this.maxIntervalMs) || this.maxIntervalMs < this.baseIntervalMs) {
+    if (
+      !validPositiveInteger(this.baseIntervalMs) ||
+      !validPositiveInteger(this.maxIntervalMs) ||
+      this.maxIntervalMs < this.baseIntervalMs
+    ) {
       throw new Error('Invalid TTY worker poller interval configuration.')
     }
     if (!validNonNegativeInteger(this.jitterMs) || !validPositiveInteger(this.batchSize)) {
@@ -128,7 +132,7 @@ export class TTYWorkerPoller {
     this.now = dependencies.now ?? (() => new Date())
     this.random = dependencies.random ?? Math.random
     this.setTimer = dependencies.setTimeout ?? ((handler, delayMs) => setTimeout(handler, delayMs))
-    this.clearTimer = dependencies.clearTimeout ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>))
+    this.clearTimer = dependencies.clearTimeout ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>))
     this.logger = dependencies.logger ?? defaultLogger
     this.currentIntervalMs = this.baseIntervalMs
   }
@@ -180,7 +184,7 @@ export class TTYWorkerPoller {
       pollsPerformed: this.pollsPerformed,
       executionsObserved: this.executionsObserved,
       lastPendingCount: this.lastPendingCount,
-      lastError: this.lastError
+      lastError: this.lastError,
     })
   }
 
@@ -200,7 +204,7 @@ export class TTYWorkerPoller {
     this.state = 'stopped'
     this.logger.info('polling_shutdown', {
       pollsPerformed: this.pollsPerformed,
-      executionsObserved: this.executionsObserved
+      executionsObserved: this.executionsObserved,
     })
     return this.getStatus()
   }
@@ -251,13 +255,16 @@ export class TTYWorkerPoller {
       this.consecutiveIdlePolls += 1
       this.currentIntervalMs = this.backoffInterval(this.consecutiveIdlePolls)
       this.lastError = errorMessage(error)
-      this.logger.error('polling_error', { error: this.lastError, durationMs: Math.max(0, this.now().getTime() - startedAtMs) })
+      this.logger.error('polling_error', {
+        error: this.lastError,
+        durationMs: Math.max(0, this.now().getTime() - startedAtMs),
+      })
     }
   }
 
   private backoffInterval(idlePolls: number): number {
     const exponent = Math.max(0, idlePolls - 1)
-    return Math.min(this.maxIntervalMs, this.baseIntervalMs * (2 ** exponent))
+    return Math.min(this.maxIntervalMs, this.baseIntervalMs * 2 ** exponent)
   }
 
   private scheduleNextPoll(): void {
@@ -269,7 +276,7 @@ export class TTYWorkerPoller {
       consecutiveIdlePolls: this.consecutiveIdlePolls,
       intervalMs: this.currentIntervalMs,
       jitterMs: jitter,
-      sleepingMs: delayMs
+      sleepingMs: delayMs,
     }
     this.logger.info(this.consecutiveIdlePolls > 0 ? 'poll_idle_backoff' : 'poll_sleeping', fields)
     this.timer = this.setTimer(() => {

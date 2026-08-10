@@ -1,16 +1,14 @@
 import assert from 'node:assert/strict'
 import { afterEach, mock, test } from 'node:test'
-
 import type { Redis } from '@upstash/redis'
-
+import { TTYSessionStore, toBrowserSafeSession } from '../../lib/tty/tty-session-store'
 import {
   createTTYExecutionId,
   type InternalTTYSession,
   type TTYResourceLimits,
   type TTYSessionId,
-  type TTYTerminationReason
+  type TTYTerminationReason,
 } from '../../lib/tty/tty-types'
-import { TTYSessionStore, toBrowserSafeSession } from '../../lib/tty/tty-session-store'
 
 const TEST_NOW = Date.parse('2026-08-04T00:00:00.000Z')
 const COUNTER_TTL_SECONDS = 24 * 60 * 60
@@ -82,7 +80,7 @@ class FakeRedis {
 
   private requireCollection<T extends FakeSetMemberCollection | FakeSortedCollection>(
     key: string,
-    kind: T['kind']
+    kind: T['kind'],
   ): T | null {
     const entry = this.entryFor(key)
     if (entry === null) return null
@@ -105,10 +103,10 @@ class FakeRedis {
   blockNextTerminalRead(): TerminalReadGate {
     let entered = () => {}
     let releasePromiseResolve = () => {}
-    const enteredPromise = new Promise<void>(resolve => {
+    const enteredPromise = new Promise<void>((resolve) => {
       entered = resolve
     })
-    const releasePromise = new Promise<void>(resolve => {
+    const releasePromise = new Promise<void>((resolve) => {
       releasePromiseResolve = resolve
     })
 
@@ -147,7 +145,7 @@ class FakeRedis {
 
     this.entries.set(key, {
       value: this.serialize(value),
-      expiresAt: options?.ex === undefined ? null : Date.now() + options.ex * 1000
+      expiresAt: options?.ex === undefined ? null : Date.now() + options.ex * 1000,
     })
     return 'OK'
   }
@@ -199,7 +197,7 @@ class FakeRedis {
       this.entries.set(key, { value: collection, expiresAt: null })
     }
 
-    const values = [member, ...members].map(value => String(value))
+    const values = [member, ...members].map((value) => String(value))
     const before = collection.members.size
     for (const value of values) collection.members.add(value)
     return collection.members.size - before
@@ -221,10 +219,7 @@ class FakeRedis {
     return removed
   }
 
-  async zadd(
-    key: string,
-    scoreMember: { readonly score: number; readonly member: unknown }
-  ): Promise<number | null> {
+  async zadd(key: string, scoreMember: { readonly score: number; readonly member: unknown }): Promise<number | null> {
     let collection = this.requireCollection<FakeSortedCollection>(key, 'sorted')
     if (collection === null) {
       collection = { kind: 'sorted', members: new Map<string, number>() }
@@ -255,6 +250,40 @@ class FakeRedis {
     return this.requireCollection<FakeSortedCollection>(key, 'sorted')?.members.size ?? 0
   }
 
+  async eval(script: string, keys: string[], args: string[]): Promise<unknown> {
+    if (script.includes('tty-session:create-one-active')) {
+      const activeEntry = this.entryFor(keys[0]!)
+      const active = activeEntry && typeof activeEntry.value === 'string' ? activeEntry.value : null
+      const indexed = [
+        ...(this.requireCollection<FakeSetMemberCollection>(keys[1]!, 'set')?.members ?? new Set<string>()),
+      ]
+      const candidates = [...new Set([...(active ? [active] : []), ...indexed])]
+      for (const sessionId of candidates) {
+        const core = this.entryFor(`tty:session:${sessionId}:core`)
+        const status = this.entryFor(`tty:session:${sessionId}:status`)
+        const terminal = this.entryFor(`tty:session:${sessionId}:terminal`)
+        if (core !== null && status !== null && terminal === null) {
+          void this.set(keys[0]!, sessionId, { ex: Number(args[3]) })
+          return [0, sessionId]
+        }
+        void this.srem(keys[1]!, sessionId)
+        if (active === sessionId) void this.del(keys[0]!)
+      }
+      void this.set(keys[2]!, args[1], { ex: Number(args[3]) })
+      void this.set(keys[3]!, args[2], { ex: Number(args[4]) })
+      void this.set(keys[0]!, args[0], { ex: Number(args[3]) })
+      void this.sadd(keys[1]!, args[0])
+      return [1, args[0]]
+    }
+    if (script.includes('tty-session:clear-active')) {
+      const active = await this.get<string>(keys[0]!)
+      if (active === args[0]) void this.del(keys[0]!)
+      void this.srem(keys[1]!, args[0])
+      return 1
+    }
+    throw new Error(`Unsupported script: ${script.slice(0, 80)}`)
+  }
+
   ttlSeconds(key: string): number {
     const entry = this.entryFor(key)
     if (entry === null) return -2
@@ -276,17 +305,19 @@ const limits = (overrides: Partial<TTYResourceLimits> = {}): TTYResourceLimits =
   maxSessionDurationMs: 8_001,
   maxOutputBytesPerExecution: 10_000,
   maxQueueDepth: 50,
-  ...overrides
+  ...overrides,
 })
 
-function keySet(sessionId: TTYSessionId): Record<'core' | 'status' | 'terminal' | 'active' | 'queue' | 'window', string> {
+function keySet(
+  sessionId: TTYSessionId,
+): Record<'core' | 'status' | 'terminal' | 'active' | 'queue' | 'window', string> {
   return {
     core: `tty:session:${sessionId}:core`,
     status: `tty:session:${sessionId}:status`,
     terminal: `tty:session:${sessionId}:terminal`,
     active: `tty:session:${sessionId}:active-executions`,
     queue: `tty:session:${sessionId}:queue-depth`,
-    window: `tty:session:${sessionId}:exec-window`
+    window: `tty:session:${sessionId}:exec-window`,
   }
 }
 
@@ -321,7 +352,7 @@ afterEach(() => {
 test('creates trusted state with expected Redis TTLs and typed round-trip', async () => {
   const { redis, store, principal, sessionLimits, session } = await createFixture({
     maxSessionIdleMs: 4_001,
-    maxSessionDurationMs: 8_001
+    maxSessionDurationMs: 8_001,
   })
   const keys = keySet(session.sessionId)
 
@@ -334,7 +365,7 @@ test('creates trusted state with expected Redis TTLs and typed round-trip', asyn
     activeExecutionsInSession: 0,
     queueDepth: 0,
     executionsInLastMinute: 0,
-    capturedAt: new Date(TEST_NOW).toISOString()
+    capturedAt: new Date(TEST_NOW).toISOString(),
   })
   assert.equal(redis.ttlSeconds(keys.core), 9)
   assert.equal(redis.ttlSeconds(keys.status), 5)
@@ -350,6 +381,18 @@ test('creates trusted state with expected Redis TTLs and typed round-trip', asyn
   assert.deepEqual(loaded, session)
 })
 
+test('concurrent session creation is idempotent per owner and keeps one active session', async () => {
+  const fixture = startFixture()
+  const [first, second] = await Promise.all([
+    fixture.store.createSession({ principal: fixture.principal, limits: fixture.sessionLimits }),
+    fixture.store.createSession({ principal: fixture.principal, limits: fixture.sessionLimits }),
+  ])
+
+  assert.equal(first.sessionId, second.sessionId)
+  assert.equal(await fixture.store.countActiveSessionsForUser(fixture.principal.userId), 1)
+  assert.deepEqual(await fixture.redis.smembers(userIndexKey(fixture.principal.userId)), [first.sessionId])
+})
+
 test('isolates owner-bound reads and lifecycle mutations', async () => {
   const { store, session } = await createFixture()
   const otherUserId = 'user-2'
@@ -361,7 +404,7 @@ test('isolates owner-bound reads and lifecycle mutations', async () => {
   assert.equal(await store.touchSession(session.sessionId, otherUserId), null)
   assert.deepEqual(await store.terminateSession(session.sessionId, otherUserId, 'user_requested'), {
     sessionId: session.sessionId,
-    acknowledged: false
+    acknowledged: false,
   })
 
   const ownerView = await store.getSession(session.sessionId, session.ownerUserId)
@@ -386,7 +429,7 @@ test('keeps execution and queue accounting numeric across typed Redis reads', as
 
   await Promise.all([store.recordExecutionQueued(session.sessionId), store.recordExecutionQueued(session.sessionId)])
   await store.recordExecutionDequeued(session.sessionId)
-  await Promise.all(ids.map(executionId => store.recordExecutionStarted(session.sessionId, executionId)))
+  await Promise.all(ids.map((executionId) => store.recordExecutionStarted(session.sessionId, executionId)))
 
   let current = await store.getSession(session.sessionId, session.ownerUserId)
   assert.equal(typeof current?.usage.activeExecutionsInSession, 'number')
@@ -427,7 +470,7 @@ test('floors decrements at zero and refreshes the counter TTL', async () => {
 test('discovers idle expiration lazily and prevents revival', async () => {
   const { redis, store, session } = await createFixture({
     maxSessionIdleMs: 1_000,
-    maxSessionDurationMs: 60_000
+    maxSessionDurationMs: 60_000,
   })
   const keys = keySet(session.sessionId)
 
@@ -446,7 +489,7 @@ test('discovers idle expiration lazily and prevents revival', async () => {
 test('enforces absolute expiration before the buffered core TTL disappears', async () => {
   const { redis, store, session } = await createFixture({
     maxSessionIdleMs: 60_000,
-    maxSessionDurationMs: 1_500
+    maxSessionDurationMs: 1_500,
   })
   const keys = keySet(session.sessionId)
 
@@ -467,18 +510,20 @@ test('uses an atomic NX latch for competing termination attempts', async () => {
     'user_requested',
     'system_shutdown',
     'policy_violation',
-    'resource_limit_exceeded'
+    'resource_limit_exceeded',
   ]
 
   const results = await Promise.all(
     Array.from({ length: 20 }, (_unused, index) =>
-      store.terminateSession(session.sessionId, session.ownerUserId, reasons[index % reasons.length])
-    )
+      store.terminateSession(session.sessionId, session.ownerUserId, reasons[index % reasons.length]),
+    ),
   )
-  const terminationTimes = new Set(results.map(result => result.terminatedAt))
-  const terminal = await redis.get<{ status: string; reason: string; terminatedAt: string }>(keySet(session.sessionId).terminal)
+  const terminationTimes = new Set(results.map((result) => result.terminatedAt))
+  const terminal = await redis.get<{ status: string; reason: string; terminatedAt: string }>(
+    keySet(session.sessionId).terminal,
+  )
 
-  assert.ok(results.every(result => result.acknowledged))
+  assert.ok(results.every((result) => result.acknowledged))
   assert.equal(terminationTimes.size, 1)
   assert.equal(terminal?.status, 'terminated')
   assert.ok(reasons.includes(terminal?.reason as TTYTerminationReason))
@@ -489,7 +534,7 @@ test('preserves terminal state during concurrent increments and decrements', asy
   const { store, session } = await createFixture()
   const executionIds = Array.from({ length: 40 }, () => createTTYExecutionId())
 
-  await Promise.all(executionIds.map(executionId => store.recordExecutionStarted(session.sessionId, executionId)))
+  await Promise.all(executionIds.map((executionId) => store.recordExecutionStarted(session.sessionId, executionId)))
   let current = await store.getSession(session.sessionId, session.ownerUserId)
   assert.equal(current?.usage.activeExecutionsInSession, 40)
   assert.equal(current?.usage.executionsInLastMinute, 40)
@@ -503,7 +548,7 @@ test('preserves terminal state during concurrent increments and decrements', asy
   await Promise.all([
     store.recordExecutionQueued(session.sessionId),
     store.recordExecutionStarted(session.sessionId, createTTYExecutionId()),
-    store.recordExecutionQueued(session.sessionId)
+    store.recordExecutionQueued(session.sessionId),
   ])
 
   current = await store.getSession(session.sessionId, session.ownerUserId)
@@ -569,7 +614,7 @@ test('terminal cleanup removes only the session-indexed admission jobs and idemp
 test('prunes stale index members after core storage expiration', async () => {
   const { redis, store, principal, session } = await createFixture({
     maxSessionDurationMs: 1_500,
-    maxSessionIdleMs: 60_000
+    maxSessionIdleMs: 60_000,
   })
   const indexKey = userIndexKey(principal.userId)
 
@@ -577,6 +622,19 @@ test('prunes stale index members after core storage expiration', async () => {
   assert.equal(await store.countActiveSessionsForUser(principal.userId), 0)
   assert.deepEqual(await redis.smembers(indexKey), [])
   assert.equal(await store.getSession(session.sessionId, principal.userId), null)
+})
+
+test('prunes idle-expired sessions from the active owner index before replacement creation', async () => {
+  const { redis, store, principal, session } = await createFixture({
+    maxSessionIdleMs: 1_000,
+    maxSessionDurationMs: 60_000,
+  })
+  const indexKey = userIndexKey(principal.userId)
+
+  mock.timers.tick(1_001)
+  assert.equal(await store.countActiveSessionsForUser(principal.userId), 0)
+  assert.deepEqual(await redis.smembers(indexKey), [])
+  assert.equal((await store.getSession(session.sessionId, principal.userId))?.status, 'expired')
 })
 
 test('browser-safe projection excludes trusted owner and usage fields', async () => {
@@ -594,7 +652,7 @@ test('browser-safe projection excludes trusted owner and usage fields', async ()
     tier: 'pro',
     createdAt: session.createdAt,
     lastActiveAt: session.lastActiveAt,
-    limits: session.limits
+    limits: session.limits,
   })
 })
 
@@ -603,21 +661,24 @@ test('worker-aware execution metadata exposes attribution without lease secrets'
   const executionId = createTTYExecutionId()
   const workerId = 'worker-a'
   await redis.sadd(`tty:session:${session.sessionId}:jobs`, executionId)
-  await redis.set(`tty:job:${executionId}`, JSON.stringify({
-    executionId,
-    sessionId: session.sessionId,
-    ownerUserId: principal.userId,
-    status: 'leased',
-    lease: {
-      workerId,
-      token: 'do-not-return',
-      leaseId: 'lease-1',
-      claimedAtMs: TEST_NOW,
-      renewedAtMs: TEST_NOW + 500,
-      expiresAtMs: TEST_NOW + 30_000,
-      maxExpiresAtMs: TEST_NOW + 300_000
-    }
-  }))
+  await redis.set(
+    `tty:job:${executionId}`,
+    JSON.stringify({
+      executionId,
+      sessionId: session.sessionId,
+      ownerUserId: principal.userId,
+      status: 'leased',
+      lease: {
+        workerId,
+        token: 'do-not-return',
+        leaseId: 'lease-1',
+        claimedAtMs: TEST_NOW,
+        renewedAtMs: TEST_NOW + 500,
+        expiresAtMs: TEST_NOW + 30_000,
+        maxExpiresAtMs: TEST_NOW + 300_000,
+      },
+    }),
+  )
   const metadata = await store.getWorkerExecutionMetadata(session.sessionId, principal.userId)
   assert.equal(metadata.length, 1)
   assert.equal(metadata[0].workerId, workerId)

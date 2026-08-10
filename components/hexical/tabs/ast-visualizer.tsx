@@ -1,8 +1,8 @@
-import { useState, useMemo, useRef, useEffect, type ReactNode } from 'react';
-import { Code, AlertTriangle, ShieldCheck, ChevronRight, Cpu } from 'lucide-react';
+import { Code, AlertTriangle, ShieldCheck, ChevronRight, Cpu } from 'lucide-react'
+import { useState, useMemo, useRef, useEffect, type ReactNode } from 'react'
 
 // --- TYPES & CONSTANTS ---
-export type AccentTheme = 'cyan' | 'emerald' | 'rose' | 'violet' | 'amber';
+export type AccentTheme = 'cyan' | 'emerald' | 'rose' | 'violet' | 'amber'
 
 // Full literal class strings only — Tailwind's build-time scanner finds
 // classes by searching source text, not by executing this code. Any
@@ -11,18 +11,23 @@ export type AccentTheme = 'cyan' | 'emerald' | 'rose' | 'violet' | 'amber';
 // below must stay a complete, static string for that reason.
 const THEME_MAP: Record<AccentTheme, { border: string; text: string; bg: string; glow: string }> = {
   cyan: { border: 'border-cyan-500/20', text: 'text-cyan-400', bg: 'bg-cyan-500/10', glow: 'bg-cyan-500' },
-  emerald: { border: 'border-emerald-500/20', text: 'text-emerald-400', bg: 'bg-emerald-500/10', glow: 'bg-emerald-500' },
+  emerald: {
+    border: 'border-emerald-500/20',
+    text: 'text-emerald-400',
+    bg: 'bg-emerald-500/10',
+    glow: 'bg-emerald-500',
+  },
   rose: { border: 'border-rose-500/20', text: 'text-rose-400', bg: 'bg-rose-500/10', glow: 'bg-rose-500' },
   violet: { border: 'border-violet-500/20', text: 'text-violet-400', bg: 'bg-violet-500/10', glow: 'bg-violet-500' },
   amber: { border: 'border-amber-500/20', text: 'text-amber-400', bg: 'bg-amber-500/10', glow: 'bg-amber-500' },
-};
+}
 
 interface SecurityRule {
-  id: string;
-  regex: RegExp;
-  title: string;
-  description: string;
-  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM';
+  id: string
+  regex: RegExp
+  title: string
+  description: string
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM'
 }
 
 // The "Brain" of the local AST Scanner
@@ -45,7 +50,8 @@ const SECURITY_RULES: SecurityRule[] = [
     id: 'hardcoded_secret',
     regex: /(?:password|secret|api[_-]?key|token|auth)\s*(?::|=)\s*['"][a-zA-Z0-9_\-]{10,}['"]/i,
     title: 'Hardcoded Credential',
-    description: 'Cryptographic secret or credential found in plaintext. Move to environment variables or a secrets manager.',
+    description:
+      'Cryptographic secret or credential found in plaintext. Move to environment variables or a secrets manager.',
     severity: 'CRITICAL',
   },
   {
@@ -62,14 +68,16 @@ const SECURITY_RULES: SecurityRule[] = [
     description: 'Early loop breaks or standard equality checks on secure arrays leak state bounds via execution time.',
     severity: 'MEDIUM',
   },
-];
+]
 
 // Matches, in priority order at each position: a line comment, a quoted
 // string (each quote type matched to itself — the previous version's
 // [\'"`].*?[\'"`] could open with " and close with `), or a language
 // keyword. Whichever alternative starts earliest in the line wins.
 const TOKEN_SOURCE =
-  String.raw`(\/\/.*$)|("[^"]*"|'[^']*'|` + '`[^`]*`' + String.raw`)|\b(public|private|static|class|void|int|string|boolean|const|let|var|function|return|if|else|for|while)\b`;
+  String.raw`(\/\/.*$)|("[^"]*"|'[^']*'|` +
+  '`[^`]*`' +
+  String.raw`)|\b(public|private|static|class|void|int|string|boolean|const|let|var|function|return|if|else|for|while)\b`
 
 /**
  * Zero-dependency syntax highlighter. Returns React nodes built from
@@ -78,38 +86,50 @@ const TOKEN_SOURCE =
  * which for a code-analysis tool it always should be assumed to be.
  */
 function highlightSyntax(line: string): ReactNode[] {
-  if (line.trim() === '') return [' '];
+  if (line.trim() === '') return [' ']
 
-  const regex = new RegExp(TOKEN_SOURCE, 'gi');
-  const nodes: ReactNode[] = [];
-  let lastIndex = 0;
-  let key = 0;
-  let match: RegExpExecArray | null;
+  const regex = new RegExp(TOKEN_SOURCE, 'gi')
+  const nodes: ReactNode[] = []
+  let lastIndex = 0
+  let key = 0
+  let match: RegExpExecArray | null
 
   while ((match = regex.exec(line)) !== null) {
-    const [full, comment, str, keyword] = match;
+    const [full, comment, str, keyword] = match
 
     if (match.index > lastIndex) {
-      nodes.push(<span key={key++}>{line.slice(lastIndex, match.index)}</span>);
+      nodes.push(<span key={key++}>{line.slice(lastIndex, match.index)}</span>)
     }
 
     if (comment) {
-      nodes.push(<span key={key++} className="text-zinc-500 italic">{comment}</span>);
+      nodes.push(
+        <span key={key++} className="text-zinc-500 italic">
+          {comment}
+        </span>,
+      )
     } else if (str) {
-      nodes.push(<span key={key++} className="text-emerald-300">{str}</span>);
+      nodes.push(
+        <span key={key++} className="text-emerald-300">
+          {str}
+        </span>,
+      )
     } else if (keyword) {
-      nodes.push(<span key={key++} className="text-rose-400 font-semibold">{keyword}</span>);
+      nodes.push(
+        <span key={key++} className="text-rose-400 font-semibold">
+          {keyword}
+        </span>,
+      )
     }
 
-    lastIndex = match.index + full.length;
-    if (full.length === 0) regex.lastIndex += 1; // guard against zero-length match loops
+    lastIndex = match.index + full.length
+    if (full.length === 0) regex.lastIndex += 1 // guard against zero-length match loops
   }
 
   if (lastIndex < line.length) {
-    nodes.push(<span key={key++}>{line.slice(lastIndex)}</span>);
+    nodes.push(<span key={key++}>{line.slice(lastIndex)}</span>)
   }
 
-  return nodes;
+  return nodes
 }
 
 const DEFAULT_CODE = `public class SecureEngine {
@@ -118,58 +138,58 @@ const DEFAULT_CODE = `public class SecureEngine {
     public static void main(String[] args) {
         System.out.println("Awaiting vectors...");
     }
-}`;
+}`
 
 export const ASTVisualizer = ({ theme, codePayload }: { theme: AccentTheme; codePayload: string }) => {
-  const [activeIssueIndex, setActiveIssueIndex] = useState<number | null>(null);
-  const lineRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const [activeIssueIndex, setActiveIssueIndex] = useState<number | null>(null)
+  const lineRefs = useRef<Array<HTMLDivElement | null>>([])
 
-  const targetCode = codePayload && codePayload.trim() ? codePayload : DEFAULT_CODE;
+  const targetCode = codePayload && codePayload.trim() ? codePayload : DEFAULT_CODE
 
   // Stable array reference across renders unless the code itself changes —
   // this is what actually makes the scan below cheap on re-render, not
   // just the useMemo wrapper by itself.
-  const codeLines = useMemo(() => targetCode.split('\n'), [targetCode]);
+  const codeLines = useMemo(() => targetCode.split('\n'), [targetCode])
 
-  const highlightedLines = useMemo(() => codeLines.map(highlightSyntax), [codeLines]);
+  const highlightedLines = useMemo(() => codeLines.map(highlightSyntax), [codeLines])
 
   const foundVulnerabilities = useMemo(() => {
-    const findings: { lineIndex: number; rule: SecurityRule; lineContent: string }[] = [];
+    const findings: { lineIndex: number; rule: SecurityRule; lineContent: string }[] = []
     codeLines.forEach((line, index) => {
       SECURITY_RULES.forEach((rule) => {
         if (rule.regex.test(line)) {
-          findings.push({ lineIndex: index, rule, lineContent: line });
+          findings.push({ lineIndex: index, rule, lineContent: line })
         }
-      });
-    });
-    return findings;
-  }, [codeLines]);
+      })
+    })
+    return findings
+  }, [codeLines])
 
   // lineIndex -> finding indices, so each rendered line does an O(1) map
   // lookup instead of scanning every finding on every line on every render.
   const findingsByLine = useMemo(() => {
-    const map = new Map<number, number[]>();
+    const map = new Map<number, number[]>()
     foundVulnerabilities.forEach((v, findingIdx) => {
-      const existing = map.get(v.lineIndex);
-      if (existing) existing.push(findingIdx);
-      else map.set(v.lineIndex, [findingIdx]);
-    });
-    return map;
-  }, [foundVulnerabilities]);
+      const existing = map.get(v.lineIndex)
+      if (existing) existing.push(findingIdx)
+      else map.set(v.lineIndex, [findingIdx])
+    })
+    return map
+  }, [foundVulnerabilities])
 
   // Reset selection when a new payload arrives so a stale index from the
   // previous scan can't linger.
   useEffect(() => {
-    setActiveIssueIndex(null);
-  }, [codePayload]);
+    setActiveIssueIndex(null)
+  }, [codePayload])
 
   // Selecting a diagnostic scrolls the code panel to the offending line.
   useEffect(() => {
-    if (activeIssueIndex === null) return;
-    const target = foundVulnerabilities[activeIssueIndex];
-    if (!target) return;
-    lineRefs.current[target.lineIndex]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }, [activeIssueIndex, foundVulnerabilities]);
+    if (activeIssueIndex === null) return
+    const target = foundVulnerabilities[activeIssueIndex]
+    if (!target) return
+    lineRefs.current[target.lineIndex]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [activeIssueIndex, foundVulnerabilities])
 
   return (
     <div className="flex-1 w-full h-full p-6 flex flex-col font-sans bg-[#0a0a0c]">
@@ -180,18 +200,21 @@ export const ASTVisualizer = ({ theme, codePayload }: { theme: AccentTheme; code
         </div>
         <div className="flex items-center gap-2 bg-white/5 border border-white/10 px-3 py-1.5 rounded-lg">
           <Cpu className="size-3.5 text-zinc-400" />
-          <span className="text-[10px] uppercase font-mono tracking-widest text-zinc-400 font-bold">Local Heuristics: Active</span>
+          <span className="text-[10px] uppercase font-mono tracking-widest text-zinc-400 font-bold">
+            Local Heuristics: Active
+          </span>
         </div>
       </div>
 
       <div className="flex-1 bg-[#111116] border border-white/10 rounded-2xl flex flex-col lg:flex-row overflow-hidden shadow-inner">
-
         {/* LEFT PANEL: Interactive Code Viewer */}
         <div className="flex flex-1 overflow-hidden min-w-0 bg-[#050505] relative">
           {/* Dynamic Line Numbers */}
           <div className="w-12 bg-black border-r border-white/5 flex flex-col items-center py-4 text-xs font-mono text-zinc-700 select-none shrink-0">
             {codeLines.map((_, idx) => (
-              <span key={idx} className="h-6 flex items-center">{idx + 1}</span>
+              <span key={idx} className="h-6 flex items-center">
+                {idx + 1}
+              </span>
             ))}
           </div>
 
@@ -202,22 +225,29 @@ export const ASTVisualizer = ({ theme, codePayload }: { theme: AccentTheme; code
             aria-label="Source code"
           >
             {codeLines.map((line, idx) => {
-              const flaggedFindingIndexes = findingsByLine.get(idx);
-              const isFlagged = flaggedFindingIndexes !== undefined;
-              const isActive = activeIssueIndex !== null && flaggedFindingIndexes?.includes(activeIssueIndex);
+              const flaggedFindingIndexes = findingsByLine.get(idx)
+              const isFlagged = flaggedFindingIndexes !== undefined
+              const isActive = activeIssueIndex !== null && flaggedFindingIndexes?.includes(activeIssueIndex)
 
               return (
                 <div
                   key={idx}
-                  ref={(el) => { lineRefs.current[idx] = el; }}
+                  ref={(el) => {
+                    lineRefs.current[idx] = el
+                  }}
                   className={`h-6 min-w-full px-4 transition-colors duration-200 cursor-default
-                    ${isActive ? 'bg-amber-500/20 border-l-2 border-amber-500 -ml-[2px]' :
-                      isFlagged ? 'bg-amber-500/5 hover:bg-amber-500/10 border-l-2 border-amber-500/30 -ml-[2px]' : 'text-zinc-300'}
+                    ${
+                      isActive
+                        ? 'bg-amber-500/20 border-l-2 border-amber-500 -ml-[2px]'
+                        : isFlagged
+                        ? 'bg-amber-500/5 hover:bg-amber-500/10 border-l-2 border-amber-500/30 -ml-[2px]'
+                        : 'text-zinc-300'
+                    }
                   `}
                 >
                   {highlightedLines[idx]}
                 </div>
-              );
+              )
             })}
           </div>
         </div>
@@ -231,8 +261,8 @@ export const ASTVisualizer = ({ theme, codePayload }: { theme: AccentTheme; code
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
             {foundVulnerabilities.length > 0 ? (
               foundVulnerabilities.map((vuln, idx) => {
-                const isActive = activeIssueIndex === idx;
-                const isCrit = vuln.rule.severity === 'CRITICAL';
+                const isActive = activeIssueIndex === idx
+                const isCrit = vuln.rule.severity === 'CRITICAL'
 
                 return (
                   <button
@@ -248,7 +278,11 @@ export const ASTVisualizer = ({ theme, codePayload }: { theme: AccentTheme; code
                     }`}
                   >
                     <div className="flex items-center justify-between mb-2">
-                      <div className={`text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 ${isCrit ? 'text-rose-400' : 'text-amber-400'}`}>
+                      <div
+                        className={`text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 ${
+                          isCrit ? 'text-rose-400' : 'text-amber-400'
+                        }`}
+                      >
                         <AlertTriangle size={12} /> {vuln.rule.severity}
                       </div>
                       <span className="text-[9px] font-mono text-zinc-500 px-1.5 py-0.5 bg-black rounded border border-white/5">
@@ -267,7 +301,7 @@ export const ASTVisualizer = ({ theme, codePayload }: { theme: AccentTheme; code
                       </div>
                     )}
                   </button>
-                );
+                )
               })
             ) : (
               /* The "Clean" Empty State */
@@ -288,5 +322,5 @@ export const ASTVisualizer = ({ theme, codePayload }: { theme: AccentTheme; code
         </div>
       </div>
     </div>
-  );
-};
+  )
+}

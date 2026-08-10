@@ -1,11 +1,14 @@
 import { log } from '@/lib/hexical/telemetry'
-
-import type { TTYExecutionCoordinator, TTYExecutionCoordinatorRunHooks, TTYExecutionCancellationReason } from './tty-execution-coordinator'
+import type {
+  TTYExecutionCoordinator,
+  TTYExecutionCoordinatorRunHooks,
+  TTYExecutionCancellationReason,
+} from './tty-execution-coordinator'
 import type { TTYExecutionStateRecord } from './tty-execution-state'
+import type { TTYExecutionId } from './tty-types'
 import type { TTYWorkerClaimService, TTYWorkerCoordinatorClaimResult, TTYWorkerOwnership } from './tty-worker-claim'
 import type { TTYWorkerPoller } from './tty-worker-poller'
 import type { TTYWorkerRecoveryService } from './tty-worker-recovery'
-import type { TTYExecutionId } from './tty-types'
 import type { TTYWorkerId } from './tty-worker-types'
 
 export type TTYWorkerExecutorState = 'stopped' | 'starting' | 'running' | 'stopping' | 'failed'
@@ -42,8 +45,17 @@ export type TTYWorkerExecutionSkipReason =
   | 'lease_expired'
 
 export type TTYWorkerExecutionOutcome =
-  | { readonly executionId: TTYExecutionId; readonly status: 'completed' | 'cancelled' | 'failed' | 'expired'; readonly state: TTYExecutionStateRecord | null }
-  | { readonly executionId: TTYExecutionId; readonly status: 'skipped'; readonly state: TTYExecutionStateRecord | null; readonly reason: TTYWorkerExecutionSkipReason }
+  | {
+      readonly executionId: TTYExecutionId
+      readonly status: 'completed' | 'cancelled' | 'failed' | 'expired'
+      readonly state: TTYExecutionStateRecord | null
+    }
+  | {
+      readonly executionId: TTYExecutionId
+      readonly status: 'skipped'
+      readonly state: TTYExecutionStateRecord | null
+      readonly reason: TTYWorkerExecutionSkipReason
+    }
 
 export interface TTYWorkerExecutorPoller {
   startPolling(): Promise<unknown>
@@ -73,7 +85,7 @@ export interface TTYWorkerExecutorDependencies {
 const defaultLogger: TTYWorkerExecutorLogger = {
   info: (event, fields) => log.info(event, { component: 'tty-worker-executor', ...fields }),
   warn: (event, fields) => log.warn(event, { component: 'tty-worker-executor', ...fields }),
-  error: (event, fields) => log.error(event, { component: 'tty-worker-executor', ...fields })
+  error: (event, fields) => log.error(event, { component: 'tty-worker-executor', ...fields }),
 }
 
 function safeErrorCode(error: unknown): string {
@@ -113,7 +125,7 @@ export class TTYWorkerExecutor {
     averageDurationMs: 0,
     leaseRenewals: 0,
     leaseLosses: 0,
-    recoveriesDuringExecution: 0
+    recoveriesDuringExecution: 0,
   })
   private lastError: string | null = null
 
@@ -159,7 +171,9 @@ export class TTYWorkerExecutor {
     }
   }
 
-  async cancelActive(reason: TTYExecutionCancellationReason = 'worker_cancellation'): Promise<TTYWorkerExecutionOutcome | null> {
+  async cancelActive(
+    reason: TTYExecutionCancellationReason = 'worker_cancellation',
+  ): Promise<TTYWorkerExecutionOutcome | null> {
     const active = this.activeExecution
     if (active === null || active.ownership === null) return null
     this.logger.info('execution_cancellation_requested', { executionId: active.executionId, reason })
@@ -169,7 +183,10 @@ export class TTYWorkerExecutor {
       return this.outcomeFromState(active.executionId, cancellation.state)
     } catch (error) {
       this.lastError = 'cancellation_failed'
-      this.logger.error('execution_cancellation_failed', { executionId: active.executionId, errorCode: safeErrorCode(error) })
+      this.logger.error('execution_cancellation_failed', {
+        executionId: active.executionId,
+        errorCode: safeErrorCode(error),
+      })
       return null
     }
   }
@@ -208,7 +225,7 @@ export class TTYWorkerExecutor {
       running: this.active,
       activeExecutionId: this.activeExecution?.executionId ?? null,
       metrics: this.metrics,
-      lastError: this.lastError
+      lastError: this.lastError,
     })
   }
 
@@ -248,14 +265,22 @@ export class TTYWorkerExecutor {
       }
       ownership = claimed.ownership
       this.activeExecution = this.updateActiveOwnership(ownership)
-      if (ownership.workerId !== this.dependencies.workerId || claimed.job.lease.workerId !== this.dependencies.workerId || claimed.job.lease.leaseId !== ownership.leaseId) {
+      if (
+        ownership.workerId !== this.dependencies.workerId ||
+        claimed.job.lease.workerId !== this.dependencies.workerId ||
+        claimed.job.lease.leaseId !== ownership.leaseId
+      ) {
         this.logger.error('execution_ownership_mismatch', { executionId })
         return { executionId, status: 'skipped', state: null, reason: 'unauthorized_worker' }
       }
 
       this.incrementMetrics('executionsStarted')
       coordinatorStarted = true
-      this.logger.info('execution_started', { executionId, workerId: this.dependencies.workerId, leaseId: ownership.leaseId })
+      this.logger.info('execution_started', {
+        executionId,
+        workerId: this.dependencies.workerId,
+        leaseId: ownership.leaseId,
+      })
       const hooks: TTYExecutionCoordinatorRunHooks = {
         onLeaseRenewed: () => {
           this.incrementMetrics('leaseRenewals')
@@ -265,7 +290,7 @@ export class TTYWorkerExecutor {
           leaseLost = true
           this.incrementMetrics('leaseLosses')
           this.logger.warn('lease_lost', { executionId, leaseId: ownership?.leaseId, reason })
-        }
+        },
       }
       const result = await this.dependencies.coordinator.runClaimed(claimed.job, hooks)
       const state = result.state
@@ -276,12 +301,21 @@ export class TTYWorkerExecutor {
       const outcome = this.outcomeFromState(executionId, state)
       this.recordTerminalMetrics(outcome, startedAtMs)
       if (leaseLost) await this.recoverAfterInterruption(executionId)
-      this.logger.info('execution_completed', { executionId, workerId: this.dependencies.workerId, state: state.state, durationMs: Math.max(0, this.now() - startedAtMs) })
+      this.logger.info('execution_completed', {
+        executionId,
+        workerId: this.dependencies.workerId,
+        state: state.state,
+        durationMs: Math.max(0, this.now() - startedAtMs),
+      })
       return outcome
     } catch (error) {
       this.lastError = 'execution_failed'
       if (coordinatorStarted) this.incrementMetrics('executionsFailed')
-      this.logger.error('execution_failed', { executionId, workerId: this.dependencies.workerId, errorCode: safeErrorCode(error) })
+      this.logger.error('execution_failed', {
+        executionId,
+        workerId: this.dependencies.workerId,
+        errorCode: safeErrorCode(error),
+      })
       if (coordinatorStarted) await this.recoverAfterInterruption(executionId)
       return { executionId, status: 'failed', state: null }
     } finally {
@@ -297,9 +331,18 @@ export class TTYWorkerExecutor {
   private async releaseOwnership(ownership: TTYWorkerOwnership): Promise<void> {
     try {
       const result = await this.dependencies.claim.releaseOwnership(ownership)
-      if (result.released) this.logger.info('lease_released', { executionId: ownership.executionId, leaseId: ownership.leaseId })
-      else if (result.reason !== 'unknown_ownership' && result.reason !== 'missing_job' && result.reason !== 'not_owner') {
-        this.logger.warn('lease_release_failed', { executionId: ownership.executionId, leaseId: ownership.leaseId, reason: result.reason })
+      if (result.released)
+        this.logger.info('lease_released', { executionId: ownership.executionId, leaseId: ownership.leaseId })
+      else if (
+        result.reason !== 'unknown_ownership' &&
+        result.reason !== 'missing_job' &&
+        result.reason !== 'not_owner'
+      ) {
+        this.logger.warn('lease_release_failed', {
+          executionId: ownership.executionId,
+          leaseId: ownership.leaseId,
+          reason: result.reason,
+        })
       }
     } catch (error) {
       this.logger.error('lease_release_error', { executionId: ownership.executionId, errorCode: safeErrorCode(error) })
@@ -332,10 +375,22 @@ export class TTYWorkerExecutor {
     else this.incrementMetrics('executionsFailed')
     this.totalDurationMs += Math.max(0, this.now() - startedAtMs)
     this.durationSamples += 1
-    this.metrics = freezeMetrics({ ...this.metrics, averageDurationMs: Math.round(this.totalDurationMs / this.durationSamples) })
+    this.metrics = freezeMetrics({
+      ...this.metrics,
+      averageDurationMs: Math.round(this.totalDurationMs / this.durationSamples),
+    })
   }
 
-  private incrementMetrics(key: 'executionsStarted' | 'executionsCompleted' | 'executionsFailed' | 'executionsCancelled' | 'leaseRenewals' | 'leaseLosses' | 'recoveriesDuringExecution'): void {
+  private incrementMetrics(
+    key:
+      | 'executionsStarted'
+      | 'executionsCompleted'
+      | 'executionsFailed'
+      | 'executionsCancelled'
+      | 'leaseRenewals'
+      | 'leaseLosses'
+      | 'recoveriesDuringExecution',
+  ): void {
     this.metrics = freezeMetrics({ ...this.metrics, [key]: this.metrics[key] + 1 })
   }
 }

@@ -34,6 +34,9 @@ export function investigationBookmarkIndexKey(investigationId: InvestigationId):
   return `${PREFIX}:bookmarks:${investigationId}`
 }
 
-export function investigationCounterKey(investigationId: InvestigationId, counter: 'executions' | 'evidence' | 'findings'): string {
+export function investigationCounterKey(
+  investigationId: InvestigationId,
+  counter: 'executions' | 'evidence' | 'findings',
+): string {
   return `${PREFIX}:counter:${counter}:${investigationId}`
 }

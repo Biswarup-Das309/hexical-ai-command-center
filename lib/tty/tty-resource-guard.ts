@@ -73,7 +73,7 @@ export class TTYResourceGuard {
     this.config = Object.freeze({
       maxConcurrentProcesses: positiveInteger(config.maxConcurrentProcesses, 'max concurrent processes'),
       maxStdoutBytesPerSecond: finiteNonNegative(config.maxStdoutBytesPerSecond, 'stdout byte rate'),
-      maxStderrBytesPerSecond: finiteNonNegative(config.maxStderrBytesPerSecond, 'stderr byte rate')
+      maxStderrBytesPerSecond: finiteNonNegative(config.maxStderrBytesPerSecond, 'stderr byte rate'),
     })
   }
 
@@ -93,7 +93,7 @@ export class TTYResourceGuard {
       this,
       executionId,
       { maxExecutionDurationMs, maxOutputBytesPerExecution },
-      this.config
+      this.config,
     )
     this.reservations.set(executionId, reservation)
     return { allowed: true, reservation }
@@ -115,7 +115,7 @@ class TTYResourceReservationImpl implements TTYResourceReservation {
     stdoutWindowStartMs: 0,
     stderrWindowStartMs: 0,
     stdoutWindowBytes: 0,
-    stderrWindowBytes: 0
+    stderrWindowBytes: 0,
   }
   private timeout: ReturnType<typeof setTimeout> | undefined
   private released = false
@@ -124,7 +124,7 @@ class TTYResourceReservationImpl implements TTYResourceReservation {
     private readonly guard: TTYResourceGuard,
     readonly executionId: TTYExecutionId,
     readonly limits: TTYRuntimeResourceLimits,
-    private readonly config: TTYResourceGuardConfig
+    private readonly config: TTYResourceGuardConfig,
   ) {}
 
   recordOutput(stream: TTYOutputStreamKind, bytes: number, nowMs = Date.now()): TTYOutputAccounting {
@@ -198,7 +198,7 @@ class TTYResourceReservationImpl implements TTYResourceReservation {
       set bytes(value: number) {
         counters[bytesKey] = value
       },
-      startMs: counters[startKey]
+      startMs: counters[startKey],
     }
   }
 
@@ -209,7 +209,7 @@ class TTYResourceReservationImpl implements TTYResourceReservation {
       totalBytes: this.counters.totalBytes,
       stdoutBytes: this.counters.stdoutBytes,
       stderrBytes: this.counters.stderrBytes,
-      ...(reason ? { reason } : {})
+      ...(reason ? { reason } : {}),
     }
   }
 }

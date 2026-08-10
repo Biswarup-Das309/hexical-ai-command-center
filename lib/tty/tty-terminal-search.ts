@@ -15,7 +15,10 @@ export interface TTYSearchMatch {
   readonly sequence: number
 }
 
-export function buildTTYTerminalLines(events: readonly TTYStreamEvent[], maxLines = 100_000): readonly TTYTerminalLine[] {
+export function buildTTYTerminalLines(
+  events: readonly TTYStreamEvent[],
+  maxLines = 100_000,
+): readonly TTYTerminalLine[] {
   const boundedMax = Math.max(100, Math.min(100_000, Math.floor(maxLines)))
   const lines: TTYTerminalLine[] = []
   let pending = ''
@@ -30,14 +33,32 @@ export function buildTTYTerminalLines(events: readonly TTYStreamEvent[], maxLine
     pendingStream = event.type
     const pieces = pending.split(/\r?\n/)
     pending = pieces.pop() ?? ''
-    for (const text of pieces) lines.push({ lineNumber: lines.length + 1, text, sequence: pendingSequence, timestamp: pendingTimestamp, stream: pendingStream })
+    for (const text of pieces)
+      lines.push({
+        lineNumber: lines.length + 1,
+        text,
+        sequence: pendingSequence,
+        timestamp: pendingTimestamp,
+        stream: pendingStream,
+      })
   }
-  if (pending.length > 0 || lines.length === 0) lines.push({ lineNumber: lines.length + 1, text: pending, sequence: pendingSequence, timestamp: pendingTimestamp, stream: pendingStream })
+  if (pending.length > 0 || lines.length === 0)
+    lines.push({
+      lineNumber: lines.length + 1,
+      text: pending,
+      sequence: pendingSequence,
+      timestamp: pendingTimestamp,
+      stream: pendingStream,
+    })
   const retained = lines.slice(-boundedMax)
   return retained.map((line, index) => ({ ...line, lineNumber: index + 1 }))
 }
 
-export function findTTYSearchMatches(lines: readonly TTYTerminalLine[], query: string, caseSensitive = false): readonly TTYSearchMatch[] {
+export function findTTYSearchMatches(
+  lines: readonly TTYTerminalLine[],
+  query: string,
+  caseSensitive = false,
+): readonly TTYSearchMatch[] {
   const needle = caseSensitive ? query : query.toLocaleLowerCase()
   if (!needle) return []
   const matches: TTYSearchMatch[] = []
@@ -53,4 +74,3 @@ export function findTTYSearchMatches(lines: readonly TTYTerminalLine[], query: s
   }
   return matches
 }
-

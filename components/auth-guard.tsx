@@ -1,7 +1,6 @@
-﻿'use client';
+﻿'use client'
 
-import { useAuth, SignInButton } from '@clerk/nextjs';
-import { HexicalConsole } from '@/components/hexical/hexical-console';
+import { useAuth, SignInButton } from '@clerk/nextjs'
 import {
   GitBranch,
   Code2,
@@ -12,24 +11,25 @@ import {
   TerminalSquare,
   Users,
   CheckCircle2,
-} from 'lucide-react';
+} from 'lucide-react'
+import { HexicalConsole } from '@/components/hexical/hexical-console'
 
 export function AuthGuard() {
-  const { isLoaded, isSignedIn } = useAuth();
+  const { isLoaded, isSignedIn } = useAuth()
 
   if (!isLoaded) {
     return (
       <div className="flex h-screen items-center justify-center bg-[#0a0a0c] font-mono text-sm text-cyan-400">
         booting session…
       </div>
-    );
+    )
   }
 
   if (isSignedIn) {
-    return <HexicalConsole />;
+    return <HexicalConsole />
   }
 
-  return <LandingPage />;
+  return <LandingPage />
 }
 
 function LandingPage() {
@@ -39,8 +39,7 @@ function LandingPage() {
       <div
         className="pointer-events-none fixed inset-0 opacity-40"
         style={{
-          background:
-            'radial-gradient(circle at 50% -10%, rgba(34,211,238,0.10), transparent 55%)',
+          background: 'radial-gradient(circle at 50% -10%, rgba(34,211,238,0.10), transparent 55%)',
         }}
       />
 
@@ -48,13 +47,11 @@ function LandingPage() {
         {/* 1. Hero */}
         <section className="mx-auto max-w-4xl px-6 pt-28 pb-14 text-center">
           <h1 className="text-4xl font-semibold tracking-tight sm:text-6xl">
-            AI that{' '}
-            <span className="text-cyan-400 [text-shadow:0_0_28px_rgba(34,211,238,0.45)]">
-              shows its work.
-            </span>
+            AI that <span className="text-cyan-400 [text-shadow:0_0_28px_rgba(34,211,238,0.45)]">shows its work.</span>
           </h1>
           <p className="mx-auto mt-5 max-w-xl font-mono text-sm text-zinc-400 sm:text-base">
-            An AI engineering system for investigating problems, building plans, coordinating specialists, and verifying outcomes with evidence.
+            An AI engineering system for investigating problems, building plans, coordinating specialists, and verifying
+            outcomes with evidence.
           </p>
           <SignInButton mode="modal">
             <button className="mt-8 rounded-lg bg-cyan-400 px-7 py-3 text-sm font-semibold text-black transition hover:bg-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a0a0c]">
@@ -70,9 +67,7 @@ function LandingPage() {
               <span className="h-2.5 w-2.5 rounded-full bg-red-500/70" />
               <span className="h-2.5 w-2.5 rounded-full bg-amber-500/70" />
               <span className="h-2.5 w-2.5 rounded-full bg-emerald-500/70" />
-              <span className="ml-3 font-mono text-xs text-zinc-500">
-                trace — session_9f21a.log
-              </span>
+              <span className="ml-3 font-mono text-xs text-zinc-500">trace — session_9f21a.log</span>
             </div>
             <div className="space-y-1.5 overflow-x-auto px-5 py-5 font-mono text-[13px] leading-relaxed">
               <TraceLine time="00:00.12" tag="INVESTIGATE" tagColor="text-cyan-400">
@@ -173,7 +168,7 @@ function LandingPage() {
         </section>
       </div>
     </div>
-  );
+  )
 }
 
 function TraceLine({
@@ -183,11 +178,11 @@ function TraceLine({
   status,
   children,
 }: {
-  time: string;
-  tag: string;
-  tagColor: string;
-  status?: 'ok';
-  children: React.ReactNode;
+  time: string
+  tag: string
+  tagColor: string
+  status?: 'ok'
+  children: React.ReactNode
 }) {
   return (
     <div className="flex flex-wrap items-baseline gap-2">
@@ -196,25 +191,17 @@ function TraceLine({
       {status === 'ok' && <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" />}
       <span className="text-zinc-400">{children}</span>
     </div>
-  );
+  )
 }
 
-function AudienceCard({
-  icon,
-  title,
-  body,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  body: string;
-}) {
+function AudienceCard({ icon, title, body }: { icon: React.ReactNode; title: string; body: string }) {
   return (
     <div className="rounded-xl border border-zinc-900 bg-zinc-950/50 p-6 transition hover:border-cyan-400/30">
       <div className="text-cyan-400">{icon}</div>
       <h3 className="mt-4 text-base font-semibold">{title}</h3>
       <p className="mt-2 font-mono text-[13px] leading-relaxed text-zinc-500">{body}</p>
     </div>
-  );
+  )
 }
 
 function FeatureRow({
@@ -223,10 +210,10 @@ function FeatureRow({
   body,
   badge,
 }: {
-  icon: React.ReactNode;
-  title: string;
-  body: string;
-  badge?: string;
+  icon: React.ReactNode
+  title: string
+  body: string
+  badge?: string
 }) {
   return (
     <div className="flex gap-4">
@@ -243,5 +230,5 @@ function FeatureRow({
         <p className="mt-1 font-mono text-[13px] leading-relaxed text-zinc-500">{body}</p>
       </div>
     </div>
-  );
+  )
 }

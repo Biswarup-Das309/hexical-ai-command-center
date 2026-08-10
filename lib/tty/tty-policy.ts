@@ -66,6 +66,10 @@
  * ============================================================================
  */
 
+import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Redis } from '@upstash/redis'
+import { verifyAuthorization } from '@/lib/hexical/authorization'
+import { VALID_TIERS, type Profile } from '@/lib/hexical/types'
 import {
   hasTTYCapability,
   type TTYPrincipal,
@@ -83,13 +87,8 @@ import {
   type TTYResourceUsageSnapshot,
   type ResolveTTYResourceLimits,
   type TTYSessionId,
-  type TTYExecutionId
+  type TTYExecutionId,
 } from './tty-types'
-
-import { VALID_TIERS, type Profile } from '@/lib/hexical/types'
-import { verifyAuthorization } from '@/lib/hexical/authorization'
-import type { SupabaseClient } from '@supabase/supabase-js'
-import type { Redis } from '@upstash/redis'
 
 // ============================================================================
 // 1. INPUT SHAPE CONSTANTS
@@ -105,8 +104,7 @@ export const CLIENT_META_FIELD_MAX_LENGTH = 300
 // ============================================================================
 
 const DISALLOWED_CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/
-const LONE_SURROGATE =
-  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/
 
 /**
  * Validates the shape/encoding of untrusted terminal input. Returns the
@@ -138,7 +136,17 @@ export function validateRawTerminalInput(rawInput: RawTerminalInput): TTYPolicyD
 // of input this is. Section 8 below decides WHETHER its target is allowed.
 // Neither calls into the other.
 
-export const SESSION_UTILITY_KEYWORDS = ['clear', 'help', 'whoami', 'history', 'status', 'exit', 'ls', 'pwd'] as const
+export const SESSION_UTILITY_KEYWORDS = [
+  'clear',
+  'help',
+  'whoami',
+  'history',
+  'status',
+  'exit',
+  'ls',
+  'pwd',
+  'echo',
+] as const
 export const RECON_PROBE_KEYWORDS = ['nmap', 'recon', 'enum', 'whois', 'dig', 'nslookup', 'subfinder', 'amass'] as const
 export const FUZZ_PROBE_KEYWORDS = ['ffuf', 'fuzz', 'wfuzz', 'gobuster', 'dirbuster', 'dirb'] as const
 export const NETWORK_PROBE_KEYWORDS = ['curl', 'wget', 'ping', 'traceroute', 'nc', 'telnet', 'openssl'] as const
@@ -194,7 +202,7 @@ export function isValidTTYPrincipalShape(principal: TTYPrincipal): boolean {
 
 export function evaluateResourceLimits(
   limits: TTYResourceLimits,
-  usage: TTYResourceUsageSnapshot
+  usage: TTYResourceUsageSnapshot,
 ): TTYPolicyDenialReason | null {
   if (usage.activeExecutionsInSession >= limits.maxConcurrentExecutionsPerSession) {
     return 'concurrency_limit_exceeded'
@@ -226,7 +234,7 @@ const DENIAL_REASON_TO_FAILURE_CODE: Record<TTYPolicyDenialReason, TTYFailureCod
   unsupported_kind: 'UNSUPPORTED_KIND',
   input_rejected: 'INPUT_REJECTED',
   authorization_required: 'AUTHORIZATION_REQUIRED',
-  internal_error: 'INTERNAL_ERROR'
+  internal_error: 'INTERNAL_ERROR',
 }
 
 export const FAILURE_CODE_MESSAGES: Record<TTYFailureCode, string> = {
@@ -246,7 +254,7 @@ export const FAILURE_CODE_MESSAGES: Record<TTYFailureCode, string> = {
     'This target requires a verified authorization scope before it can be used. Submit a scope for review to proceed.',
   CANCELLED_BY_USER: 'The operation was cancelled.',
   TERMINATED_BY_SYSTEM: 'The session was terminated by the system.',
-  INTERNAL_ERROR: 'The sandbox policy engine encountered an internal error.'
+  INTERNAL_ERROR: 'The sandbox policy engine encountered an internal error.',
 }
 
 export function denialReasonToFailure(reason: TTYPolicyDenialReason): TTYFailure {
@@ -257,7 +265,7 @@ export function denialReasonToFailure(reason: TTYPolicyDenialReason): TTYFailure
 function buildDiagnostics(
   reason: TTYPolicyDenialReason,
   internalMessage: string,
-  extra?: { sessionId?: TTYSessionId; executionId?: TTYExecutionId; cause?: unknown }
+  extra?: { sessionId?: TTYSessionId; executionId?: TTYExecutionId; cause?: unknown },
 ): InternalTTYFailureDiagnostics {
   return {
     code: DENIAL_REASON_TO_FAILURE_CODE[reason],
@@ -265,7 +273,7 @@ function buildDiagnostics(
     sessionId: extra?.sessionId,
     executionId: extra?.executionId,
     cause: extra?.cause,
-    capturedAt: new Date().toISOString()
+    capturedAt: new Date().toISOString(),
   }
 }
 
@@ -298,7 +306,7 @@ export interface TTYSessionCreationPolicyResult {
 function denySessionCreation(
   reason: TTYPolicyDenialReason,
   limits: TTYResourceLimits | null,
-  diagnostics?: InternalTTYFailureDiagnostics
+  diagnostics?: InternalTTYFailureDiagnostics,
 ): TTYSessionCreationPolicyResult {
   return { evaluation: denyEvaluation(reason), limits, failure: denialReasonToFailure(reason), diagnostics }
 }
@@ -336,9 +344,7 @@ function isValidSessionCreateRequestShape(request: TTYSessionCreateRequest): boo
   return true
 }
 
-export function evaluateSessionCreationPolicy(
-  input: TTYSessionCreationPolicyInput
-): TTYSessionCreationPolicyResult {
+export function evaluateSessionCreationPolicy(input: TTYSessionCreationPolicyInput): TTYSessionCreationPolicyResult {
   const { request, resolveLimits, currentActiveSessionCount } = input
   const principal = request.requestedBy
 
@@ -346,7 +352,7 @@ export function evaluateSessionCreationPolicy(
     return denySessionCreation(
       'unauthenticated',
       null,
-      buildDiagnostics('unauthenticated', 'Session creation request carried a structurally invalid principal.')
+      buildDiagnostics('unauthenticated', 'Session creation request carried a structurally invalid principal.'),
     )
   }
 
@@ -356,14 +362,11 @@ export function evaluateSessionCreationPolicy(
     return denySessionCreation(
       'capability_locked',
       limits,
-      buildDiagnostics('capability_locked', `Tier '${principal.tier}' is not entitled to the TTY sandbox.`)
+      buildDiagnostics('capability_locked', `Tier '${principal.tier}' is not entitled to the TTY sandbox.`),
     )
   }
 
-  if (
-    typeof currentActiveSessionCount === 'number' &&
-    currentActiveSessionCount >= limits.maxConcurrentSessions
-  ) {
+  if (typeof currentActiveSessionCount === 'number' && currentActiveSessionCount >= limits.maxConcurrentSessions) {
     return denySessionCreation('concurrency_limit_exceeded', limits)
   }
 
@@ -393,7 +396,7 @@ export function evaluateSessionCreationPolicy(
 export const TARGET_GATED_EXECUTION_KINDS: ReadonlySet<TTYExecutionKind> = new Set([
   'recon_probe',
   'fuzz_probe',
-  'network_probe'
+  'network_probe',
 ])
 
 export function isTargetGatedExecutionKind(kind: TTYExecutionKind): boolean {
@@ -504,12 +507,15 @@ export interface TTYAuthorizationDependencies {
 async function evaluateTargetAuthorization(
   session: InternalTTYSession,
   rawInput: RawTerminalInput,
-  authorization: TTYAuthorizationDependencies
+  authorization: TTYAuthorizationDependencies,
 ): Promise<{ denialReason: TTYPolicyDenialReason; internalMessage: string; cause?: unknown } | null> {
   const candidateTargets = extractTargetCandidates(rawInput)
 
   if (candidateTargets.length === 0) {
-    return { denialReason: 'authorization_required', internalMessage: 'No target candidate could be extracted from input.' }
+    return {
+      denialReason: 'authorization_required',
+      internalMessage: 'No target candidate could be extracted from input.',
+    }
   }
 
   try {
@@ -528,7 +534,7 @@ async function evaluateTargetAuthorization(
       // way verifyAuthorization already treats it upstream — as a filter
       // over the user's OWN already-verified scopes, never as proof by
       // itself — and never passed here without that same scoping.
-      authorizationRef: undefined
+      authorizationRef: undefined,
     })
 
     if (!decision.allowed) {
@@ -538,7 +544,11 @@ async function evaluateTargetAuthorization(
   } catch (error) {
     // Fail closed on any authorization-service failure (network, Supabase,
     // Redis) — an inability to verify is never treated as verified.
-    return { denialReason: 'internal_error', internalMessage: 'verifyAuthorization threw while evaluating target authorization.', cause: error }
+    return {
+      denialReason: 'internal_error',
+      internalMessage: 'verifyAuthorization threw while evaluating target authorization.',
+      cause: error,
+    }
   }
 }
 
@@ -562,26 +572,26 @@ export interface TTYExecutionPolicyResult {
 
 function denyExecution(
   reason: TTYPolicyDenialReason,
-  diagnostics?: InternalTTYFailureDiagnostics
+  diagnostics?: InternalTTYFailureDiagnostics,
 ): TTYExecutionPolicyResult {
   return {
     evaluation: denyEvaluation(reason),
     classifiedKind: 'unsupported',
     failure: denialReasonToFailure(reason),
-    diagnostics
+    diagnostics,
   }
 }
 
 function denyExecutionForTarget(
   reason: TTYPolicyDenialReason,
   classifiedKind: TTYExecutionKind,
-  diagnostics?: InternalTTYFailureDiagnostics
+  diagnostics?: InternalTTYFailureDiagnostics,
 ): TTYExecutionPolicyResult {
   return {
     evaluation: denyEvaluation(reason),
     classifiedKind,
     failure: denialReasonToFailure(reason),
-    diagnostics
+    diagnostics,
   }
 }
 
@@ -600,7 +610,7 @@ function denyExecutionForTarget(
 export async function evaluateExecutionPolicy(
   request: TTYExecutionRequest,
   session: InternalTTYSession,
-  authorization: TTYAuthorizationDependencies
+  authorization: TTYAuthorizationDependencies,
 ): Promise<TTYExecutionPolicyResult> {
   const principal = request.requestedBy
 
@@ -610,8 +620,8 @@ export async function evaluateExecutionPolicy(
       'unauthenticated',
       buildDiagnostics('unauthenticated', 'Execution request carried a structurally invalid principal.', {
         sessionId: request.sessionId,
-        executionId: request.executionId
-      })
+        executionId: request.executionId,
+      }),
     )
   }
 
@@ -625,8 +635,8 @@ export async function evaluateExecutionPolicy(
       'session_not_found',
       buildDiagnostics('session_not_found', 'Session/request/principal did not agree.', {
         sessionId: request.sessionId,
-        executionId: request.executionId
-      })
+        executionId: request.executionId,
+      }),
     )
   }
 
@@ -636,8 +646,8 @@ export async function evaluateExecutionPolicy(
       'session_terminated',
       buildDiagnostics('session_terminated', `Session status '${session.status}' does not admit new executions.`, {
         sessionId: request.sessionId,
-        executionId: request.executionId
-      })
+        executionId: request.executionId,
+      }),
     )
   }
 
@@ -647,8 +657,8 @@ export async function evaluateExecutionPolicy(
       'capability_locked',
       buildDiagnostics('capability_locked', `Tier '${session.tier}' is not entitled to the TTY sandbox.`, {
         sessionId: request.sessionId,
-        executionId: request.executionId
-      })
+        executionId: request.executionId,
+      }),
     )
   }
 
@@ -659,8 +669,8 @@ export async function evaluateExecutionPolicy(
       resourceDenial,
       buildDiagnostics(resourceDenial, 'Resource limit evaluation denied the request.', {
         sessionId: request.sessionId,
-        executionId: request.executionId
-      })
+        executionId: request.executionId,
+      }),
     )
   }
 
@@ -671,8 +681,8 @@ export async function evaluateExecutionPolicy(
       inputDenial,
       buildDiagnostics(inputDenial, 'Raw terminal input failed shape/encoding validation.', {
         sessionId: request.sessionId,
-        executionId: request.executionId
-      })
+        executionId: request.executionId,
+      }),
     )
   }
 
@@ -683,8 +693,8 @@ export async function evaluateExecutionPolicy(
       'unsupported_kind',
       buildDiagnostics('unsupported_kind', 'Input did not classify into a supported TTYExecutionKind.', {
         sessionId: request.sessionId,
-        executionId: request.executionId
-      })
+        executionId: request.executionId,
+      }),
     )
   }
 
@@ -701,8 +711,8 @@ export async function evaluateExecutionPolicy(
         buildDiagnostics(denial.denialReason, denial.internalMessage, {
           sessionId: request.sessionId,
           executionId: request.executionId,
-          cause: denial.cause
-        })
+          cause: denial.cause,
+        }),
       )
     }
   }

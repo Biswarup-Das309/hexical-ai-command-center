@@ -1,7 +1,7 @@
-import { NextResponse } from 'next/server'
+import { randomUUID } from 'crypto'
 import { auth } from '@clerk/nextjs/server'
 import { cookies } from 'next/headers'
-import { randomUUID } from 'crypto'
+import { NextResponse } from 'next/server'
 import { aiGateway } from '@/lib/ai-gateway'
 import { getUserTier } from '@/lib/get-user-tier'
 import type { PlanTier } from '@/lib/plans'
@@ -59,7 +59,7 @@ async function getGuestId() {
       sameSite: 'lax',
       secure: true,
       path: '/',
-      maxAge: 60 * 60 * 24 * 30 // 30 days
+      maxAge: 60 * 60 * 24 * 30, // 30 days
     })
   }
 
@@ -70,33 +70,24 @@ export async function POST(req: Request) {
   const { userId } = await auth()
 
   const isGuest = !userId
-  const actualUserId = userId ?? await getGuestId()
+  const actualUserId = userId ?? (await getGuestId())
 
   // 1. Size check BEFORE parsing
   const contentLength = Number(req.headers.get('content-length') ?? 0)
   if (contentLength > MAX_BODY_BYTES) {
-    return NextResponse.json(
-      { ok: false, error: 'invalid_request' },
-      { status: 413 }
-    )
+    return NextResponse.json({ ok: false, error: 'invalid_request' }, { status: 413 })
   }
 
   let body: unknown
   try {
     body = await req.json()
   } catch {
-    return NextResponse.json(
-      { ok: false, error: 'invalid_request' },
-      { status: 400 }
-    )
+    return NextResponse.json({ ok: false, error: 'invalid_request' }, { status: 400 })
   }
 
   // 2. Secondary size guard
   if (JSON.stringify(body).length > MAX_BODY_BYTES) {
-    return NextResponse.json(
-      { ok: false, error: 'invalid_request' },
-      { status: 413 }
-    )
+    return NextResponse.json({ ok: false, error: 'invalid_request' }, { status: 413 })
   }
 
   // 3. Tier logic
@@ -107,22 +98,15 @@ export async function POST(req: Request) {
       const fetchedTier = await getUserTier(userId)
       if (fetchedTier) tier = fetchedTier
       else {
-        return NextResponse.json(
-          { ok: false, error: 'tier_not_found' },
-          { status: 403 }
-        )
+        return NextResponse.json({ ok: false, error: 'tier_not_found' }, { status: 403 })
       }
     } catch (err) {
       console.error('[api/ai/chat] tier lookup failed', err)
-      return NextResponse.json(
-        { ok: false, error: 'tier_not_found' },
-        { status: 403 }
-      )
+      return NextResponse.json({ ok: false, error: 'tier_not_found' }, { status: 403 })
     }
   }
 
-  const clientIp =
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+  const clientIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
 
   try {
     const result = await aiGateway(actualUserId, tier, body, clientIp)
@@ -133,9 +117,9 @@ export async function POST(req: Request) {
           ok: false,
           blocked: true,
           reason: result.reason ?? 'rate_limited',
-          guest: isGuest
+          guest: isGuest,
         },
-        { status: mapStatus(result.reason) }
+        { status: mapStatus(result.reason) },
       )
     }
 
@@ -145,15 +129,12 @@ export async function POST(req: Request) {
         blocked: false,
         model: result.model,
         response: result.response,
-        guest: isGuest
+        guest: isGuest,
       },
-      { status: 200 }
+      { status: 200 },
     )
   } catch (err) {
     console.error('[api/ai/chat] unhandled error', err)
-    return NextResponse.json(
-      { ok: false, error: 'internal_error' },
-      { status: 500 }
-    )
+    return NextResponse.json({ ok: false, error: 'internal_error' }, { status: 500 })
   }
 }

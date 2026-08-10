@@ -1,10 +1,6 @@
 import { PLAN_LIMITS, PlanTier } from './plans'
 
-export function assertLimit(
-  tier: PlanTier,
-  usage: { messages: number; tokens: number },
-  inputChars: number
-) {
+export function assertLimit(tier: PlanTier, usage: { messages: number; tokens: number }, inputChars: number) {
   const limit = PLAN_LIMITS[tier]
 
   if (usage.messages >= limit.maxMessages) {

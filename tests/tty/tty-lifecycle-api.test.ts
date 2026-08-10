@@ -1,18 +1,14 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-
 import type { Tier } from '../../lib/hexical/types'
+import { createTTYLifecycleApi, type TTYLifecycleStore } from '../../lib/tty/tty-lifecycle-api'
+import { resolveTTYResourceLimits } from '../../lib/tty/tty-resource-limits'
 import {
   createTTYSessionId,
   type InternalTTYSession,
   type TTYSessionId,
-  type TTYTerminationResult
+  type TTYTerminationResult,
 } from '../../lib/tty/tty-types'
-import {
-  createTTYLifecycleApi,
-  type TTYLifecycleStore
-} from '../../lib/tty/tty-lifecycle-api'
-import { resolveTTYResourceLimits } from '../../lib/tty/tty-resource-limits'
 
 const OWNER = 'user-owner'
 const OTHER_USER = 'user-other'
@@ -38,8 +34,8 @@ class FakeLifecycleStore implements TTYLifecycleStore {
         activeExecutionsInSession: 0,
         queueDepth: 0,
         executionsInLastMinute: 0,
-        capturedAt: BASE_TIME
-      }
+        capturedAt: BASE_TIME,
+      },
     }
     this.lastCreateInput = input
     this.sessions.set(sessionId, session)
@@ -62,7 +58,7 @@ class FakeLifecycleStore implements TTYLifecycleStore {
   async terminateSession(
     sessionId: TTYSessionId,
     ownerUserId: string,
-    _reason: Parameters<TTYLifecycleStore['terminateSession']>[2]
+    _reason: Parameters<TTYLifecycleStore['terminateSession']>[2],
   ): Promise<TTYTerminationResult> {
     const session = await this.getSession(sessionId, ownerUserId)
     if (session === null) return { sessionId, acknowledged: false }
@@ -80,7 +76,7 @@ class FakeLifecycleStore implements TTYLifecycleStore {
 
   async countActiveSessionsForUser(userId: string): Promise<number> {
     return [...this.sessions.values()].filter(
-      session => session.ownerUserId === userId && (session.status === 'active' || session.status === 'idle')
+      (session) => session.ownerUserId === userId && (session.status === 'active' || session.status === 'idle'),
     ).length
   }
 
@@ -98,7 +94,7 @@ function createFixture() {
     authenticate: async () => authenticatedUserId,
     resolveTier: async () => tier,
     resolveLimits: resolveTTYResourceLimits,
-    getStore: () => store
+    getStore: () => store,
   })
 
   return {
@@ -109,16 +105,14 @@ function createFixture() {
     },
     setTier(value: Tier) {
       tier = value
-    }
+    },
   }
 }
 
 function request(method: string, body?: string): Request {
   return new Request('https://hexical.test/api/tty/sessions', {
     method,
-    ...(body === undefined
-      ? {}
-      : { body, headers: { 'content-type': 'application/json' } })
+    ...(body === undefined ? {} : { body, headers: { 'content-type': 'application/json' } }),
   })
 }
 
@@ -255,11 +249,11 @@ test('uses deterministic idempotent termination semantics for repeated and compe
   const raceFixture = createFixture()
   const raceId = await createSession(raceFixture)
   const raceResponses = await Promise.all(
-    Array.from({ length: 8 }, () => raceFixture.api.terminate(request('DELETE'), raceId))
+    Array.from({ length: 8 }, () => raceFixture.api.terminate(request('DELETE'), raceId)),
   )
   const raceBodies = await Promise.all(raceResponses.map(payload))
-  assert.ok(raceResponses.every(response => response.status === 200))
-  assert.equal(new Set(raceBodies.map(body => body.terminatedAt)).size, 1)
+  assert.ok(raceResponses.every((response) => response.status === 200))
+  assert.equal(new Set(raceBodies.map((body) => body.terminatedAt)).size, 1)
 })
 
 test('fails closed for malformed session identifiers', async () => {
@@ -267,7 +261,7 @@ test('fails closed for malformed session identifiers', async () => {
   for (const response of [
     await fixture.api.get(request('GET'), 'not-a-uuid'),
     await fixture.api.touch(request('POST', '{}'), 'not-a-uuid'),
-    await fixture.api.terminate(request('DELETE'), 'not-a-uuid')
+    await fixture.api.terminate(request('DELETE'), 'not-a-uuid'),
   ]) {
     assert.equal(response.status, 400)
     assert.equal((await payload(response)).code, 'INPUT_REJECTED')
@@ -281,7 +275,7 @@ test('returns a generic non-leaking response when the server store fails', async
     resolveLimits: resolveTTYResourceLimits,
     getStore: () => {
       throw new Error('internal implementation detail')
-    }
+    },
   })
 
   const originalConsoleError = console.error

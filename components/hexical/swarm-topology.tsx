@@ -1,17 +1,8 @@
 'use client'
 
-import React, { useEffect, useState } from 'react'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
-import {
-  Terminal,
-  Shield,
-  Crosshair,
-  Network,
-  Sparkles,
-  MessageSquare,
-  Flame,
-  CheckCircle2,
-} from 'lucide-react'
+import { Terminal, Shield, Crosshair, Network, Sparkles, MessageSquare, Flame, CheckCircle2 } from 'lucide-react'
+import React, { useEffect, useState } from 'react'
 import type { AgentRoleType, DebateRound, ConsensusVote } from '@/lib/hexical/types'
 
 interface SwarmTopologyProps {
@@ -231,9 +222,7 @@ export default function SwarmTopology({
                   node.colorClass
                 } ${isSelected ? 'scale-110 border-white ring-2 ring-white/10' : ''} ${
                   isActive
-                    ? `${node.glowClass} scale-105 border-white ${
-                        prefersReducedMotion ? '' : 'animate-pulse'
-                      }`
+                    ? `${node.glowClass} scale-105 border-white ${prefersReducedMotion ? '' : 'animate-pulse'}`
                     : 'group-hover:border-white/20'
                 }`}
               >
@@ -263,11 +252,7 @@ export default function SwarmTopology({
           <h4 className="text-xs font-bold text-white uppercase tracking-widest">Swarm Ledger Analytics</h4>
         </div>
 
-        <div
-          className="flex-1 overflow-y-auto space-y-4 scrollbar-thin pr-1"
-          role="log"
-          aria-live="polite"
-        >
+        <div className="flex-1 overflow-y-auto space-y-4 scrollbar-thin pr-1" role="log" aria-live="polite">
           <AnimatePresence mode="popLayout">
             {selectedNode ? (
               <motion.div
@@ -278,9 +263,7 @@ export default function SwarmTopology({
                 className="space-y-3 text-xs"
               >
                 <div className="flex items-center justify-between">
-                  <span className="font-bold text-white capitalize">
-                    {selectedNode.replace(/_/g, ' ')}
-                  </span>
+                  <span className="font-bold text-white capitalize">{selectedNode.replace(/_/g, ' ')}</span>
                   <button
                     type="button"
                     onClick={() => setSelectedNode(null)}
@@ -304,10 +287,7 @@ export default function SwarmTopology({
                 key="empty"
                 className="h-full flex flex-col items-center justify-center text-center py-12 text-muted-foreground"
               >
-                <Flame
-                  size={24}
-                  className={`text-white/10 mb-2 ${prefersReducedMotion ? '' : 'animate-bounce'}`}
-                />
+                <Flame size={24} className={`text-white/10 mb-2 ${prefersReducedMotion ? '' : 'animate-bounce'}`} />
                 <p className="text-xs font-medium">No live swarm graph processes active.</p>
                 <p className="text-[10px] text-white/40 max-w-[200px] mt-1">
                   Run an Engineering Swarm review to stream backend-reported agent evidence.
@@ -326,9 +306,7 @@ export default function SwarmTopology({
                     <div className="flex items-center justify-between border-b border-white/[0.03] pb-1">
                       <span
                         className={`font-bold uppercase tracking-wider text-[10px] ${
-                          round.proposingAgentRole === 'red_team_exploit'
-                            ? 'text-red-400'
-                            : 'text-emerald-400'
+                          round.proposingAgentRole === 'red_team_exploit' ? 'text-red-400' : 'text-emerald-400'
                         }`}
                       >
                         Round {round.roundNumber}:{' '}
@@ -370,8 +348,8 @@ export default function SwarmTopology({
                     v.vote === 'VULNERABLE'
                       ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]'
                       : v.vote === 'SECURE'
-                        ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]'
-                        : 'bg-white/10'
+                      ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]'
+                      : 'bg-white/10'
                   }`}
                 />
               ))}

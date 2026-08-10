@@ -51,6 +51,40 @@ export type InvestigationExecutionState =
   | 'expired'
   | 'unknown'
 
+export const INVESTIGATION_EXECUTION_TRANSITIONS: Readonly<
+  Record<InvestigationExecutionState, readonly InvestigationExecutionState[]>
+> = {
+  queued: [
+    'queued',
+    'leased',
+    'starting',
+    'running',
+    'streaming',
+    'succeeded',
+    'failed',
+    'cancelled',
+    'timed_out',
+    'expired',
+  ],
+  leased: ['leased', 'starting', 'running', 'streaming', 'succeeded', 'failed', 'cancelled', 'timed_out', 'expired'],
+  starting: ['starting', 'running', 'streaming', 'succeeded', 'failed', 'cancelled', 'timed_out', 'expired'],
+  running: ['running', 'streaming', 'succeeded', 'failed', 'cancelled', 'timed_out', 'expired'],
+  streaming: ['streaming', 'succeeded', 'failed', 'cancelled', 'timed_out', 'expired'],
+  succeeded: ['succeeded'],
+  failed: ['failed'],
+  cancelled: ['cancelled'],
+  timed_out: ['timed_out'],
+  expired: ['expired'],
+  unknown: ['unknown'],
+}
+
+export function canTransitionInvestigationExecutionState(
+  from: InvestigationExecutionState,
+  to: InvestigationExecutionState,
+): boolean {
+  return INVESTIGATION_EXECUTION_TRANSITIONS[from].includes(to)
+}
+
 export interface InvestigationExecution {
   readonly executionId: string
   readonly sessionId: string

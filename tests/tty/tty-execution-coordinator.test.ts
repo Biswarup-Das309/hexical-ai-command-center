@@ -1,15 +1,22 @@
-import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
-
-import { TTYExecutionCoordinator, type TTYExecutionCoordinatorDependencies } from '../../lib/tty/tty-execution-coordinator'
-import type { TTYProcessExit, TTYProcessHandle, TTYProcessMetadata, TTYProcessSpec } from '../../lib/tty/tty-process-runtime'
-import type { InternalTTYSession, TTYExecutionId, TTYSessionId } from '../../lib/tty/tty-types'
+import test from 'node:test'
+import { WorkerRedisMock } from './worker-redis-mock'
+import {
+  TTYExecutionCoordinator,
+  type TTYExecutionCoordinatorDependencies,
+} from '../../lib/tty/tty-execution-coordinator'
 import type { TTYLeasedJob, TTYLeaseCompleteResult, TTYLeaseRenewResult } from '../../lib/tty/tty-execution-lease'
 import { TTYOutputStreamManager } from '../../lib/tty/tty-output-stream'
+import type {
+  TTYProcessExit,
+  TTYProcessHandle,
+  TTYProcessMetadata,
+  TTYProcessSpec,
+} from '../../lib/tty/tty-process-runtime'
 import { TTYResourceGuard } from '../../lib/tty/tty-resource-guard'
+import type { InternalTTYSession, TTYExecutionId, TTYSessionId } from '../../lib/tty/tty-types'
 import type { TTYWorkerId } from '../../lib/tty/tty-worker-types'
-import { WorkerRedisMock } from './worker-redis-mock'
 
 const workerId = 'worker-coordinator-test' as TTYWorkerId
 const sessionId = '00000000-0000-4000-8000-000000000501' as TTYSessionId
@@ -30,14 +37,22 @@ const session: InternalTTYSession = {
     maxSessionIdleMs: 900_000,
     maxSessionDurationMs: 3_600_000,
     maxOutputBytesPerExecution: 100,
-    maxQueueDepth: 10
+    maxQueueDepth: 10,
   },
-  usage: { activeSessions: 1, activeExecutionsInSession: 0, executionsInLastMinute: 0, queueDepth: 0, capturedAt: '2026-08-08T10:00:00.000Z' }
+  usage: {
+    activeSessions: 1,
+    activeExecutionsInSession: 0,
+    executionsInLastMinute: 0,
+    queueDepth: 0,
+    capturedAt: '2026-08-08T10:00:00.000Z',
+  },
 }
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>(resolvePromise => { resolve = resolvePromise })
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
   return { promise, resolve }
 }
 
@@ -45,7 +60,9 @@ class ControlledRuntime {
   readonly started: TTYProcessSpec[] = []
   readonly cleaned: TTYProcessHandle[] = []
   private active: { handle: TTYProcessHandle; resolve: (exit: TTYProcessExit) => void } | null = null
-  constructor(private readonly output: { stdout: string; stderr: string } = { stdout: 'hello\n', stderr: 'warning\n' }) {}
+  constructor(
+    private readonly output: { stdout: string; stderr: string } = { stdout: 'hello\n', stderr: 'warning\n' },
+  ) {}
 
   async start(spec: TTYProcessSpec): Promise<TTYProcessHandle> {
     this.started.push(spec)
@@ -59,7 +76,7 @@ class ControlledRuntime {
       workerId: spec.workerId,
       stdout: Readable.from([Buffer.from(this.output.stdout)]),
       stderr: Readable.from([Buffer.from(this.output.stderr)]),
-      exit: completion.promise
+      exit: completion.promise,
     }
     this.active = { handle, resolve: completion.resolve }
     if (this.output.stdout === 'hello\n') queueMicrotask(() => this.finish({ code: 0, signal: null }))
@@ -86,7 +103,7 @@ class ControlledRuntime {
       executionId: handle.executionId,
       sessionId: handle.sessionId,
       workerId: handle.workerId,
-      startedAt: handle.startedAt
+      startedAt: handle.startedAt,
     }
   }
 
@@ -100,7 +117,11 @@ class ControlledRuntime {
 
 class FakeLeases {
   readonly completed: Array<{ token: string; state: string }> = []
-  constructor(private readonly completion: TTYLeaseCompleteResult = { completed: true, job: undefined as never }) {}
+  constructor(
+    private readonly completion: TTYLeaseCompleteResult = { completed: true, job: undefined as never },
+    private readonly jobKind: 'diagnostic' | 'session_utility' = 'diagnostic',
+    private readonly jobArgv: readonly string[] = ['debug', '--safe-flag'],
+  ) {}
 
   async claim(_executionId: TTYExecutionId, _sessionId: TTYSessionId) {
     return {
@@ -109,16 +130,27 @@ class FakeLeases {
         executionId,
         sessionId,
         ownerUserId: session.ownerUserId,
-        kind: 'diagnostic' as const,
+        kind: this.jobKind,
         status: 'leased' as const,
         createdAt: session.createdAt,
         admittedAt: session.createdAt,
         authorizationScopeId: null,
-        argv: ['debug', '--safe-flag'],
-        resource: { maxExecutionDurationMs: session.limits.maxExecutionDurationMs, maxOutputBytes: session.limits.maxOutputBytesPerExecution },
+        argv: this.jobArgv,
+        resource: {
+          maxExecutionDurationMs: session.limits.maxExecutionDurationMs,
+          maxOutputBytes: session.limits.maxOutputBytesPerExecution,
+        },
         attempt: 1,
-        lease: { workerId, token: 'secret-renewal-token', leaseId: 'opaque-lease-id' as never, claimedAtMs: 1_000, renewedAtMs: 1_000, expiresAtMs: Date.now() + 60_000, maxExpiresAtMs: Date.now() + 300_000 }
-      } as TTYLeasedJob
+        lease: {
+          workerId,
+          token: 'secret-renewal-token',
+          leaseId: 'opaque-lease-id' as never,
+          claimedAtMs: 1_000,
+          renewedAtMs: 1_000,
+          expiresAtMs: Date.now() + 60_000,
+          maxExpiresAtMs: Date.now() + 300_000,
+        },
+      } as TTYLeasedJob,
     }
   }
 
@@ -130,13 +162,22 @@ class FakeLeases {
     return { recovered: true as const, job: undefined as never }
   }
 
-  async complete(_executionId: TTYExecutionId, _sessionId: TTYSessionId, token: string, state: 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'expired'): Promise<TTYLeaseCompleteResult> {
+  async complete(
+    _executionId: TTYExecutionId,
+    _sessionId: TTYSessionId,
+    token: string,
+    state: 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'expired',
+  ): Promise<TTYLeaseCompleteResult> {
     this.completed.push({ token, state })
     return this.completion
   }
 }
 
-function dependencies(runtime: ControlledRuntime, leases: FakeLeases, overrides: Partial<TTYExecutionCoordinatorDependencies> = {}): TTYExecutionCoordinatorDependencies {
+function dependencies(
+  runtime: ControlledRuntime,
+  leases: FakeLeases,
+  overrides: Partial<TTYExecutionCoordinatorDependencies> = {},
+): TTYExecutionCoordinatorDependencies {
   const redis = new WorkerRedisMock()
   return {
     redis: redis as never,
@@ -144,17 +185,21 @@ function dependencies(runtime: ControlledRuntime, leases: FakeLeases, overrides:
     sessionStore: {
       getSession: async () => session,
       recordExecutionStarted: async () => undefined,
-      recordExecutionFinished: async () => undefined
+      recordExecutionFinished: async () => undefined,
     },
     leaseManager: leases,
     processRuntime: runtime,
-    resourceGuard: new TTYResourceGuard({ maxConcurrentProcesses: 2, maxStdoutBytesPerSecond: 10_000, maxStderrBytesPerSecond: 10_000 }),
+    resourceGuard: new TTYResourceGuard({
+      maxConcurrentProcesses: 2,
+      maxStdoutBytesPerSecond: 10_000,
+      maxStderrBytesPerSecond: 10_000,
+    }),
     outputStream: new TTYOutputStreamManager(redis as never),
     now: () => new Date('2026-08-08T10:00:01.000Z'),
     leaseRenewIntervalMs: 1_000,
     stopGraceMs: 50,
     commandAllowlist: { diagnostic: ['debug'] },
-    ...overrides
+    ...overrides,
   }
 }
 
@@ -179,13 +224,28 @@ test('coordinator runs a leased job through streaming to success without persist
   assert.equal(runtime.cleaned.length, 1)
 })
 
+test('coordinator executes non-process session utilities through a trusted virtual runtime', async () => {
+  const runtime = new ControlledRuntime()
+  const leases = new FakeLeases({ completed: true, job: undefined as never }, 'session_utility', [
+    'history',
+    '--ignored',
+  ])
+  const coordinator = new TTYExecutionCoordinator(dependencies(runtime, leases))
+  const result = await coordinator.run(executionId, sessionId)
+
+  assert.equal(result.accepted, true)
+  if (result.accepted) assert.equal(result.state.state, 'succeeded')
+  assert.equal(runtime.started[0]?.file, process.execPath)
+  assert.deepEqual(runtime.started[0]?.args.slice(0, 1), ['-e'])
+})
+
 test('coordinator cancellation stops the owned process and is idempotent', async () => {
   const runtime = new ControlledRuntime({ stdout: '', stderr: '' })
   const leases = new FakeLeases()
   const deps = dependencies(runtime, leases)
   const coordinator = new TTYExecutionCoordinator(deps)
   const runPromise = coordinator.run(executionId, sessionId)
-  while (runtime.started.length === 0) await new Promise(resolve => setTimeout(resolve, 1))
+  while (runtime.started.length === 0) await new Promise((resolve) => setTimeout(resolve, 1))
 
   const cancelled = await coordinator.cancelExecution(executionId)
   const runResult = await runPromise
@@ -199,13 +259,32 @@ test('coordinator cancellation stops the owned process and is idempotent', async
   assert.equal(replay.state?.state, 'cancelled')
 })
 
+test('coordinator turns an activation abort into a persisted cancellation before starting a process', async () => {
+  const runtime = new ControlledRuntime({ stdout: '', stderr: '' })
+  const leases = new FakeLeases()
+  const controller = new AbortController()
+  controller.abort()
+  const coordinator = new TTYExecutionCoordinator(dependencies(runtime, leases))
+
+  const result = await coordinator.run(executionId, sessionId, { abortSignal: controller.signal })
+
+  assert.equal(result.accepted, true)
+  if (result.accepted) assert.equal(result.state.state, 'cancelled')
+  assert.equal(runtime.started.length, 0)
+  assert.deepEqual(leases.completed, [])
+})
+
 test('coordinator turns a runtime timeout into a hard-stop terminal state', async () => {
   const runtime = new ControlledRuntime({ stdout: '', stderr: '' })
   const leases = new FakeLeases()
   const deps = dependencies(runtime, leases)
   const coordinator = new TTYExecutionCoordinator({
     ...deps,
-    resourceGuard: new TTYResourceGuard({ maxConcurrentProcesses: 2, maxStdoutBytesPerSecond: 10_000, maxStderrBytesPerSecond: 10_000 })
+    resourceGuard: new TTYResourceGuard({
+      maxConcurrentProcesses: 2,
+      maxStdoutBytesPerSecond: 10_000,
+      maxStderrBytesPerSecond: 10_000,
+    }),
   })
   const result = await coordinator.run(executionId, sessionId)
   assert.equal(result.accepted, true)
@@ -218,7 +297,11 @@ test('coordinator stops and fails an execution when its output ceiling is exceed
   const deps = dependencies(runtime, leases)
   const coordinator = new TTYExecutionCoordinator({
     ...deps,
-    resourceGuard: new TTYResourceGuard({ maxConcurrentProcesses: 2, maxStdoutBytesPerSecond: 10_000, maxStderrBytesPerSecond: 10_000 })
+    resourceGuard: new TTYResourceGuard({
+      maxConcurrentProcesses: 2,
+      maxStdoutBytesPerSecond: 10_000,
+      maxStderrBytesPerSecond: 10_000,
+    }),
   })
   const result = await coordinator.run(executionId, sessionId)
   assert.equal(result.accepted, true)

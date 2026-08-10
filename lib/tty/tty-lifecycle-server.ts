@@ -2,11 +2,10 @@ import 'server-only'
 
 import { auth } from '@clerk/nextjs/server'
 import { Redis } from '@upstash/redis'
-
 import { getUserTier } from '@/lib/get-user-tier'
-import { createTTYSessionStore } from './tty-session-store'
 import { createTTYLifecycleApi, type TTYLifecycleApiDependencies } from './tty-lifecycle-api'
 import { resolveTTYResourceLimits } from './tty-resource-limits'
+import { createTTYSessionStore } from './tty-session-store'
 
 function createRedis(): Redis {
   const url = process.env.UPSTASH_REDIS_REST_URL
@@ -22,7 +21,7 @@ export function createTTYLifecycleApiForRequest() {
     authenticate: async () => (await auth()).userId ?? null,
     resolveTier: getUserTier,
     resolveLimits: resolveTTYResourceLimits,
-    getStore: () => createTTYSessionStore(createRedis())
+    getStore: () => createTTYSessionStore(createRedis()),
   }
   return createTTYLifecycleApi(dependencies)
 }

@@ -1,0 +1,12 @@
+.next
+node_modules
+coverage
+dist
+build
+.turbo
+.vercel
+tsconfig.tsbuildinfo
+package-lock.json
+pnpm-lock.yaml
+public
+supabase

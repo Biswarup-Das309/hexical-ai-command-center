@@ -1,9 +1,13 @@
 /** SSE lifecycle, replay, heartbeat, and bounded-client delivery. */
 
+import {
+  TTYStreamAuthorizer,
+  type TTYStreamAuthorizationFailure,
+  type TTYStreamAuthorizationResult,
+} from './tty-stream-auth'
+import { TTYStreamBroker, type TTYStreamSubscription } from './tty-stream-broker'
 import { createTTYStreamEvent, serializeTTYStreamEvent, type TTYStreamEvent } from './tty-stream-types'
 import type { TTYExecutionId, TTYSessionId } from './tty-types'
-import { TTYStreamAuthorizer, type TTYStreamAuthorizationFailure, type TTYStreamAuthorizationResult } from './tty-stream-auth'
-import { TTYStreamBroker, type TTYStreamSubscription } from './tty-stream-broker'
 
 export interface TTYSSEManagerOptions {
   readonly maxQueueEvents?: number
@@ -45,7 +49,7 @@ function noStoreHeaders(contentType: string): Headers {
     'Cache-Control': 'no-store, no-cache, must-revalidate',
     Pragma: 'no-cache',
     'Content-Type': contentType,
-    Connection: 'keep-alive'
+    Connection: 'keep-alive',
   })
 }
 
@@ -57,7 +61,10 @@ function failureStatus(reason: TTYStreamAuthorizationFailure): number {
 }
 
 function failureResponse(reason: string, status: number): Response {
-  return new Response(JSON.stringify({ ok: false, code: reason.toUpperCase(), message: 'The execution stream is not available.' }), { status, headers: noStoreHeaders('application/json') })
+  return new Response(
+    JSON.stringify({ ok: false, code: reason.toUpperCase(), message: 'The execution stream is not available.' }),
+    { status, headers: noStoreHeaders('application/json') },
+  )
 }
 
 function encodeEvent(event: TTYStreamEvent, retryMs: number): string {
@@ -70,15 +77,19 @@ class BoundedSSEQueue {
   private closed = false
   droppedEvents = 0
 
-  constructor(private readonly maxEvents: number, private readonly maxBytes: number, private readonly changed: () => void) {}
+  constructor(
+    private readonly maxEvents: number,
+    private readonly maxBytes: number,
+    private readonly changed: () => void,
+  ) {}
 
   enqueue(item: QueueItem): 'accepted' | 'dropped' | 'closed' {
     if (this.closed) return 'closed'
     while (this.items.length >= this.maxEvents || this.bytes + item.bytes > this.maxBytes) {
-      const droppableIndex = this.items.findIndex(existing => existing.droppable)
+      const droppableIndex = this.items.findIndex((existing) => existing.droppable)
       if (droppableIndex < 0) {
         if (item.event?.type === 'completion') {
-          const evictableIndex = this.items.findIndex(existing => existing.event?.type !== 'completion')
+          const evictableIndex = this.items.findIndex((existing) => existing.event?.type !== 'completion')
           if (evictableIndex >= 0) {
             this.removeAt(evictableIndex)
             continue
@@ -137,21 +148,45 @@ export class TTYSSEManager {
   private readonly retryMs: number
   private readonly now: () => Date
 
-  constructor(private readonly broker: TTYStreamBroker, private readonly authorizer: TTYStreamAuthorizer, options: TTYSSEManagerOptions = {}) {
+  constructor(
+    private readonly broker: TTYStreamBroker,
+    private readonly authorizer: TTYStreamAuthorizer,
+    options: TTYSSEManagerOptions = {},
+  ) {
     this.maxQueueEvents = Math.max(4, Math.min(1_024, Math.floor(options.maxQueueEvents ?? DEFAULT_MAX_QUEUE_EVENTS)))
-    this.maxQueueBytes = Math.max(4_096, Math.min(4 * 1024 * 1024, Math.floor(options.maxQueueBytes ?? DEFAULT_MAX_QUEUE_BYTES)))
+    this.maxQueueBytes = Math.max(
+      4_096,
+      Math.min(4 * 1024 * 1024, Math.floor(options.maxQueueBytes ?? DEFAULT_MAX_QUEUE_BYTES)),
+    )
     this.heartbeatIntervalMs = Math.max(1_000, Math.floor(options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_MS))
-    this.idleTimeoutMs = Math.max(this.heartbeatIntervalMs * 2, Math.floor(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS))
+    this.idleTimeoutMs = Math.max(
+      this.heartbeatIntervalMs * 2,
+      Math.floor(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS),
+    )
     this.retryMs = Math.max(500, Math.min(60_000, Math.floor(options.retryMs ?? DEFAULT_RETRY_MS)))
     this.now = options.now ?? (() => new Date())
   }
 
   async open(request: TTYSSEConnectionRequest): Promise<TTYSSEOpenResult> {
-    const authorization = await this.authorizer.authorize({ userId: request.userId, executionId: request.executionId, requestedSessionId: request.requestedSessionId })
-    if (!authorization.authorized) return { accepted: false, response: failureResponse(authorization.reason, failureStatus(authorization.reason)), reason: authorization.reason }
+    const authorization = await this.authorizer.authorize({
+      userId: request.userId,
+      executionId: request.executionId,
+      requestedSessionId: request.requestedSessionId,
+    })
+    if (!authorization.authorized)
+      return {
+        accepted: false,
+        response: failureResponse(authorization.reason, failureStatus(authorization.reason)),
+        reason: authorization.reason,
+      }
 
     const afterSequence = this.parseLastEventId(request.lastEventId)
-    if (afterSequence === null) return { accepted: false, response: failureResponse('invalid_last_event_id', 400), reason: 'invalid_last_event_id' }
+    if (afterSequence === null)
+      return {
+        accepted: false,
+        response: failureResponse('invalid_last_event_id', 400),
+        reason: 'invalid_last_event_id',
+      }
 
     const connectionId = crypto.randomUUID()
     let replayReady = false
@@ -194,7 +229,12 @@ export class TTYSSEManager {
     const enqueueEvent = (event: TTYStreamEvent): void => {
       if (event.executionId !== request.executionId || event.sequence <= afterSequence) return
       if (completedQueued) return
-      const result = queue.enqueue({ encoded: encodeEvent(event, this.retryMs), bytes: new TextEncoder().encode(encodeEvent(event, this.retryMs)).byteLength, event, droppable: DROPPABLE_TYPES.has(event.type) })
+      const result = queue.enqueue({
+        encoded: encodeEvent(event, this.retryMs),
+        bytes: new TextEncoder().encode(encodeEvent(event, this.retryMs)).byteLength,
+        event,
+        droppable: DROPPABLE_TYPES.has(event.type),
+      })
       if (result === 'closed') closeConnection()
       if (result === 'accepted' && event.type === 'completion') {
         completedQueued = true
@@ -240,7 +280,14 @@ export class TTYSSEManager {
         sessionId: authorization.sessionId,
         sequence: Math.max(1, replaySubscription.replay.nextSequence),
         type: 'error',
-        payload: { code: errorCode, message: replaySubscription.replay.status === 'gap' ? 'Replay window expired. Reconnect without Last-Event-ID.' : 'The live stream replay is temporarily unavailable.', recoverable: true }
+        payload: {
+          code: errorCode,
+          message:
+            replaySubscription.replay.status === 'gap'
+              ? 'Replay window expired. Reconnect without Last-Event-ID.'
+              : 'The live stream replay is temporarily unavailable.',
+          recoverable: true,
+        },
       })
       enqueueEvent(errorEvent)
       closeWhenDrained = true
@@ -248,7 +295,11 @@ export class TTYSSEManager {
       for (const event of replaySubscription.replay.events) enqueueEvent(event)
       replayReady = true
       for (const event of pendingLive.splice(0)) enqueueEvent(event)
-      if (replaySubscription.replay.completed && replaySubscription.replay.events.every(event => event.type !== 'completion')) closeWhenDrained = true
+      if (
+        replaySubscription.replay.completed &&
+        replaySubscription.replay.events.every((event) => event.type !== 'completion')
+      )
+        closeWhenDrained = true
     }
 
     const stream = new ReadableStream<Uint8Array>({
@@ -263,7 +314,7 @@ export class TTYSSEManager {
         cleanup()
         streamClosed = true
         queue.close()
-      }
+      },
     })
 
     heartbeatTimer = setInterval(() => {
@@ -271,12 +322,17 @@ export class TTYSSEManager {
       enqueueRaw(`: heartbeat ${this.now().toISOString()}\n\n`, true)
       pump()
     }, this.heartbeatIntervalMs)
-    idleTimer = setInterval(() => {
-      if (cleanupDone) return
-      if (queue.length > 0 && this.now().getTime() - lastDeliveredAt >= this.idleTimeoutMs) closeConnection()
-    }, Math.max(1_000, Math.min(this.idleTimeoutMs, this.heartbeatIntervalMs)))
-    if (typeof (heartbeatTimer as unknown as { unref?: () => void }).unref === 'function') (heartbeatTimer as unknown as { unref: () => void }).unref()
-    if (typeof (idleTimer as unknown as { unref?: () => void }).unref === 'function') (idleTimer as unknown as { unref: () => void }).unref()
+    idleTimer = setInterval(
+      () => {
+        if (cleanupDone) return
+        if (queue.length > 0 && this.now().getTime() - lastDeliveredAt >= this.idleTimeoutMs) closeConnection()
+      },
+      Math.max(1_000, Math.min(this.idleTimeoutMs, this.heartbeatIntervalMs)),
+    )
+    if (typeof (heartbeatTimer as unknown as { unref?: () => void }).unref === 'function')
+      (heartbeatTimer as unknown as { unref: () => void }).unref()
+    if (typeof (idleTimer as unknown as { unref?: () => void }).unref === 'function')
+      (idleTimer as unknown as { unref: () => void }).unref()
 
     if (request.signal) {
       abortListener = () => {

@@ -1,10 +1,13 @@
-import { test } from 'node:test'
 import assert from 'node:assert/strict'
-
-import { TTYExecutionLeaseManager, TTY_MAX_LEASE_ATTEMPTS, TTY_LEASE_DURATION_MS } from '../../lib/tty/tty-execution-lease'
+import { test } from 'node:test'
+import type { Redis } from '@upstash/redis'
+import {
+  TTYExecutionLeaseManager,
+  TTY_MAX_LEASE_ATTEMPTS,
+  TTY_LEASE_DURATION_MS,
+} from '../../lib/tty/tty-execution-lease'
 import type { TTYExecutionId, TTYSessionId } from '../../lib/tty/tty-types'
 import type { TTYWorkerAuthContext, TTYWorkerId } from '../../lib/tty/tty-worker-types'
-import type { Redis } from '@upstash/redis'
 
 const sessionId = '00000000-0000-4000-8000-000000000021' as TTYSessionId
 const executionId = '00000000-0000-4000-8000-000000000022' as TTYExecutionId
@@ -42,7 +45,7 @@ class LeaseRedisContractMock {
     admittedAt: new Date(0).toISOString(),
     authorizationScopeId: null,
     resource: { maxExecutionDurationMs: 30_000, maxOutputBytes: 262_144 },
-    attempt: 0
+    attempt: 0,
   }
   sessionLive = true
   terminal = false
@@ -53,11 +56,16 @@ class LeaseRedisContractMock {
     if (!this.job) return [0, 'missing_job']
     const job = this.job
     const now = Number(args[2])
-    const suppliedSessionId = _script.includes('job.attempt = attempt + 1') ? (args.length === 7 ? args[6] : args[4]) : args[args.length - 1]
+    const suppliedSessionId = _script.includes('job.attempt = attempt + 1')
+      ? args.length === 7
+        ? args[6]
+        : args[4]
+      : args[args.length - 1]
     if (job.sessionId !== suppliedSessionId) return [0, 'session_terminated']
 
     if (args.length === 5 && _script.includes('tty-lease-complete')) {
-      if (job.status !== 'leased' || !job.lease || job.lease.workerId !== args[0] || job.lease.token !== args[1]) return [0, 'not_owner']
+      if (job.status !== 'leased' || !job.lease || job.lease.workerId !== args[0] || job.lease.token !== args[1])
+        return [0, 'not_owner']
       if (job.lease.expiresAtMs <= now) return [0, 'lease_expired']
       if (!this.sessionLive || this.terminal) return [0, 'session_terminated']
       const completed = JSON.stringify(job)
@@ -68,13 +76,24 @@ class LeaseRedisContractMock {
 
     if (args.length === 8) {
       if (job.status !== 'queued') return [0, 'not_queued']
-      if (!this.sessionLive || this.terminal) return [0, 'session_terminated']
+      if (!this.sessionLive || this.terminal) {
+        this.queue = Math.max(0, this.queue - 1)
+        this.active = Math.max(0, this.active - 1)
+        this.job = null
+        return [0, 'session_terminated']
+      }
       const attempt = (job.attempt ?? 0) + 1
       if (attempt > Number(args[3])) return [0, 'attempts_exhausted']
       this.queue = Math.max(0, this.queue - 1)
       job.status = 'leased'
       job.attempt = attempt
-      job.lease = { workerId: args[0], token: args[1], claimedAtMs: now, expiresAtMs: now + Number(args[4]), maxExpiresAtMs: now + Number(args[5]) }
+      job.lease = {
+        workerId: args[0],
+        token: args[1],
+        claimedAtMs: now,
+        expiresAtMs: now + Number(args[4]),
+        maxExpiresAtMs: now + Number(args[5]),
+      }
       return [1, JSON.stringify(job)]
     }
 
@@ -87,7 +106,8 @@ class LeaseRedisContractMock {
     }
 
     if (args.length === 7 && _script.includes('job.attempt = attempt + 1')) {
-      if (job.status !== 'leased' || !job.lease || job.lease.workerId !== args[0] || job.lease.token !== args[1]) return [0, 'not_owner']
+      if (job.status !== 'leased' || !job.lease || job.lease.workerId !== args[0] || job.lease.token !== args[1])
+        return [0, 'not_owner']
       if (job.lease.expiresAtMs <= now) return [0, 'lease_expired']
       if (!this.sessionLive || this.terminal) return [0, 'session_terminated']
       if ((job.attempt ?? 0) >= Number(args[5])) {
@@ -128,17 +148,33 @@ class LeaseRedisContractMock {
 }
 
 function workerContext(workerId: string): TTYWorkerAuthContext {
-  return { workerId: workerId as TTYWorkerId, capability: 'execute', tokenId: `${workerId}-token-id`, authenticatedAt: new Date(0).toISOString(), expiresAt: new Date(4_000_000_000).toISOString() }
+  return {
+    workerId: workerId as TTYWorkerId,
+    capability: 'execute',
+    tokenId: `${workerId}-token-id`,
+    authenticatedAt: new Date(0).toISOString(),
+    expiresAt: new Date(4_000_000_000).toISOString(),
+  }
 }
 
-function manager(redis: LeaseRedisContractMock, workerId: string, now: () => number = () => 1_000): TTYExecutionLeaseManager {
-  return new TTYExecutionLeaseManager(redis as unknown as Redis, workerContext(workerId), { now, token: () => `${workerId}-token` })
+function manager(
+  redis: LeaseRedisContractMock,
+  workerId: string,
+  now: () => number = () => 1_000,
+): TTYExecutionLeaseManager {
+  return new TTYExecutionLeaseManager(redis as unknown as Redis, workerContext(workerId), {
+    now,
+    token: () => `${workerId}-token`,
+  })
 }
 
 test('queued job can be claimed and exactly one of two racing workers wins', async () => {
   const redis = new LeaseRedisContractMock()
-  const [first, second] = await Promise.all([manager(redis, 'worker-a').claim(executionId, sessionId), manager(redis, 'worker-b').claim(executionId, sessionId)])
-  assert.equal([first, second].filter(result => result.claimed).length, 1)
+  const [first, second] = await Promise.all([
+    manager(redis, 'worker-a').claim(executionId, sessionId),
+    manager(redis, 'worker-b').claim(executionId, sessionId),
+  ])
+  assert.equal([first, second].filter((result) => result.claimed).length, 1)
   assert.equal(redis.queue, 0)
   assert.equal(redis.active, 1)
 })
@@ -146,18 +182,33 @@ test('queued job can be claimed and exactly one of two racing workers wins', asy
 test('missing, already leased, wrong session, and terminated jobs fail closed', async () => {
   const missing = new LeaseRedisContractMock()
   missing.job = null
-  assert.deepEqual(await manager(missing, 'worker-a').claim(executionId, sessionId), { claimed: false, reason: 'missing_job' })
+  assert.deepEqual(await manager(missing, 'worker-a').claim(executionId, sessionId), {
+    claimed: false,
+    reason: 'missing_job',
+  })
 
   const leased = new LeaseRedisContractMock()
   assert.equal((await manager(leased, 'worker-a').claim(executionId, sessionId)).claimed, true)
-  assert.deepEqual(await manager(leased, 'worker-b').claim(executionId, sessionId), { claimed: false, reason: 'not_queued' })
+  assert.deepEqual(await manager(leased, 'worker-b').claim(executionId, sessionId), {
+    claimed: false,
+    reason: 'not_queued',
+  })
 
   const wrongSession = new LeaseRedisContractMock()
-  assert.deepEqual(await manager(wrongSession, 'worker-a').claim(executionId, '00000000-0000-4000-8000-000000000099' as TTYSessionId), { claimed: false, reason: 'session_terminated' })
+  assert.deepEqual(
+    await manager(wrongSession, 'worker-a').claim(executionId, '00000000-0000-4000-8000-000000000099' as TTYSessionId),
+    { claimed: false, reason: 'session_terminated' },
+  )
 
   const terminated = new LeaseRedisContractMock()
   terminated.terminal = true
-  assert.deepEqual(await manager(terminated, 'worker-a').claim(executionId, sessionId), { claimed: false, reason: 'session_terminated' })
+  assert.deepEqual(await manager(terminated, 'worker-a').claim(executionId, sessionId), {
+    claimed: false,
+    reason: 'session_terminated',
+  })
+  assert.equal(terminated.job, null)
+  assert.equal(terminated.queue, 0)
+  assert.equal(terminated.active, 0)
 })
 
 test('only the matching worker and lease token can renew or release', async () => {
@@ -188,7 +239,10 @@ test('renewal is bounded, expiry recovery requeues once, and retry ceiling relea
   if (renewed.renewed) assert.equal(renewed.job.lease.expiresAtMs <= 301_000, true)
 
   now = 400_000
-  assert.deepEqual(await worker.renew(executionId, sessionId, claimed.job.lease.token), { renewed: false, reason: 'lease_expired' })
+  assert.deepEqual(await worker.renew(executionId, sessionId, claimed.job.lease.token), {
+    renewed: false,
+    reason: 'lease_expired',
+  })
   const recovered = await worker.recover(executionId, sessionId)
   assert.equal(recovered.recovered, true)
   if (recovered.recovered) assert.equal(recovered.job.attempt, 1)
@@ -197,9 +251,17 @@ test('renewal is bounded, expiry recovery requeues once, and retry ceiling relea
   const reclaimed = await manager(redis, 'worker-b', () => now).claim(executionId, sessionId)
   assert.equal(reclaimed.claimed, true)
   if (reclaimed.claimed) assert.equal(reclaimed.job.attempt, 2)
-  assert.deepEqual(await manager(redis, 'worker-c', () => now).recover(executionId, sessionId), { recovered: false, reason: 'not_expired' })
+  assert.deepEqual(await manager(redis, 'worker-c', () => now).recover(executionId, sessionId), {
+    recovered: false,
+    reason: 'not_expired',
+  })
 
-  redis.job = { ...redis.job as MockJob, status: 'leased', attempt: TTY_MAX_LEASE_ATTEMPTS, lease: { workerId: 'worker-a', token: 'worker-a-token', claimedAtMs: 1, expiresAtMs: 2, maxExpiresAtMs: 3 } }
+  redis.job = {
+    ...(redis.job as MockJob),
+    status: 'leased',
+    attempt: TTY_MAX_LEASE_ATTEMPTS,
+    lease: { workerId: 'worker-a', token: 'worker-a-token', claimedAtMs: 1, expiresAtMs: 2, maxExpiresAtMs: 3 },
+  }
   const exhausted = await worker.recover(executionId, sessionId)
   assert.deepEqual(exhausted, { recovered: false, reason: 'attempts_exhausted' })
   assert.equal(redis.active, 0)
@@ -211,7 +273,10 @@ test('termination blocks renewal and recovery cannot resurrect terminated work',
   assert.equal(claimed.claimed, true)
   if (!claimed.claimed) return
   redis.terminal = true
-  assert.deepEqual(await manager(redis, 'worker-a').renew(executionId, sessionId, claimed.job.lease.token), { renewed: false, reason: 'session_terminated' })
+  assert.deepEqual(await manager(redis, 'worker-a').renew(executionId, sessionId, claimed.job.lease.token), {
+    renewed: false,
+    reason: 'session_terminated',
+  })
   const recovery = await manager(redis, 'worker-a', () => 100_000).recover(executionId, sessionId)
   assert.deepEqual(recovery, { recovered: false, reason: 'session_terminated' })
   assert.equal(redis.job, null)

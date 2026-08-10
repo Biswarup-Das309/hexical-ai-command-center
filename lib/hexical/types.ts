@@ -18,18 +18,18 @@
  *    4xx into the same upgrade modal.
  */
 
-import { z } from 'zod';
+import { z } from 'zod'
 
-export type Tier = 'free' | 'go' | 'plus' | 'pro';
-export type Profile = 'recon' | 'swarm' | 'audit' | 'exploit' | 'patch';
-export type TargetArch = 'x64' | 'x86' | 'arm64';
-export type Aggressiveness = 'low' | 'medium' | 'high';
-export type Provider = 'groq' | 'openai' | 'anthropic' | 'gemini' | 'deepseek';
-export type Complexity = 'simple' | 'standard' | 'deep';
-export type RouteMode = 'single' | 'swarm';
-export type ModelSlot = 'main' | 'swarm';
+export type Tier = 'free' | 'go' | 'plus' | 'pro'
+export type Profile = 'recon' | 'swarm' | 'audit' | 'exploit' | 'patch'
+export type TargetArch = 'x64' | 'x86' | 'arm64'
+export type Aggressiveness = 'low' | 'medium' | 'high'
+export type Provider = 'groq' | 'openai' | 'anthropic' | 'gemini' | 'deepseek'
+export type Complexity = 'simple' | 'standard' | 'deep'
+export type RouteMode = 'single' | 'swarm'
+export type ModelSlot = 'main' | 'swarm'
 
-export const VALID_TIERS: readonly Tier[] = ['free', 'go', 'plus', 'pro'] as const;
+export const VALID_TIERS: readonly Tier[] = ['free', 'go', 'plus', 'pro'] as const
 
 /** Profiles that can produce offensive-security content (exploitation vectors,
  *  escape payloads). These require a verified authorization scope — see
@@ -42,9 +42,7 @@ export const VALID_TIERS: readonly Tier[] = ['free', 'go', 'plus', 'pro'] as con
  *
  * Only offensive exploitation workflows require authorization.
  */
-export const AUTHORIZATION_GATED_PROFILES: readonly Profile[] = [
-  'exploit'
-] as const;
+export const AUTHORIZATION_GATED_PROFILES: readonly Profile[] = ['exploit'] as const
 
 // ---------------------------------------------------------------------------
 // Request schema
@@ -53,8 +51,8 @@ export const AUTHORIZATION_GATED_PROFILES: readonly Profile[] = [
 export const ChatTurnSchema = z.object({
   role: z.enum(['user', 'assistant', 'system']),
   content: z.string().min(1).max(8_000),
-});
-export type ChatTurn = z.infer<typeof ChatTurnSchema>;
+})
+export type ChatTurn = z.infer<typeof ChatTurnSchema>
 
 export const ExecutionPayloadSchema = z.object({
   logic: z.string().min(1).max(500_000), // Bumped to 500k to allow Pro payloads
@@ -78,10 +76,14 @@ export const ExecutionPayloadSchema = z.object({
   contextWindow: z.coerce.number().int().min(1_024).max(32_768).default(4_096),
   conversation: z.array(ChatTurnSchema).max(50).optional(),
   asyncMode: z.boolean().default(false),
-  requestNonce: z.string().length(32).regex(/^[a-f0-9]+$/).optional(),
+  requestNonce: z
+    .string()
+    .length(32)
+    .regex(/^[a-f0-9]+$/)
+    .optional(),
   requestTimestampMs: z.number().int().positive().optional(),
-});
-export type ExecutionPayload = z.infer<typeof ExecutionPayloadSchema>;
+})
+export type ExecutionPayload = z.infer<typeof ExecutionPayloadSchema>
 // ---------------------------------------------------------------------------
 // Structured finding extraction (grounded LLM output for the trace panel)
 // ---------------------------------------------------------------------------
@@ -107,149 +109,149 @@ export const StructuredFindingSchema = z.object({
       userInteraction: z.enum(['None', 'Required']),
     })
     .nullable(),
-});
-export type StructuredFinding = z.infer<typeof StructuredFindingSchema>;
+})
+export type StructuredFinding = z.infer<typeof StructuredFindingSchema>
 
 // ---------------------------------------------------------------------------
 // Result / response shapes
 // ---------------------------------------------------------------------------
 
 export interface ModelRoute {
-  provider: Provider;
-  model: string;
-  mode: RouteMode;
-  maxOutputTokens: number;
-  temperature: number;
-  complexity: Complexity;
-  confidenceScore: number;
-  cacheable: boolean;
-  reason: string;
+  provider: Provider
+  model: string
+  mode: RouteMode
+  maxOutputTokens: number
+  temperature: number
+  complexity: Complexity
+  confidenceScore: number
+  cacheable: boolean
+  reason: string
 }
 
 export interface ModelExecutionResult {
-  provider: Provider;
-  model: string;
-  mode: RouteMode;
-  text: string;
-  tokensIn: number;
-  tokensOut: number;
-  confidenceScore: number;
-  swarmConsensus?: Record<string, unknown>;
-  fallbackTrail: string[];
-  providerRetryCount: number;
+  provider: Provider
+  model: string
+  mode: RouteMode
+  text: string
+  tokensIn: number
+  tokensOut: number
+  confidenceScore: number
+  swarmConsensus?: Record<string, unknown>
+  fallbackTrail: string[]
+  providerRetryCount: number
 }
 
 export interface RateLimitResult {
-  allowed: boolean;
-  remaining: number;
-  resetMs: number;
-  limit: number;
+  allowed: boolean
+  remaining: number
+  resetMs: number
+  limit: number
 }
 
 export interface MessageQuotaResult {
-  allowed: boolean;
-  used: number;
-  remaining: number;
-  limit: number;
-  resetSeconds: number;
+  allowed: boolean
+  used: number
+  remaining: number
+  limit: number
+  resetSeconds: number
 }
 
 export interface TokenReservation {
-  allowed: boolean;
-  reservedTokens: number;
-  usedTokens: number;
-  remainingTokens: number;
-  limitTokens: number;
+  allowed: boolean
+  reservedTokens: number
+  usedTokens: number
+  remainingTokens: number
+  limitTokens: number
 }
 
 /** Mirrors TokenReservation but tracks real provider $ cost (in paise)
  *  instead of raw token count. See MONTHLY_COST_BUDGET_PAISE below for why
  *  this exists alongside MONTHLY_TOKEN_BUDGETS rather than replacing it. */
 export interface CostReservation {
-  allowed: boolean;
-  reservedPaise: number;
-  usedPaise: number;
-  remainingPaise: number;
-  limitPaise: number;
+  allowed: boolean
+  reservedPaise: number
+  usedPaise: number
+  remainingPaise: number
+  limitPaise: number
 }
 
 export interface DailySpendState {
-  budgetPaise: number;
-  usedPaise: number;
-  forceCheapModels: boolean;
+  budgetPaise: number
+  usedPaise: number
+  forceCheapModels: boolean
 }
 
 export interface AuthorizationDecision {
-  allowed: boolean;
-  scopeId: string | null;
-  reason: string;
-  expiresInHours: number | null;
+  allowed: boolean
+  scopeId: string | null
+  reason: string
+  expiresInHours: number | null
 }
 
 export interface ResponseMetrics {
-  latencyMs: number;
-  tokensUsed: number;
-  tokensReserved: number;
-  monthlyTokenRemaining: number;
-  confidenceScore: number;
-  rateLimitRemaining: number;
-  provider: Provider | 'cache';
-  model: string;
-  routeMode: RouteMode | 'cache';
-  complexity: Complexity;
-  estimatedCostInr: number;
-  estimatedProfitInr: number;
-  cacheHit: boolean;
-  dailySpendRemainingInr: number;
-  fallbackUsed: boolean;
-  providerRetryCount: number;
-  requestSizeChars: number;
-  swarmUsed: boolean;
-  messageQuotaLimit: number;
-  messageQuotaRemaining: number;
-  messageQuotaResetSeconds: number;
-  authorizationScopeId: string | null;
-  authorizationExpiresInHours: number | null;
+  latencyMs: number
+  tokensUsed: number
+  tokensReserved: number
+  monthlyTokenRemaining: number
+  confidenceScore: number
+  rateLimitRemaining: number
+  provider: Provider | 'cache'
+  model: string
+  routeMode: RouteMode | 'cache'
+  complexity: Complexity
+  estimatedCostInr: number
+  estimatedProfitInr: number
+  cacheHit: boolean
+  dailySpendRemainingInr: number
+  fallbackUsed: boolean
+  providerRetryCount: number
+  requestSizeChars: number
+  swarmUsed: boolean
+  messageQuotaLimit: number
+  messageQuotaRemaining: number
+  messageQuotaResetSeconds: number
+  authorizationScopeId: string | null
+  authorizationExpiresInHours: number | null
 }
 
 export interface ExecutionResponse {
-  analysis: string;
-  steps: string[];
-  status: 'completed';
-  swarmConsensus?: Record<string, unknown>;
-  traceEvents?: TraceEvent[]; // <-- ADDED THIS LINE
-  metrics: ResponseMetrics;
+  analysis: string
+  steps: string[]
+  status: 'completed'
+  swarmConsensus?: Record<string, unknown>
+  traceEvents?: TraceEvent[] // <-- ADDED THIS LINE
+  metrics: ResponseMetrics
 }
 
 export interface PromptPayload {
-  promptLogic: string;
-  compressedConversation: boolean;
-  olderTurnsCompressed: number;
+  promptLogic: string
+  compressedConversation: boolean
+  olderTurnsCompressed: number
 }
 
 export interface UsageEvent {
-  user_id: string;
-  tier: Tier;
-  profile: Profile;
-  provider: Provider | 'cache';
-  model: string;
-  route_mode: RouteMode | 'cache';
-  complexity: Complexity;
-  tokens_in: number;
-  tokens_out: number;
-  tokens_total: number;
-  estimated_cost_paise: number;
-  allocated_revenue_paise: number;
-  estimated_profit_paise: number;
-  latency_ms: number;
-  provider_retry_count: number;
-  fallback_used: boolean;
-  cache_key: string | null;
-  swarm_used: boolean;
-  confidence_score: number;
-  request_size_chars: number;
-  cache_hit: boolean;
-  authorization_scope_id: string | null;
+  user_id: string
+  tier: Tier
+  profile: Profile
+  provider: Provider | 'cache'
+  model: string
+  route_mode: RouteMode | 'cache'
+  complexity: Complexity
+  tokens_in: number
+  tokens_out: number
+  tokens_total: number
+  estimated_cost_paise: number
+  allocated_revenue_paise: number
+  estimated_profit_paise: number
+  latency_ms: number
+  provider_retry_count: number
+  fallback_used: boolean
+  cache_key: string | null
+  swarm_used: boolean
+  confidence_score: number
+  request_size_chars: number
+  cache_hit: boolean
+  authorization_scope_id: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -261,7 +263,7 @@ export const PLAN_FEATURES: Record<Tier, readonly string[]> = {
   go: ['core_heuristics'],
   plus: ['core_heuristics', 'interactive_topology', 'pdf_export'],
   pro: ['core_heuristics', 'interactive_topology', 'pdf_export', 'swarm_intelligence', 'advanced_terminal'],
-};
+}
 
 /** Server-side Execution Sandbox resource ceilings. Non-Pro tiers have no
  * lifecycle access because they do not carry the advanced_terminal feature. */
@@ -279,19 +281,19 @@ export const TTY_RESOURCE_LIMITS = {
     maxOutputBytesPerExecution: 256 * 1_024,
     maxQueueDepth: 20,
   },
-} as const;
+} as const
 
 export const MARGIN_CHAR_LIMITS: Record<Tier, number> = {
   free: 10_000,
   go: 15_000,
   plus: 60_000,
   pro: 500_000, // Massive allocation unlocked for Pro tier
-};
+}
 
 // --- ADDED FOR FRONTEND COMPATIBILITY ---
 export interface PlanLimitConfig {
-  capabilities: readonly string[];
-  maxCharsPerRequest: number;
+  capabilities: readonly string[]
+  maxCharsPerRequest: number
 }
 
 // Bridges the backend data structures directly to the frontend's expectations
@@ -300,10 +302,10 @@ export const PLAN_LIMITS: Record<Tier, PlanLimitConfig> = {
   go: { capabilities: PLAN_FEATURES.go, maxCharsPerRequest: MARGIN_CHAR_LIMITS.go },
   plus: { capabilities: PLAN_FEATURES.plus, maxCharsPerRequest: MARGIN_CHAR_LIMITS.plus },
   pro: { capabilities: PLAN_FEATURES.pro, maxCharsPerRequest: MARGIN_CHAR_LIMITS.pro },
-};
+}
 
 // Aliases PlanTier to Tier so frontend imports don't crash
-export type PlanTier = Tier;
+export type PlanTier = Tier
 // ----------------------------------------
 
 export const MONTHLY_TOKEN_BUDGETS: Record<Tier, number> = {
@@ -311,14 +313,14 @@ export const MONTHLY_TOKEN_BUDGETS: Record<Tier, number> = {
   go: 8_000_000,
   plus: 40_000_000,
   pro: 120_000_000,
-};
+}
 
 export const PLAN_MONTHLY_PRICE_PAISE: Record<Tier, number> = {
   free: 0,
   go: 299 * 100,
   plus: 999 * 100,
   pro: 4_999 * 100,
-};
+}
 
 /**
  * Hard ceiling on actual provider $ cost per user per tier per month, in
@@ -345,26 +347,26 @@ export const MONTHLY_COST_BUDGET_PAISE: Record<Tier, number> = {
   go: 8_500,
   plus: 39_000,
   pro: 195_000,
-};
+}
 
 export const RATE_LIMITS: Record<Tier, { windowSecs: number; maxReq: number }> = {
   free: { windowSecs: 60, maxReq: 20 },
   go: { windowSecs: 60, maxReq: 60 },
   plus: { windowSecs: 60, maxReq: 120 },
   pro: { windowSecs: 60, maxReq: 300 },
-};
+}
 
 /** Rolling window, not calendar-aligned: a user's first message starts their
  *  own 5-hour timer. Sits between the per-minute burst limiter and the
  *  monthly token budget as a mid-range abuse/cost guard. */
-export const MESSAGE_QUOTA_WINDOW_SECS = 5 * 60 * 60;
+export const MESSAGE_QUOTA_WINDOW_SECS = 5 * 60 * 60
 
 export const MESSAGE_QUOTA_LIMITS: Record<Tier, number> = {
   free: 20,
   go: 35,
   plus: 100,
   pro: 180,
-};
+}
 
 export const MODEL_PRICING_USD_PER_MILLION: Record<Provider, { input: number; output: number }> = {
   groq: { input: 0.59, output: 0.79 },
@@ -372,22 +374,24 @@ export const MODEL_PRICING_USD_PER_MILLION: Record<Provider, { input: number; ou
   anthropic: { input: 3, output: 15 },
   gemini: { input: 0.075, output: 0.3 },
   deepseek: { input: 0.27, output: 1.1 },
-};
+}
 
 export function readNumberEnv(key: string, fallback: number): number {
-  const parsed = Number(process.env[key]);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  const parsed = Number(process.env[key])
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
 export function readBooleanEnv(key: string, fallback: boolean): boolean {
-  const raw = process.env[key];
-  if (raw === undefined) return fallback;
-  return ['1', 'true', 'yes', 'on'].includes(raw.toLowerCase());
+  const raw = process.env[key]
+  if (raw === undefined) return fallback
+  return ['1', 'true', 'yes', 'on'].includes(raw.toLowerCase())
 }
 
 export function normalizeTier(raw: unknown): Tier {
-  const tier = String(raw ?? 'free').trim().toLowerCase();
-  return VALID_TIERS.includes(tier as Tier) ? (tier as Tier) : 'free';
+  const tier = String(raw ?? 'free')
+    .trim()
+    .toLowerCase()
+  return VALID_TIERS.includes(tier as Tier) ? (tier as Tier) : 'free'
 }
 
 // ---------------------------------------------------------------------------
@@ -410,40 +414,40 @@ export function normalizeTier(raw: unknown): Tier {
 // `tier_expires_at` means "no expiry on file" (e.g. free tier, or a
 // lifetime/manual grant with no end date), not "expired."
 
-export type SubscriptionStatus = 'active' | 'canceled' | 'past_due' | 'none';
-const VALID_SUBSCRIPTION_STATUSES: readonly SubscriptionStatus[] = ['active', 'canceled', 'past_due', 'none'] as const;
+export type SubscriptionStatus = 'active' | 'canceled' | 'past_due' | 'none'
+const VALID_SUBSCRIPTION_STATUSES: readonly SubscriptionStatus[] = ['active', 'canceled', 'past_due', 'none'] as const
 
 export interface TierEntitlement {
   /** The tier that should actually be enforced right now — already
    *  downgraded to 'free' if `expiresAt` has passed. */
-  tier: Tier;
-  subscriptionStatus: SubscriptionStatus;
+  tier: Tier
+  subscriptionStatus: SubscriptionStatus
   /** ISO timestamp string, or null if there's no expiry on record. */
-  expiresAt: string | null;
+  expiresAt: string | null
   /** True if `expiresAt` was in the past at resolution time. */
-  expired: boolean;
+  expired: boolean
 }
 
 export function resolveEntitlement(rawTier: unknown, rawExpiresAt: unknown, rawStatus: unknown): TierEntitlement {
-  const storedTier = normalizeTier(rawTier);
-  const expiresAt = typeof rawExpiresAt === 'string' && rawExpiresAt.length > 0 ? rawExpiresAt : null;
+  const storedTier = normalizeTier(rawTier)
+  const expiresAt = typeof rawExpiresAt === 'string' && rawExpiresAt.length > 0 ? rawExpiresAt : null
 
-  const parsedExpiry = expiresAt ? new Date(expiresAt) : null;
-  const expired = parsedExpiry !== null && !Number.isNaN(parsedExpiry.getTime()) && parsedExpiry.getTime() < Date.now();
+  const parsedExpiry = expiresAt ? new Date(expiresAt) : null
+  const expired = parsedExpiry !== null && !Number.isNaN(parsedExpiry.getTime()) && parsedExpiry.getTime() < Date.now()
 
-  const statusRaw = typeof rawStatus === 'string' ? rawStatus.trim().toLowerCase() : '';
+  const statusRaw = typeof rawStatus === 'string' ? rawStatus.trim().toLowerCase() : ''
   const storedStatus: SubscriptionStatus = VALID_SUBSCRIPTION_STATUSES.includes(statusRaw as SubscriptionStatus)
     ? (statusRaw as SubscriptionStatus)
     : storedTier === 'free'
-      ? 'none'
-      : 'active';
+    ? 'none'
+    : 'active'
 
   return {
     tier: expired ? 'free' : storedTier,
     subscriptionStatus: expired ? 'past_due' : storedStatus,
     expiresAt,
     expired,
-  };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -474,8 +478,8 @@ export const ERROR_CODES = {
   MONTHLY_COST_BUDGET_EXCEEDED: 'MONTHLY_COST_BUDGET_EXCEEDED',
   SWARM_CONSENSUS_FAILURE: 'SWARM_CONSENSUS_FAILURE',
   PROVIDER_FAILURE: 'PROVIDER_FAILURE',
-} as const;
-export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
+} as const
+export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES]
 
 export const FEATURE_FLAGS = {
   swarmEnabled: readBooleanEnv('SWARM_ENABLED', true),
@@ -484,29 +488,29 @@ export const FEATURE_FLAGS = {
   dailySpendGuard: readBooleanEnv('DAILY_SPEND_GUARD', true),
   autoFallback: readBooleanEnv('AUTO_FALLBACK', true),
   streamingEnabled: readBooleanEnv('STREAMING_ENABLED', true),
-} as const;
+} as const
 
-export const NONCE_TTL_SECS = 120;
-export const REQUEST_MAX_AGE_MS = 30_000;
-export const MAX_BODY_BYTES = 150_000;
-export const OUTPUT_MAX_CHARS = 8_000;
-export const DAILY_SWARM_LIMIT = 10;
-export const CACHE_TTL_SECS = 60 * 60 * 24;
-export const CACHE_MAX_PROMPT_CHARS = 4_000;
-export const HEAVY_QUEUE_THRESHOLD_CHARS = 80_000;
-export const DEFAULT_DAILY_BUDGET_INR = 5_000;
-export const DEFAULT_USD_TO_INR = 83.5;
-export const PROVIDER_TIMEOUT_MS = 20_000;
-export const PROVIDER_MAX_RETRIES = 2;
-export const CIRCUIT_BREAKER_TTL_SECS = 300;
-export const CIRCUIT_FAILURE_THRESHOLD = 3;
-export const SWARM_CONFIDENCE_STOP_THRESHOLD = readNumberEnv('SWARM_CONFIDENCE_STOP_THRESHOLD', 90);
-export const TOKENIZER_MAX_CHARS = 200_000;
-export const AUTHORIZATION_EXPIRY_WARNING_HOURS = 48;
+export const NONCE_TTL_SECS = 120
+export const REQUEST_MAX_AGE_MS = 30_000
+export const MAX_BODY_BYTES = 150_000
+export const OUTPUT_MAX_CHARS = 8_000
+export const DAILY_SWARM_LIMIT = 10
+export const CACHE_TTL_SECS = 60 * 60 * 24
+export const CACHE_MAX_PROMPT_CHARS = 4_000
+export const HEAVY_QUEUE_THRESHOLD_CHARS = 80_000
+export const DEFAULT_DAILY_BUDGET_INR = 5_000
+export const DEFAULT_USD_TO_INR = 83.5
+export const PROVIDER_TIMEOUT_MS = 20_000
+export const PROVIDER_MAX_RETRIES = 2
+export const CIRCUIT_BREAKER_TTL_SECS = 300
+export const CIRCUIT_FAILURE_THRESHOLD = 3
+export const SWARM_CONFIDENCE_STOP_THRESHOLD = readNumberEnv('SWARM_CONFIDENCE_STOP_THRESHOLD', 90)
+export const TOKENIZER_MAX_CHARS = 200_000
+export const AUTHORIZATION_EXPIRY_WARNING_HOURS = 48
 
-export const API_VERSION = process.env.HEXICAL_API_VERSION ?? 'hexical-api-v5.0';
-export const SYSTEM_PROMPT_VERSION = process.env.HEXICAL_SYSTEM_PROMPT_VERSION ?? 'hexical-system-v5.0';
-export const PROVIDER_ROUTER_VERSION = process.env.HEXICAL_PROVIDER_ROUTER_VERSION ?? 'hexical-router-v5.0';
+export const API_VERSION = process.env.HEXICAL_API_VERSION ?? 'hexical-api-v5.0'
+export const SYSTEM_PROMPT_VERSION = process.env.HEXICAL_SYSTEM_PROMPT_VERSION ?? 'hexical-system-v5.0'
+export const PROVIDER_ROUTER_VERSION = process.env.HEXICAL_PROVIDER_ROUTER_VERSION ?? 'hexical-router-v5.0'
 
 export const REQUIRED_ENV = [
   'NEXT_PUBLIC_SUPABASE_URL',
@@ -520,74 +524,69 @@ export const REQUIRED_ENV = [
   'ANTHROPIC_SWARM_MODEL',
   'UPSTASH_REDIS_REST_URL',
   'UPSTASH_REDIS_REST_TOKEN',
-] as const;
+] as const
 
 export function modelEnvKey(provider: Provider, slot: ModelSlot = 'main'): string {
-  if (provider === 'anthropic' && slot === 'swarm') return 'ANTHROPIC_SWARM_MODEL';
-  if (provider === 'anthropic') return 'ANTHROPIC_MAIN_MODEL';
-  if (provider === 'openai') return 'OPENAI_MAIN_MODEL';
-  if (provider === 'groq') return 'GROQ_MAIN_MODEL';
-  if (provider === 'gemini') return 'GEMINI_MAIN_MODEL';
-  return 'DEEPSEEK_MAIN_MODEL';
+  if (provider === 'anthropic' && slot === 'swarm') return 'ANTHROPIC_SWARM_MODEL'
+  if (provider === 'anthropic') return 'ANTHROPIC_MAIN_MODEL'
+  if (provider === 'openai') return 'OPENAI_MAIN_MODEL'
+  if (provider === 'groq') return 'GROQ_MAIN_MODEL'
+  if (provider === 'gemini') return 'GEMINI_MAIN_MODEL'
+  return 'DEEPSEEK_MAIN_MODEL'
 }
 
 export function requiredEnv(key: string): string {
-  const value = process.env[key];
-  if (!value) throw new Error(`Missing required environment variable: ${key}`);
-  return value;
+  const value = process.env[key]
+  if (!value) throw new Error(`Missing required environment variable: ${key}`)
+  return value
 }
 
 export function getModelName(provider: Provider, slot: ModelSlot = 'main'): string {
-  return requiredEnv(modelEnvKey(provider, slot));
+  return requiredEnv(modelEnvKey(provider, slot))
 }
 
 export function providerAvailable(provider: Provider): boolean {
-  const hasModel = Boolean(process.env[modelEnvKey(provider)]);
-  if (provider === 'gemini') return hasModel && Boolean(process.env.GEMINI_API_KEY);
-  if (provider === 'deepseek') return hasModel && Boolean(process.env.DEEPSEEK_API_KEY);
-  if (provider === 'openai') return hasModel && Boolean(process.env.OPENAI_API_KEY);
-  if (provider === 'anthropic') return hasModel && Boolean(process.env.ANTHROPIC_API_KEY);
-  return hasModel && Boolean(process.env.GROQ_API_KEY);
+  const hasModel = Boolean(process.env[modelEnvKey(provider)])
+  if (provider === 'gemini') return hasModel && Boolean(process.env.GEMINI_API_KEY)
+  if (provider === 'deepseek') return hasModel && Boolean(process.env.DEEPSEEK_API_KEY)
+  if (provider === 'openai') return hasModel && Boolean(process.env.OPENAI_API_KEY)
+  if (provider === 'anthropic') return hasModel && Boolean(process.env.ANTHROPIC_API_KEY)
+  return hasModel && Boolean(process.env.GROQ_API_KEY)
 }
 
 export function getUsdToInr(): number {
-  return readNumberEnv('USD_TO_INR', DEFAULT_USD_TO_INR);
+  return readNumberEnv('USD_TO_INR', DEFAULT_USD_TO_INR)
 }
 
 export function getDailyBudgetPaise(): number {
-  const configured = Number(process.env.HEXICAL_DAILY_BUDGET_INR);
-  const budgetInr = Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_DAILY_BUDGET_INR;
-  return Math.round(budgetInr * 100);
+  const configured = Number(process.env.HEXICAL_DAILY_BUDGET_INR)
+  const budgetInr = Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_DAILY_BUDGET_INR
+  return Math.round(budgetInr * 100)
 }
 // ---------------------------------------------------------------------------
 // Swarm Engine Types (Added for Interactive UI Support)
 // ---------------------------------------------------------------------------
 
 // All valid AI agent roles in the Hexical Swarm
-export type AgentRoleType = 
-  | 'coordinator' 
-  | 'planner' 
-  | 'red_team_exploit' 
-  | 'blue_team_defense' 
-  | 'consensus_engine';
+export type AgentRoleType = 'coordinator' | 'planner' | 'red_team_exploit' | 'blue_team_defense' | 'consensus_engine'
 
 // The structure of a single argument made by an agent during execution
 export interface DebateRound {
-  roundNumber: number;
-  proposingAgentId: string;
-  proposingAgentRole: AgentRoleType;
-  argument: string;
-  evidenceASTNodeIds: string[]; // The specific AST nodes they are referencing
-  concessionMade: boolean;
-  timestampMs: number;
+  roundNumber: number
+  proposingAgentId: string
+  proposingAgentRole: AgentRoleType
+  argument: string
+  evidenceASTNodeIds: string[] // The specific AST nodes they are referencing
+  concessionMade: boolean
+  timestampMs: number
 }
 
 // The final vote cast by an agent after a debate to determine vulnerability state
 export interface ConsensusVote {
-  agentId: string;
-  role: AgentRoleType;
-  vote: 'SECURE' | 'VULNERABLE' | 'ABSTAIN';
-  rationale: string;
+  agentId: string
+  role: AgentRoleType
+  vote: 'SECURE' | 'VULNERABLE' | 'ABSTAIN'
+  rationale: string
 }
 // ---------------------------------------------------------------------------
 // Chat Stream Types & Telemetry
@@ -595,78 +594,63 @@ export interface ConsensusVote {
 
 // The structured telemetry event for the Investigation Timeline
 export interface TraceEvent {
-  id: string;
-  type: 'recon' | 'fingerprint' | 'route' | 'search' | 'verification' | 'reasoning' | 'risk' | 'synthesis' | 'general';
-  label: string;
-  detail?: string;
-  status?: 'completed' | 'partial' | 'failed';
-  latencyMs?: number;
+  id: string
+  type: 'recon' | 'fingerprint' | 'route' | 'search' | 'verification' | 'reasoning' | 'risk' | 'synthesis' | 'general'
+  label: string
+  detail?: string
+  status?: 'completed' | 'partial' | 'failed'
+  latencyMs?: number
 
   // 'recon' — only set when measureAttackSurface() actually found matches
-  attackSurfaceMetrics?: { endpoints: number; forms: number; authRoutes: number };
+  attackSurfaceMetrics?: { endpoints: number; forms: number; authRoutes: number }
 
   // 'fingerprint' — only set when detectTechnologies() actually matched something
-  technologies?: string[];
+  technologies?: string[]
 
   // 'route' — mirrors the real ModelRoute decision, nothing invented
-  routeInfo?: { selectedRoute: string; model: string; reason: string };
+  routeInfo?: { selectedRoute: string; model: string; reason: string }
 
   // 'verification'
-  left?: string;
-  right?: string;
-  result?: 'verified' | 'conflict' | 'unverified';
-  evidence?: string[]; // model-reported, grounded in this specific analysis — never canned
+  left?: string
+  right?: string
+  result?: 'verified' | 'conflict' | 'unverified'
+  evidence?: string[] // model-reported, grounded in this specific analysis — never canned
 
   // 'risk'
-  severity?: 'LOW' | 'MED' | 'HIGH' | 'CRITICAL';
-  cvss?: number;
-  impact?: string;
-  attackComplexity?: 'Low' | 'High';
-  privilegesRequired?: 'None' | 'Low' | 'High';
-  userInteraction?: 'None' | 'Required';
+  severity?: 'LOW' | 'MED' | 'HIGH' | 'CRITICAL'
+  cvss?: number
+  impact?: string
+  attackComplexity?: 'Low' | 'High'
+  privilegesRequired?: 'None' | 'Low' | 'High'
+  userInteraction?: 'None' | 'Required'
 }
 
 export interface StreamMessage {
-  id: string;
-  role: 'user' | 'hexical' | 'system' | 'error';
-  text: string;
-  ts: string; 
-  steps?: string[];
-  valid?: boolean;
-  route?: RoutePath;
-  traceEvents?: TraceEvent[]; // Maps directly to the Investigation Panel
+  id: string
+  role: 'user' | 'hexical' | 'system' | 'error'
+  text: string
+  ts: string
+  steps?: string[]
+  valid?: boolean
+  route?: RoutePath
+  traceEvents?: TraceEvent[] // Maps directly to the Investigation Panel
 }
-export type RoutePath =
-  | 'swarm'
-  | 'forge_api'
-  | 'global'
-  | 'math'
-  | 'local'
-  | 'cluster_edge'
-  | 'unknown';
+export type RoutePath = 'swarm' | 'forge_api' | 'global' | 'math' | 'local' | 'cluster_edge' | 'unknown'
 
-export function inferRoute(
-  steps: readonly string[] = []
-): RoutePath {
-  const blob = steps.join(' ').toLowerCase();
+export function inferRoute(steps: readonly string[] = []): RoutePath {
+  const blob = steps.join(' ').toLowerCase()
 
-  if (/swarm|red\s*team|blue\s*team|consensus|architect/.test(blob))
-    return 'swarm';
+  if (/swarm|red\s*team|blue\s*team|consensus|architect/.test(blob)) return 'swarm'
 
-  if (/forge|hackerone|bugcrowd|pdf|export/.test(blob))
-    return 'forge_api';
+  if (/forge|hackerone|bugcrowd|pdf|export/.test(blob)) return 'forge_api'
 
-  if (/openai|gpt|groq|anthropic|claude|cloud|remote|verification/.test(blob))
-    return 'global';
+  if (/openai|gpt|groq|anthropic|claude|cloud|remote|verification/.test(blob)) return 'global'
 
-  if (/math|calc|solver|equation|compute/.test(blob))
-    return 'math';
+  if (/math|calc|solver|equation|compute/.test(blob)) return 'math'
 
-  if (/local|database|offline|cache/.test(blob))
-    return 'local';
+  if (/local|database|offline|cache/.test(blob)) return 'local'
 
-  if (/cluster|edge|mesh|gateway/.test(blob))
-    return 'cluster_edge';
+  if (/cluster|edge|mesh|gateway/.test(blob)) return 'cluster_edge'
 
-  return 'unknown';
+  return 'unknown'
 }

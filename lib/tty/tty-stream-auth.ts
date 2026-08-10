@@ -1,7 +1,7 @@
 /** Server-side authorization for browser subscriptions to one execution. */
 
-import type { InternalTTYSession, TTYExecutionId, TTYSessionId } from './tty-types'
 import type { TTYExecutionStateRecord } from './tty-execution-state'
+import type { InternalTTYSession, TTYExecutionId, TTYSessionId } from './tty-types'
 
 export type TTYStreamAuthorizationFailure =
   | 'unauthenticated'
@@ -12,13 +12,22 @@ export type TTYStreamAuthorizationFailure =
   | 'internal_error'
 
 export type TTYStreamAuthorizationResult =
-  | { readonly authorized: true; readonly userId: string; readonly executionId: TTYExecutionId; readonly sessionId: TTYSessionId }
+  | {
+      readonly authorized: true
+      readonly userId: string
+      readonly executionId: TTYExecutionId
+      readonly sessionId: TTYSessionId
+    }
   | { readonly authorized: false; readonly reason: TTYStreamAuthorizationFailure }
 
 export interface TTYStreamAuthorizationDependencies {
   readonly getExecutionState: (executionId: TTYExecutionId) => Promise<TTYExecutionStateRecord | null>
   readonly getSession: (sessionId: TTYSessionId, userId: string) => Promise<InternalTTYSession | null>
-  readonly canSubscribe?: (input: { readonly userId: string; readonly executionId: TTYExecutionId; readonly sessionId: TTYSessionId }) => Promise<boolean>
+  readonly canSubscribe?: (input: {
+    readonly userId: string
+    readonly executionId: TTYExecutionId
+    readonly sessionId: TTYSessionId
+  }) => Promise<boolean>
 }
 
 export interface TTYStreamAuthorizationRequest {
@@ -40,8 +49,10 @@ export class TTYStreamAuthorizer {
     } catch {
       return { authorized: false, reason: 'internal_error' }
     }
-    if (state === null || state.executionId !== request.executionId) return { authorized: false, reason: 'execution_not_found' }
-    if (request.requestedSessionId !== undefined && request.requestedSessionId !== state.sessionId) return { authorized: false, reason: 'session_not_found' }
+    if (state === null || state.executionId !== request.executionId)
+      return { authorized: false, reason: 'execution_not_found' }
+    if (request.requestedSessionId !== undefined && request.requestedSessionId !== state.sessionId)
+      return { authorized: false, reason: 'session_not_found' }
 
     let session: InternalTTYSession | null
     try {
@@ -50,11 +61,19 @@ export class TTYStreamAuthorizer {
       return { authorized: false, reason: 'internal_error' }
     }
     if (session === null || session.ownerUserId !== userId) return { authorized: false, reason: 'session_not_found' }
-    if (session.status !== 'active' && session.status !== 'idle') return { authorized: false, reason: 'session_not_active' }
+    if (session.status !== 'active' && session.status !== 'idle')
+      return { authorized: false, reason: 'session_not_active' }
 
     if (this.dependencies.canSubscribe) {
       try {
-        if (!await this.dependencies.canSubscribe({ userId, executionId: request.executionId, sessionId: state.sessionId })) return { authorized: false, reason: 'permission_denied' }
+        if (
+          !(await this.dependencies.canSubscribe({
+            userId,
+            executionId: request.executionId,
+            sessionId: state.sessionId,
+          }))
+        )
+          return { authorized: false, reason: 'permission_denied' }
       } catch {
         return { authorized: false, reason: 'internal_error' }
       }
@@ -63,4 +82,3 @@ export class TTYStreamAuthorizer {
     return { authorized: true, userId, executionId: request.executionId, sessionId: state.sessionId }
   }
 }
-

@@ -1,115 +1,76 @@
-import { NextResponse } from 'next/server';
-import { auth, currentUser } from '@clerk/nextjs/server';
-import Razorpay from 'razorpay';
-import { createClient } from '@supabase/supabase-js';
+import { auth, currentUser } from '@clerk/nextjs/server'
+import { createClient } from '@supabase/supabase-js'
+import { NextResponse } from 'next/server'
+import Razorpay from 'razorpay'
+import { getCanonicalEntitlement } from '@/lib/canonical-entitlement'
+import { PRICING } from '@/lib/pricing.config'
 
-// Price configuration in Paisa (1 INR = 100 Paisa)
-const TIER_PRICE_MAP: Record<string, number> = {
-  go: 299 * 100,     // ₹299
-  plus: 999 * 100,  // ₹999
-  pro: 4999 * 100,   // ₹4,999
-};
+export const runtime = 'nodejs'
 
-export async function POST(req: Request) {
+export async function POST(req: Request): Promise<NextResponse> {
   try {
-    // ============================================================================
-    // 1. LAZY INSTANTIATION: The Vercel Build Shield
-    // ============================================================================
-    if (!process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
-      throw new Error("FATAL: Missing Razorpay cryptographic keys in environment variables.");
-    }
-    if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-      throw new Error("FATAL: Missing Supabase infrastructure keys.");
-    }
-
-    const razorpay = new Razorpay({
-      key_id: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
-      key_secret: process.env.RAZORPAY_KEY_SECRET,
-    });
-
-    const supabaseAdmin = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE_KEY
-    );
-
-    // ============================================================================
-    // 2. CRYPTOGRAPHIC IDENTITY VALIDATION
-    // ============================================================================
-    const { userId } = await auth();
-    const user = await currentUser();
-
+    const { userId } = await auth()
+    const user = await currentUser()
     if (!userId || !user) {
-      return NextResponse.json({ error: "Unauthorized access bounds." }, { status: 401 });
+      return NextResponse.json({ error: 'Unauthorized access.' }, { status: 401 })
     }
 
-    const body = await req.json();
-    const tier = body.tier?.toLowerCase();
-    const amountInPaisa = TIER_PRICE_MAP[tier];
-
-    if (!amountInPaisa) {
-      return NextResponse.json({ error: "Invalid tier pricing matrix configuration." }, { status: 400 });
+    const razorpayKeyId = process.env.RAZORPAY_KEY_ID ?? process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID
+    const razorpaySecret = process.env.RAZORPAY_KEY_SECRET
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+    const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+    if (!razorpayKeyId || !razorpaySecret || !supabaseUrl || !supabaseServiceRoleKey) {
+      return NextResponse.json({ error: 'Payment service is not configured.' }, { status: 503 })
     }
 
-    // ============================================================================
-    // 3. THE DOUBLE-PAYMENT SHIELD
-    // ============================================================================
-    const { data: profile, error: dbError } = await supabaseAdmin
-      .from('profiles')
-      .select('tier, current_period_end')
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    if (dbError) {
-      console.warn(`[DB_TRACE]: Failed to verify existing license for ${userId}. Proceeding with caution.`);
+    const body: unknown = await req.json()
+    const requestedTier =
+      typeof body === 'object' && body !== null && 'tier' in body
+        ? String((body as { tier?: unknown }).tier)
+            .trim()
+            .toLowerCase()
+        : ''
+    if (!Object.prototype.hasOwnProperty.call(PRICING, requestedTier)) {
+      return NextResponse.json({ error: 'Invalid tier.' }, { status: 400 })
     }
 
-    if (profile && profile.tier === tier && profile.current_period_end) {
-      const endDate = new Date(profile.current_period_end);
-      if (endDate > new Date()) {
-        return NextResponse.json(
-          { error: `Transaction blocked: You already hold an active ${tier.toUpperCase()} license valid until ${endDate.toLocaleDateString()}.` },
-          { status: 400 } 
-        );
-      }
+    const tier = requestedTier as keyof typeof PRICING
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey)
+    const entitlement = await getCanonicalEntitlement(supabaseAdmin, userId)
+    if (entitlement.active && entitlement.tier === tier) {
+      return NextResponse.json(
+        { error: `You already have an active ${tier.toUpperCase()} subscription.` },
+        { status: 409 },
+      )
     }
 
-    // ============================================================================
-    // 4. THE RAZORPAY ORDER OBJECT
-    // ============================================================================
-    const safeReceiptString = `rpt_${userId.substring(0, 15)}_${Date.now().toString().slice(-8)}`;
-
-    const options = {
-      amount: amountInPaisa,
-      currency: "INR",
-      receipt: safeReceiptString,
+    const razorpay = new Razorpay({ key_id: razorpayKeyId, key_secret: razorpaySecret })
+    const order = await razorpay.orders.create({
+      amount: PRICING[tier].pricePaise,
+      currency: 'INR',
+      receipt: `rcpt_${userId.slice(0, 10)}_${Date.now().toString().slice(-8)}`,
       notes: {
         clerkUserId: userId,
         requestedTier: tier,
       },
-    };
+    })
 
-    const order = await razorpay.orders.create(options);
-
-    // ============================================================================
-    // 5. SECURE METADATA DISPATCH
-    // ============================================================================
     return NextResponse.json({
       id: order.id,
       amount: order.amount,
       currency: order.currency,
-      tier: tier,
+      tier,
+      keyId: razorpayKeyId,
       userMeta: {
-        name: user.fullName || "Hexical Researcher",
-        email: user.primaryEmailAddress?.emailAddress || "",
-        contact: "" 
-      }
-    });
-
-  } catch (error: any) {
-    console.error("[RAZORPAY_ORDER_FATAL]:", error);
+        name: user.fullName || 'Hexical Operative',
+        email: user.primaryEmailAddress?.emailAddress || '',
+      },
+    })
+  } catch (error: unknown) {
+    console.error('[RAZORPAY_ORDER_FATAL]', error)
     return NextResponse.json(
-      { error: error.message || "Failed to instantiate Razorpay transaction handshake." },
-      { status: 500 }
-    );
+      { error: error instanceof Error ? error.message : 'Failed to establish secure payment channel.' },
+      { status: 500 },
+    )
   }
 }

@@ -1,14 +1,23 @@
-import test from 'node:test'
 import assert from 'node:assert/strict'
-
-import { createQueuedTTYExecutionState, transitionTTYExecutionState, type TTYExecutionStateRecord } from '../../lib/tty/tty-execution-state'
-import { TTYRecoveryManager, type TTYRecoveryReconcileResult } from '../../lib/tty/tty-recovery'
-import { TTYWorkerRecoveryService, type TTYWorkerRecoveryLogger } from '../../lib/tty/tty-worker-recovery'
-import { ttyExecutionActiveIndexKey, ttyExecutionRuntimeKey, ttyExecutionStateKey, ttyWorkerActiveLeaseIndexKey } from '../../lib/tty/tty-worker-keys'
-import { createTTYLeaseId, createTTYWorkerId, type TTYWorkerId } from '../../lib/tty/tty-worker-types'
-import type { TTYExecutionId, TTYSessionId } from '../../lib/tty/tty-types'
-import type { TTYLeaseObservation } from '../../lib/tty/tty-worker-observer'
+import test from 'node:test'
 import { WorkerRedisMock } from './worker-redis-mock'
+import {
+  createQueuedTTYExecutionState,
+  recoverTTYExecutionState,
+  transitionTTYExecutionState,
+  type TTYExecutionStateRecord,
+} from '../../lib/tty/tty-execution-state'
+import { TTYRecoveryManager, type TTYRecoveryReconcileResult } from '../../lib/tty/tty-recovery'
+import type { TTYExecutionId, TTYSessionId } from '../../lib/tty/tty-types'
+import {
+  ttyExecutionActiveIndexKey,
+  ttyExecutionRuntimeKey,
+  ttyExecutionStateKey,
+  ttyWorkerActiveLeaseIndexKey,
+} from '../../lib/tty/tty-worker-keys'
+import type { TTYLeaseObservation } from '../../lib/tty/tty-worker-observer'
+import { TTYWorkerRecoveryService, type TTYWorkerRecoveryLogger } from '../../lib/tty/tty-worker-recovery'
+import { createTTYLeaseId, createTTYWorkerId, type TTYWorkerId } from '../../lib/tty/tty-worker-types'
 
 const oldWorkerId = createTTYWorkerId('old-worker')
 const executionId = '00000000-0000-4000-8000-000000000701' as TTYExecutionId
@@ -35,21 +44,34 @@ class ManualTimer {
 
   async tick(): Promise<void> {
     this.callback?.()
-    await new Promise<void>(resolve => setImmediate(resolve))
+    await new Promise<void>((resolve) => setImmediate(resolve))
   }
 }
 
 class CaptureLogger implements TTYWorkerRecoveryLogger {
-  readonly entries: Array<{ readonly level: string; readonly event: string; readonly fields: Readonly<Record<string, unknown>> | undefined }> = []
+  readonly entries: Array<{
+    readonly level: string
+    readonly event: string
+    readonly fields: Readonly<Record<string, unknown>> | undefined
+  }> = []
 
-  info(event: string, fields?: Readonly<Record<string, unknown>>): void { this.entries.push({ level: 'info', event, fields }) }
-  warn(event: string, fields?: Readonly<Record<string, unknown>>): void { this.entries.push({ level: 'warn', event, fields }) }
-  error(event: string, fields?: Readonly<Record<string, unknown>>): void { this.entries.push({ level: 'error', event, fields }) }
+  info(event: string, fields?: Readonly<Record<string, unknown>>): void {
+    this.entries.push({ level: 'info', event, fields })
+  }
+  warn(event: string, fields?: Readonly<Record<string, unknown>>): void {
+    this.entries.push({ level: 'warn', event, fields })
+  }
+  error(event: string, fields?: Readonly<Record<string, unknown>>): void {
+    this.entries.push({ level: 'error', event, fields })
+  }
 }
 
 function leasedState(id: TTYExecutionId = executionId, owner: TTYWorkerId = oldWorkerId): TTYExecutionStateRecord {
   const queued = createQueuedTTYExecutionState(id, sessionId, '2026-08-09T09:59:00.000Z')
-  return transitionTTYExecutionState(queued, 'leased', '2026-08-09T09:59:01.000Z', { workerId: owner, leaseId: createTTYLeaseId('safe-lease-id') })
+  return transitionTTYExecutionState(queued, 'leased', '2026-08-09T09:59:01.000Z', {
+    workerId: owner,
+    leaseId: createTTYLeaseId('safe-lease-id'),
+  })
 }
 
 function staleObservation(id: TTYExecutionId = executionId): TTYLeaseObservation {
@@ -62,7 +84,7 @@ function staleObservation(id: TTYExecutionId = executionId): TTYLeaseObservation
     renewedAt: '2026-08-09T09:59:01.000Z',
     leaseAgeMs: 59_000,
     executionState: 'leased',
-    expiresAt: '2026-08-09T09:59:30.000Z'
+    expiresAt: '2026-08-09T09:59:30.000Z',
   }
 }
 
@@ -70,16 +92,20 @@ function emptyReconcile(): TTYRecoveryReconcileResult {
   return { scanned: 0, cleaned: 0, recovered: 0, failed: 0 }
 }
 
-function createService(options: {
-  readonly redis?: WorkerRedisMock
-  readonly state?: TTYExecutionStateRecord | null
-  readonly observation?: TTYLeaseObservation | null
-  readonly recoverState?: TTYExecutionStateRecord | null
-  readonly reconcile?: (recover: (id: TTYExecutionId, session: TTYSessionId) => Promise<TTYExecutionStateRecord | null>) => Promise<TTYRecoveryReconcileResult>
-  readonly timer?: ManualTimer
-  readonly logger?: CaptureLogger
-  readonly now?: () => number
-} = {}) {
+function createService(
+  options: {
+    readonly redis?: WorkerRedisMock
+    readonly state?: TTYExecutionStateRecord | null
+    readonly observation?: TTYLeaseObservation | null
+    readonly recoverState?: TTYExecutionStateRecord | null
+    readonly reconcile?: (
+      recover: (id: TTYExecutionId, session: TTYSessionId) => Promise<TTYExecutionStateRecord | null>,
+    ) => Promise<TTYRecoveryReconcileResult>
+    readonly timer?: ManualTimer
+    readonly logger?: CaptureLogger
+    readonly now?: () => number
+  } = {},
+) {
   const redis = options.redis ?? new WorkerRedisMock()
   const timer = options.timer ?? new ManualTimer()
   const logger = options.logger ?? new CaptureLogger()
@@ -87,23 +113,30 @@ function createService(options: {
   const service = new TTYWorkerRecoveryService({
     redis,
     orphanRecovery: {
-      reconcile: async recover => {
+      reconcile: async (recover) => {
         return options.reconcile?.(recover) ?? emptyReconcile()
-      }
+      },
     },
     coordinator: {
       getState: async () => options.state ?? leasedState(),
-      recoverExecution: async id => {
+      recoverExecution: async (id) => {
         coordinatorCalls.push(id)
-        return options.recoverState ?? transitionTTYExecutionState(leasedState(id), 'queued', '2026-08-09T10:00:00.010Z', { workerId: null, leaseId: null, completionReason: 'worker_crash_recovered' })
-      }
+        return (
+          options.recoverState ??
+          recoverTTYExecutionState(leasedState(id), '2026-08-09T10:00:00.010Z', {
+            workerId: null,
+            leaseId: null,
+            completionReason: 'worker_crash_recovered',
+          })
+        )
+      },
     },
     observer: { getLeaseObservation: async () => options.observation ?? null },
     intervalMs: 1_000,
     now: options.now ?? (() => nowMs),
     setTimeout: (callback, delayMs) => timer.setTimeout(callback, delayMs),
-    clearTimeout: handle => timer.clearTimeout(handle),
-    logger
+    clearTimeout: (handle) => timer.clearTimeout(handle),
+    logger,
   })
   return { service, redis, timer, logger, coordinatorCalls }
 }
@@ -115,20 +148,30 @@ test('restart recovery reconciles orphan processes before scheduling the next sc
   await redis.sadd(ttyExecutionActiveIndexKey(), executionId)
   await redis.set(ttyExecutionRuntimeKey(executionId), JSON.stringify({ pid: 12_345, cwd: 'C:/runtime/orphan' }))
   const cleaned: Array<{ readonly pid: number; readonly cwd: string }> = []
-  const orphanRecovery = new TTYRecoveryManager(redis as never, { cleanupOrphan: async orphan => { cleaned.push(orphan); return true } })
+  const orphanRecovery = new TTYRecoveryManager(redis as never, {
+    cleanupOrphan: async (orphan) => {
+      cleaned.push(orphan)
+      return true
+    },
+  })
   const timer = new ManualTimer()
   const service = new TTYWorkerRecoveryService({
     redis,
     orphanRecovery,
     coordinator: {
       getState: async () => running,
-      recoverExecution: async () => transitionTTYExecutionState(running, 'queued', '2026-08-09T10:00:00.010Z', { workerId: null, leaseId: null, completionReason: 'worker_crash_recovered' })
+      recoverExecution: async () =>
+        recoverTTYExecutionState(running, '2026-08-09T10:00:00.010Z', {
+          workerId: null,
+          leaseId: null,
+          completionReason: 'worker_crash_recovered',
+        }),
     },
     observer: { getLeaseObservation: async () => null },
     intervalMs: 1_000,
     now: () => nowMs,
     setTimeout: (callback, delayMs) => timer.setTimeout(callback, delayMs),
-    clearTimeout: handle => timer.clearTimeout(handle)
+    clearTimeout: (handle) => timer.clearTimeout(handle),
   })
 
   const status = await service.start()
@@ -148,7 +191,7 @@ test('restart recovery reconciles orphan processes before scheduling the next sc
     malformedLeaseIndexMembers: 0,
     lastRunAt: '2026-08-09T10:00:00.000Z',
     lastRunDurationMs: 0,
-    lastError: null
+    lastError: null,
   })
   assert.deepEqual(cleaned, [{ pid: 12_345, cwd: 'C:/runtime/orphan' }])
   assert.equal(timer.delayMs, 1_000)
@@ -185,7 +228,11 @@ test('malformed lease attribution is ignored without exposing or mutating lease 
   const redis = new WorkerRedisMock()
   await redis.sadd(ttyWorkerActiveLeaseIndexKey(), 'invalid|member|with-extra-part')
   const logger = new CaptureLogger()
-  const harness = createService({ redis, logger, observation: { ...staleObservation(), leaseId: createTTYLeaseId('never-a-secret-token') } })
+  const harness = createService({
+    redis,
+    logger,
+    observation: { ...staleObservation(), leaseId: createTTYLeaseId('never-a-secret-token') },
+  })
   const result = await harness.service.recoverNow()
 
   assert.equal(result.malformedLeaseIndexMembers, 1)
@@ -195,13 +242,17 @@ test('malformed lease attribution is ignored without exposing or mutating lease 
 
 test('concurrent recovery calls share one scan and transient failures remain retryable', async () => {
   let release!: () => void
-  const gate = new Promise<void>(resolve => { release = resolve })
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
   let calls = 0
-  const harness = createService({ reconcile: async () => {
-    calls += 1
-    await gate
-    return emptyReconcile()
-  } })
+  const harness = createService({
+    reconcile: async () => {
+      calls += 1
+      await gate
+      return emptyReconcile()
+    },
+  })
   const first = harness.service.recoverNow()
   const second = harness.service.recoverNow()
   release()
@@ -211,13 +262,15 @@ test('concurrent recovery calls share one scan and transient failures remain ret
   assert.equal(harness.service.getStatus().metrics.recoveryRuns, 1)
 
   let fail = true
-  const retryHarness = createService({ reconcile: async () => {
-    if (fail) {
-      fail = false
-      throw new Error('temporary failure')
-    }
-    return emptyReconcile()
-  } })
+  const retryHarness = createService({
+    reconcile: async () => {
+      if (fail) {
+        fail = false
+        throw new Error('temporary failure')
+      }
+      return emptyReconcile()
+    },
+  })
   const failed = await retryHarness.service.recoverNow()
   const recovered = await retryHarness.service.recoverNow()
   assert.equal(failed.failures, 1)
@@ -227,9 +280,17 @@ test('concurrent recovery calls share one scan and transient failures remain ret
 
 test('start and stop are idempotent and wait for an in-flight recovery', async () => {
   let release!: () => void
-  const gate = new Promise<void>(resolve => { release = resolve })
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
   const timer = new ManualTimer()
-  const harness = createService({ timer, reconcile: async () => { await gate; return emptyReconcile() } })
+  const harness = createService({
+    timer,
+    reconcile: async () => {
+      await gate
+      return emptyReconcile()
+    },
+  })
   const starting = harness.service.start()
   const startingAgain = harness.service.start()
   const stopping = harness.service.stop()
@@ -245,23 +306,30 @@ test('start and stop are idempotent and wait for an in-flight recovery', async (
 
 test('stress scan is deterministic for one hundred lease index members', async () => {
   const redis = new WorkerRedisMock()
-  const ids = Array.from({ length: 100 }, (_, index) => `00000000-0000-4000-8000-${String(index + 800).padStart(12, '0')}` as TTYExecutionId)
-  await redis.sadd(ttyWorkerActiveLeaseIndexKey(), ...ids.map(id => `${oldWorkerId}|${id}`))
+  const ids = Array.from(
+    { length: 100 },
+    (_, index) => `00000000-0000-4000-8000-${String(index + 800).padStart(12, '0')}` as TTYExecutionId,
+  )
+  await redis.sadd(ttyWorkerActiveLeaseIndexKey(), ...ids.map((id) => `${oldWorkerId}|${id}`))
   const recovered: TTYExecutionId[] = []
   const logger = new CaptureLogger()
   const service = new TTYWorkerRecoveryService({
     redis,
     orphanRecovery: { reconcile: async () => emptyReconcile() },
     coordinator: {
-      getState: async id => leasedState(id),
-      recoverExecution: async id => {
+      getState: async (id) => leasedState(id),
+      recoverExecution: async (id) => {
         recovered.push(id)
-        return transitionTTYExecutionState(leasedState(id), 'queued', '2026-08-09T10:00:00.010Z', { workerId: null, leaseId: null, completionReason: 'worker_crash_recovered' })
-      }
+        return recoverTTYExecutionState(leasedState(id), '2026-08-09T10:00:00.010Z', {
+          workerId: null,
+          leaseId: null,
+          completionReason: 'worker_crash_recovered',
+        })
+      },
     },
-    observer: { getLeaseObservation: async id => staleObservation(id) },
+    observer: { getLeaseObservation: async (id) => staleObservation(id) },
     now: () => nowMs,
-    logger
+    logger,
   })
   const result = await service.recoverNow()
 

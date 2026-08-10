@@ -58,15 +58,15 @@ Startup recovery runs before polling so orphaned work is reconciled before new c
 
 ## Failure modes
 
-| Failure | Executor behavior | Recovery behavior |
-| --- | --- | --- |
-| Missing or non-claimable job | Return a secret-free skipped outcome and continue polling. | Existing claim/recovery services retain authoritative state. |
-| Worker or lease mismatch | Fail closed, do not start the coordinator, release local ownership. | No duplicate execution is attempted. |
-| Runtime or coordinator exception | Record a bounded error code, mark the run failed, release ownership, and continue polling. | Trigger one serialized recovery scan when configured. |
-| User/system/shutdown cancellation | Delegate to the coordinator; repeated requests are safe. | Coordinator persists cancellation and completes the lease safely. |
-| Lease renewal failure or expiry | Stop the runtime through the coordinator and avoid duplicate completion. | Preserve expired evidence and run recovery reconciliation. |
-| Poller failure | Existing poller backoff keeps discovery alive; executor remains single-concurrency. | The next poll retries discovery. |
-| Shutdown during claim/start | Stop admission, await the in-flight operation, release ownership, and clear local state. | Restart performs the startup recovery scan. |
+| Failure                           | Executor behavior                                                                          | Recovery behavior                                                 |
+| --------------------------------- | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| Missing or non-claimable job      | Return a secret-free skipped outcome and continue polling.                                 | Existing claim/recovery services retain authoritative state.      |
+| Worker or lease mismatch          | Fail closed, do not start the coordinator, release local ownership.                        | No duplicate execution is attempted.                              |
+| Runtime or coordinator exception  | Record a bounded error code, mark the run failed, release ownership, and continue polling. | Trigger one serialized recovery scan when configured.             |
+| User/system/shutdown cancellation | Delegate to the coordinator; repeated requests are safe.                                   | Coordinator persists cancellation and completes the lease safely. |
+| Lease renewal failure or expiry   | Stop the runtime through the coordinator and avoid duplicate completion.                   | Preserve expired evidence and run recovery reconciliation.        |
+| Poller failure                    | Existing poller backoff keeps discovery alive; executor remains single-concurrency.        | The next poll retries discovery.                                  |
+| Shutdown during claim/start       | Stop admission, await the in-flight operation, release ownership, and clear local state.   | Restart performs the startup recovery scan.                       |
 
 ## Metrics and observability
 

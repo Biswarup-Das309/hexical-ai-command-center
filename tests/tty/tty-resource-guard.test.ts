@@ -1,6 +1,5 @@
-import test from 'node:test'
 import assert from 'node:assert/strict'
-
+import test from 'node:test'
 import { TTYResourceGuard } from '../../lib/tty/tty-resource-guard'
 import type { TTYExecutionId } from '../../lib/tty/tty-types'
 
@@ -11,7 +10,7 @@ function guard() {
   return new TTYResourceGuard({
     maxConcurrentProcesses: 1,
     maxStdoutBytesPerSecond: 10,
-    maxStderrBytesPerSecond: 6
+    maxStderrBytesPerSecond: 6,
   })
 }
 
@@ -72,17 +71,20 @@ test('guard timeout fires once and releasing before the deadline cancels it', as
   if (!first.allowed) return
 
   let fired = 0
-  first.reservation.armTimeout(() => { fired += 1 })
-  await new Promise(resolve => setTimeout(resolve, 45))
+  first.reservation.armTimeout(() => {
+    fired += 1
+  })
+  await new Promise((resolve) => setTimeout(resolve, 45))
   assert.equal(fired, 1)
   first.reservation.release()
 
   const second = resources.reserve(executionTwo, { maxExecutionDurationMs: 40, maxOutputBytesPerExecution: 20 })
   assert.equal(second.allowed, true)
   if (!second.allowed) return
-  second.reservation.armTimeout(() => { fired += 1 })
+  second.reservation.armTimeout(() => {
+    fired += 1
+  })
   second.reservation.release()
-  await new Promise(resolve => setTimeout(resolve, 55))
+  await new Promise((resolve) => setTimeout(resolve, 55))
   assert.equal(fired, 1)
 })
-

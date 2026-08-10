@@ -1,10 +1,10 @@
-import type { TTYWorkerCapability, TTYWorkerAuthContext } from './tty-worker-types'
 import type { TTYWorkerAuthenticator, TTYWorkerAuthFailureReason } from './tty-worker-auth'
+import type { TTYWorkerCapability, TTYWorkerAuthContext } from './tty-worker-types'
 
 const WORKER_AUTH_HEADERS = {
   'Cache-Control': 'no-store, no-cache, must-revalidate',
   Pragma: 'no-cache',
-  'Content-Type': 'application/json'
+  'Content-Type': 'application/json',
 } as const
 
 export type TTYWorkerMiddlewareResult =
@@ -13,10 +13,13 @@ export type TTYWorkerMiddlewareResult =
 
 function authFailure(reason: TTYWorkerAuthFailureReason): Response {
   const status = reason === 'inactive_worker' || reason === 'offline_worker' ? 403 : 401
-  return new Response(JSON.stringify({ ok: false, code: 'WORKER_AUTHENTICATION_FAILED', message: 'Worker authentication failed.' }), {
-    status,
-    headers: WORKER_AUTH_HEADERS
-  })
+  return new Response(
+    JSON.stringify({ ok: false, code: 'WORKER_AUTHENTICATION_FAILED', message: 'Worker authentication failed.' }),
+    {
+      status,
+      headers: WORKER_AUTH_HEADERS,
+    },
+  )
 }
 
 function bearerToken(request: Request): string | null {
@@ -34,7 +37,7 @@ export function createTTYWorkerMiddleware(authenticator: Pick<TTYWorkerAuthentic
       const result = await authenticator.authenticateWorker(token, requiredCapability)
       if (!result.authenticated) return { authorized: false, response: authFailure(result.reason) }
       return { authorized: true, context: result.context }
-    }
+    },
   }
 }
 

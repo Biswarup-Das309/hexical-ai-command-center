@@ -1,9 +1,8 @@
 import 'server-only'
 
 import { createClient } from '@supabase/supabase-js'
-
+import { getCanonicalEntitlement } from '@/lib/canonical-entitlement'
 import type { Tier } from '@/lib/hexical/types'
-import { resolveWorkspaceEntitlement, type WorkspaceEntitlementProfile } from '@/lib/workspace-entitlement'
 
 /**
  * Resolves the same profile record used by /api/entitlement. Clerk supplies
@@ -16,12 +15,5 @@ export async function getUserTier(userId: string): Promise<Tier> {
   if (!url || !serviceRoleKey) return 'free'
 
   const supabaseAdmin = createClient(url, serviceRoleKey)
-  const { data, error } = await supabaseAdmin
-    .from('profiles')
-    .select('tier, subscription_status, current_period_end')
-    .eq('user_id', userId)
-    .maybeSingle()
-
-  if (error) return 'free'
-  return resolveWorkspaceEntitlement(data as WorkspaceEntitlementProfile | null).tier
+  return (await getCanonicalEntitlement(supabaseAdmin, userId)).tier
 }

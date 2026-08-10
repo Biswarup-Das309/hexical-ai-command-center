@@ -56,17 +56,13 @@
 
   /* status glow shadows — shared by border-glow-* utilities and free to
      use directly as shadow-glow-cyan / shadow-glow-emerald / etc. */
-  --shadow-glow-cyan:
-    0 0 0 1px oklch(0.82 0.16 195 / 35%), 0 0 22px oklch(0.82 0.16 195 / 28%),
+  --shadow-glow-cyan: 0 0 0 1px oklch(0.82 0.16 195 / 35%), 0 0 22px oklch(0.82 0.16 195 / 28%),
     inset 0 0 18px oklch(0.82 0.16 195 / 8%);
-  --shadow-glow-emerald:
-    0 0 0 1px oklch(0.78 0.18 160 / 35%), 0 0 22px oklch(0.78 0.18 160 / 28%),
+  --shadow-glow-emerald: 0 0 0 1px oklch(0.78 0.18 160 / 35%), 0 0 22px oklch(0.78 0.18 160 / 28%),
     inset 0 0 18px oklch(0.78 0.18 160 / 8%);
-  --shadow-glow-amber:
-    0 0 0 1px oklch(0.83 0.16 80 / 35%), 0 0 22px oklch(0.83 0.16 80 / 28%),
+  --shadow-glow-amber: 0 0 0 1px oklch(0.83 0.16 80 / 35%), 0 0 22px oklch(0.83 0.16 80 / 28%),
     inset 0 0 18px oklch(0.83 0.16 80 / 8%);
-  --shadow-glow-destructive:
-    0 0 0 1px oklch(0.63 0.24 25 / 35%), 0 0 22px oklch(0.63 0.24 25 / 28%),
+  --shadow-glow-destructive: 0 0 0 1px oklch(0.63 0.24 25 / 35%), 0 0 22px oklch(0.63 0.24 25 / 28%),
     inset 0 0 18px oklch(0.63 0.24 25 / 8%);
 
   /* motion + type tokens, reused below so every easing/tracking value has
@@ -167,11 +163,7 @@
 @layer utilities {
   /* frosted glass panel — base tier, for cards inline with content */
   .glass {
-    background: linear-gradient(
-      180deg,
-      oklch(0.14 0.014 220 / 60%),
-      oklch(0.08 0.01 220 / 55%)
-    );
+    background: linear-gradient(180deg, oklch(0.14 0.014 220 / 60%), oklch(0.08 0.01 220 / 55%));
     backdrop-filter: blur(14px) saturate(140%);
     -webkit-backdrop-filter: blur(14px) saturate(140%);
     border: 1px solid var(--border);
@@ -215,8 +207,7 @@
 
   /* HUD grid backdrop */
   .hud-grid {
-    background-image:
-      linear-gradient(to right, var(--grid) 1px, transparent 1px),
+    background-image: linear-gradient(to right, var(--grid) 1px, transparent 1px),
       linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
     background-size: 44px 44px;
   }
