@@ -225,9 +225,9 @@ function parseState(value: unknown): TTYExecutionStateRecord | null {
   }
 }
 
-function parseScriptResult(value: unknown): { readonly ok: boolean; readonly value: string } {
+function parseScriptResult(value: unknown): { readonly ok: boolean; readonly value: unknown } {
   if (!Array.isArray(value) || value.length < 2) return { ok: false, value: 'internal_error' }
-  return { ok: Number(value[0]) === 1, value: typeof value[1] === 'string' ? value[1] : 'internal_error' }
+  return { ok: Number(value[0]) === 1, value: value[1] }
 }
 
 function safeRecordPatch(patch: TTYExecutionStatePatch): TTYExecutionStatePatch {
