@@ -23,6 +23,22 @@ export async function getCanonicalEntitlement(
   userId: string,
   now = new Date(),
 ): Promise<WorkspaceEntitlement> {
+  const bootstrap = await supabase.rpc('hexical_ensure_profile', { p_user_id: userId })
+  if (bootstrap.error) {
+    console.error('[ENTITLEMENT_PROFILE_BOOTSTRAP_ERROR]', bootstrap.error)
+
+    const fallback = await supabase.from('profiles').upsert(
+      {
+        user_id: userId,
+        tier: 'free',
+        status: 'none',
+      },
+      { onConflict: 'user_id', ignoreDuplicates: true },
+    )
+
+    if (fallback.error) console.error('[ENTITLEMENT_PROFILE_FALLBACK_ERROR]', fallback.error)
+  }
+
   const canonical = await supabase
     .from('subscriptions')
     .select('tier, status, current_period_end')

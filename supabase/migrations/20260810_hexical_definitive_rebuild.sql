@@ -74,7 +74,7 @@ create table public.conversations (
 );
 create index conversations_owner_created_idx on public.conversations(user_id,created_at desc);
 create table public.messages (
-  id uuid primary key default gen_random_uuid(), conversation_id uuid not null references public.conversations(id) on delete cascade, user_id text not null references public.profiles(user_id) on delete cascade, content text not null, role text not null check(role in ('user','assistant','system')), created_at timestamptz not null default now()
+  id uuid primary key default gen_random_uuid(), conversation_id uuid not null references public.conversations(id) on delete cascade, user_id text not null references public.profiles(user_id) on delete cascade, content text not null, role text not null check(role in ('user','assistant','hexical','system','error')), created_at timestamptz not null default now()
 );
 create index messages_conversation_created_idx on public.messages(conversation_id,created_at);
 create index messages_owner_created_idx on public.messages(user_id,created_at desc);
