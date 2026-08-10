@@ -21,7 +21,9 @@ import { TTYWorkerRegistry } from '../lib/tty/tty-worker-registry'
 import { createTTYWorkerId, type TTYWorkerAuthContext } from '../lib/tty/tty-worker-types'
 
 const DEFAULT_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1_000
-const DEFAULT_VERSION = 'production'
+// Worker registration requires a semantic version so deployments can be
+// identified and upgraded deterministically.
+const DEFAULT_VERSION = '1.0.0'
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim()

@@ -40,7 +40,7 @@ interface RegistryDependencies {
 
 interface RegistryStateScriptResult {
   readonly code: number
-  readonly value: string
+  readonly value: unknown
 }
 
 const REGISTER_SCRIPT = `
@@ -91,7 +91,7 @@ return {1, cjson.encode(worker)}
 `
 
 function parseScriptResult(value: unknown): RegistryStateScriptResult {
-  if (!Array.isArray(value) || typeof value[0] !== 'number' || typeof value[1] !== 'string') {
+  if (!Array.isArray(value) || typeof value[0] !== 'number' || value.length < 2) {
     return { code: 0, value: 'internal_error' }
   }
   return { code: value[0], value: value[1] }
