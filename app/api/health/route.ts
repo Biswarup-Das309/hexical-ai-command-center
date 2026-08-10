@@ -107,7 +107,7 @@ export async function GET(request: Request) {
       if (error) {
         throw error
       }
-    }),
+    }, 5_000),
     safeCheck(async () => {
       await redis.llen('queue:hexical:execution')
     }),
