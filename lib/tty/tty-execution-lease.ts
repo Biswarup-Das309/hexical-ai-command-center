@@ -170,8 +170,8 @@ redis.call('DECR', KEYS[5])
 if tonumber(redis.call('GET', KEYS[5]) or '0') < 0 then redis.call('SET', KEYS[5], '0') end
 redis.call('EXPIRE', KEYS[5], ARGV[7])
 redis.call('SET', KEYS[1], cjson.encode(job), 'EX', ARGV[7])
-redis.call('SADD', KEYS[6], job.executionId)
-redis.call('SADD', KEYS[7], ARGV[1] .. '|' .. job.executionId)
+redis.call('SADD', KEYS[7], job.executionId)
+redis.call('SADD', KEYS[8], ARGV[1] .. '|' .. job.executionId)
 redis.call('SREM', KEYS[10], job.executionId)
 return {1, cjson.encode(job)}
 `
@@ -207,16 +207,16 @@ if tonumber(job.lease.expiresAtMs) <= tonumber(ARGV[3]) then return {0, 'lease_e
 if redis.call('EXISTS', KEYS[4]) == 1 or redis.call('EXISTS', KEYS[2]) == 0 or redis.call('EXISTS', KEYS[3]) == 0 then return {0, 'session_terminated'} end
 local attempt = tonumber(job.attempt or '0')
 if attempt >= tonumber(ARGV[6]) then
-  redis.call('DECR', KEYS[5])
-  if tonumber(redis.call('GET', KEYS[5]) or '0') < 0 then redis.call('SET', KEYS[5], '0') end
-  redis.call('EXPIRE', KEYS[5], ARGV[4])
+  redis.call('DECR', KEYS[6])
+  if tonumber(redis.call('GET', KEYS[6]) or '0') < 0 then redis.call('SET', KEYS[6], '0') end
+  redis.call('EXPIRE', KEYS[6], ARGV[4])
   job.status = 'abandoned'
   job.lease = nil
   redis.call('SET', KEYS[1], cjson.encode(job), 'EX', ARGV[4])
-  redis.call('SREM', KEYS[6], ARGV[5])
-  redis.call('SREM', KEYS[7], ARGV[1] .. '|' .. ARGV[5])
-  redis.call('SREM', KEYS[8], ARGV[5])
+  redis.call('SREM', KEYS[7], ARGV[5])
+  redis.call('SREM', KEYS[8], ARGV[1] .. '|' .. ARGV[5])
   redis.call('SREM', KEYS[9], ARGV[5])
+  redis.call('SREM', KEYS[10], ARGV[5])
   return {0, 'attempts_exhausted'}
 end
 job.status = 'queued'
@@ -225,9 +225,9 @@ job.lease = nil
 redis.call('INCR', KEYS[5])
 redis.call('EXPIRE', KEYS[5], ARGV[4])
 redis.call('SET', KEYS[1], cjson.encode(job), 'EX', ARGV[4])
-redis.call('SREM', KEYS[6], ARGV[5])
-redis.call('SREM', KEYS[7], ARGV[1] .. '|' .. ARGV[5])
-redis.call('SADD', KEYS[9], ARGV[5])
+redis.call('SREM', KEYS[7], ARGV[5])
+redis.call('SREM', KEYS[8], ARGV[1] .. '|' .. ARGV[5])
+redis.call('SADD', KEYS[10], ARGV[5])
 return {1, cjson.encode(job)}
 `
 
@@ -247,6 +247,7 @@ if redis.call('EXISTS', KEYS[4]) == 1 or redis.call('EXISTS', KEYS[2]) == 0 or r
   if tonumber(redis.call('GET', KEYS[6]) or '0') < 0 then redis.call('SET', KEYS[6], '0') end
   redis.call('EXPIRE', KEYS[6], ARGV[5])
   redis.call('DEL', KEYS[1])
+  redis.call('SREM', 'tty:worker:' .. expiredWorkerId .. ':active-leases', job.executionId)
   redis.call('SREM', KEYS[8], expiredWorkerId .. '|' .. job.executionId)
   redis.call('SREM', KEYS[9], job.executionId)
   return {0, 'session_terminated', expiredWorkerId .. '|' .. job.executionId .. '|' .. expiredToken}
@@ -269,9 +270,10 @@ job.attempt = attempt
 job.lease = nil
 redis.call('INCR', KEYS[5])
 redis.call('EXPIRE', KEYS[5], ARGV[5])
-redis.call('SET', KEYS[1], cjson.encode(job), 'EX', ARGV[5])
-redis.call('SREM', KEYS[8], expiredWorkerId .. '|' .. job.executionId)
-redis.call('SADD', KEYS[9], job.executionId)
+  redis.call('SET', KEYS[1], cjson.encode(job), 'EX', ARGV[5])
+  redis.call('SREM', 'tty:worker:' .. expiredWorkerId .. ':active-leases', job.executionId)
+  redis.call('SREM', KEYS[8], expiredWorkerId .. '|' .. job.executionId)
+  redis.call('SADD', KEYS[9], job.executionId)
 return {1, cjson.encode(job), expiredWorkerId .. '|' .. job.executionId .. '|' .. expiredToken}
 `
 
@@ -435,6 +437,7 @@ export class TTYExecutionLeaseManager {
             workerSessionKey(sessionId, 'status'),
             workerSessionKey(sessionId, 'terminal'),
             workerSessionKey(sessionId, 'queue-depth'),
+            workerSessionKey(sessionId, 'active-executions'),
             ttyWorkerActiveLeasesKey(this.workerId),
             ttyWorkerActiveLeaseIndexKey(),
             workerSessionKey(sessionId, 'jobs'),
