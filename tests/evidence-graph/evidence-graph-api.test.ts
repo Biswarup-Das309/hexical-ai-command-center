@@ -45,10 +45,20 @@ async function fixture() {
   }
   await graphStore.upsertObservations(OWNER, investigation.investigationId, [observation])
   let user: string | null = OWNER
-  const api = createEvidenceGraphApi({ authenticate: async () => user, getStore: () => graphStore })
+  let synchronizationCount = 0
+  const api = createEvidenceGraphApi({
+    authenticate: async () => user,
+    getStore: () => graphStore,
+    synchronize: async () => {
+      synchronizationCount += 1
+    },
+  })
   return {
     investigation,
     api,
+    get synchronizationCount() {
+      return synchronizationCount
+    },
     setUser(value: string | null) {
       user = value
     },
@@ -172,4 +182,21 @@ test('summary recreates the investigation graph root before querying an empty gr
   assert.equal(response.status, 200)
   assert.equal(summary.entityCount, 1)
   assert.equal((summary.entitiesByType as Record<string, number>).investigation, 1)
+})
+
+test('summary polling is read-only unless an explicit synchronization is requested', async () => {
+  const fixtureData = await fixture()
+  const pollingResponse = await fixtureData.api.summary(
+    request(`/api/investigations/${fixtureData.investigation.investigationId}/graph/summary`),
+    fixtureData.investigation.investigationId,
+  )
+  assert.equal(pollingResponse.status, 200)
+  assert.equal(fixtureData.synchronizationCount, 0)
+
+  const synchronizedResponse = await fixtureData.api.summary(
+    request(`/api/investigations/${fixtureData.investigation.investigationId}/graph/summary?sync=1`),
+    fixtureData.investigation.investigationId,
+  )
+  assert.equal(synchronizedResponse.status, 200)
+  assert.equal(fixtureData.synchronizationCount, 1)
 })
