@@ -5,6 +5,7 @@ import { Redis } from '@upstash/redis'
 import { activateTTYExecution } from '@/lib/tty/tty-execution-activator-server'
 import { createTTYAdmissionApiForRequest } from '@/lib/tty/tty-execution-admission-server'
 import { TTYExecutionApi } from '@/lib/tty/tty-execution-api'
+import { usesDirectTTYActivation } from '@/lib/tty/tty-execution-mode'
 import { isTTYExecutionState, type TTYExecutionStateRecord } from '@/lib/tty/tty-execution-state'
 import { createTTYLifecycleApiForRequest } from '@/lib/tty/tty-lifecycle-server'
 import { TTYOutputStreamManager } from '@/lib/tty/tty-output-stream'
@@ -116,7 +117,7 @@ export function createInvestigationExecutionApiForRequest() {
     getStore: () => new InvestigationStore(createInvestigationRedis(redis)),
     admitExecution: (request, sessionId) =>
       createTTYAdmissionApiForRequest({ activate: false }).admit(request, sessionId),
-    startExecution: activateTTYExecution,
+    ...(usesDirectTTYActivation() ? { startExecution: activateTTYExecution } : {}),
     logger: investigationLogger,
   })
 }

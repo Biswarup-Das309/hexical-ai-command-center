@@ -3,6 +3,7 @@ import { hasAuthenticatedTTYLeaseCapability } from './tty-execution-admission'
 import type { TTYExecutionId, TTYExecutionKind, TTYSessionId } from './tty-types'
 import {
   ttyExecutionJobKey,
+  ttyPendingExecutionIndexKey,
   ttySessionKey as workerSessionKey,
   ttyWorkerActiveLeaseIndexKey,
   ttyWorkerActiveLeasesKey,
@@ -155,6 +156,7 @@ if redis.call('EXISTS', KEYS[4]) == 1 or redis.call('EXISTS', KEYS[2]) == 0 or r
   redis.call('EXPIRE', KEYS[6], ARGV[7])
   redis.call('DEL', KEYS[1])
   redis.call('SREM', KEYS[9], job.executionId)
+  redis.call('SREM', KEYS[10], job.executionId)
   return {0, 'session_terminated'}
 end
 local attempt = tonumber(job.attempt or '0') + 1
@@ -170,6 +172,7 @@ redis.call('EXPIRE', KEYS[5], ARGV[7])
 redis.call('SET', KEYS[1], cjson.encode(job), 'EX', ARGV[7])
 redis.call('SADD', KEYS[6], job.executionId)
 redis.call('SADD', KEYS[7], ARGV[1] .. '|' .. job.executionId)
+redis.call('SREM', KEYS[10], job.executionId)
 return {1, cjson.encode(job)}
 `
 
@@ -213,6 +216,7 @@ if attempt >= tonumber(ARGV[6]) then
   redis.call('SREM', KEYS[6], ARGV[5])
   redis.call('SREM', KEYS[7], ARGV[1] .. '|' .. ARGV[5])
   redis.call('SREM', KEYS[8], ARGV[5])
+  redis.call('SREM', KEYS[9], ARGV[5])
   return {0, 'attempts_exhausted'}
 end
 job.status = 'queued'
@@ -223,6 +227,7 @@ redis.call('EXPIRE', KEYS[5], ARGV[4])
 redis.call('SET', KEYS[1], cjson.encode(job), 'EX', ARGV[4])
 redis.call('SREM', KEYS[6], ARGV[5])
 redis.call('SREM', KEYS[7], ARGV[1] .. '|' .. ARGV[5])
+redis.call('SADD', KEYS[9], ARGV[5])
 return {1, cjson.encode(job)}
 `
 
@@ -243,6 +248,7 @@ if redis.call('EXISTS', KEYS[4]) == 1 or redis.call('EXISTS', KEYS[2]) == 0 or r
   redis.call('EXPIRE', KEYS[6], ARGV[5])
   redis.call('DEL', KEYS[1])
   redis.call('SREM', KEYS[8], expiredWorkerId .. '|' .. job.executionId)
+  redis.call('SREM', KEYS[9], job.executionId)
   return {0, 'session_terminated', expiredWorkerId .. '|' .. job.executionId .. '|' .. expiredToken}
 end
 local attempt = tonumber(job.attempt or '0')
@@ -254,6 +260,7 @@ if attempt >= tonumber(ARGV[4]) then
   job.lease = nil
   redis.call('SET', KEYS[1], cjson.encode(job), 'EX', ARGV[5])
   redis.call('SREM', KEYS[8], expiredWorkerId .. '|' .. job.executionId)
+  redis.call('SREM', KEYS[9], job.executionId)
   return {0, 'attempts_exhausted', expiredWorkerId .. '|' .. job.executionId .. '|' .. expiredToken}
 end
 job.status = 'queued'
@@ -264,6 +271,7 @@ redis.call('INCR', KEYS[5])
 redis.call('EXPIRE', KEYS[5], ARGV[5])
 redis.call('SET', KEYS[1], cjson.encode(job), 'EX', ARGV[5])
 redis.call('SREM', KEYS[8], expiredWorkerId .. '|' .. job.executionId)
+redis.call('SADD', KEYS[9], job.executionId)
 return {1, cjson.encode(job), expiredWorkerId .. '|' .. job.executionId .. '|' .. expiredToken}
 `
 
@@ -282,6 +290,7 @@ if tonumber(redis.call('GET', KEYS[5]) or '0') < 0 then redis.call('SET', KEYS[5
 redis.call('SREM', KEYS[6], ARGV[4])
 redis.call('SREM', KEYS[7], ARGV[1] .. '|' .. ARGV[4])
 redis.call('SREM', KEYS[8], ARGV[4])
+redis.call('SREM', KEYS[9], ARGV[4])
 redis.call('DEL', KEYS[1])
 return {1, raw}
 `
@@ -334,6 +343,7 @@ export class TTYExecutionLeaseManager {
             ttyWorkerActiveLeasesKey(this.workerId),
             ttyWorkerActiveLeaseIndexKey(),
             workerSessionKey(sessionId, 'jobs'),
+            ttyPendingExecutionIndexKey(),
           ],
           [
             this.workerId,
@@ -418,6 +428,7 @@ export class TTYExecutionLeaseManager {
             ttyWorkerActiveLeasesKey(this.workerId),
             ttyWorkerActiveLeaseIndexKey(),
             workerSessionKey(sessionId, 'jobs'),
+            ttyPendingExecutionIndexKey(),
           ],
           [
             this.workerId,
@@ -456,6 +467,7 @@ export class TTYExecutionLeaseManager {
             workerSessionKey(sessionId, 'active-executions'),
             workerSessionKey(sessionId, 'jobs'),
             ttyWorkerActiveLeaseIndexKey(),
+            ttyPendingExecutionIndexKey(),
           ],
           [
             executionId,
@@ -496,6 +508,7 @@ export class TTYExecutionLeaseManager {
             ttyWorkerActiveLeasesKey(this.workerId),
             ttyWorkerActiveLeaseIndexKey(),
             workerSessionKey(sessionId, 'jobs'),
+            ttyPendingExecutionIndexKey(),
           ],
           [this.workerId, leaseToken, String(this.now()), executionId, sessionId],
         ),

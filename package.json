@@ -19,6 +19,7 @@
     "verify:tty-release": "npm run format:check && npm run lint:ci && npm run typecheck && npm run test:all && npm run security:audit && npm run build",
     "prepare": "husky",
     "start": "next start",
+    "worker:start": "node --experimental-transform-types --import ./scripts/register-alias.mjs scripts/tty-worker.ts",
     "test:tty": "node --experimental-transform-types --import ./tests/tty/register-alias.mjs --test-concurrency=1 --test tests/tty/tty-session-store.test.ts",
     "test:tty-api": "node --experimental-transform-types --import ./tests/tty/register-alias.mjs --test-concurrency=1 --test tests/tty/tty-lifecycle-api.test.ts",
     "test:tty-admission": "node --experimental-transform-types --import ./tests/tty/register-alias.mjs --test-concurrency=1 --test tests/tty/tty-execution-admission.test.ts tests/tty/tty-execution-admission-api.test.ts",

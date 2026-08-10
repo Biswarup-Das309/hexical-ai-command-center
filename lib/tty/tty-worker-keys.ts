@@ -78,6 +78,11 @@ export function ttyExecutionActiveIndexKey(): string {
   return 'tty:executions:active'
 }
 
+/** Set of execution IDs admitted and waiting for a worker claim. */
+export function ttyPendingExecutionIndexKey(): string {
+  return 'tty:executions:pending'
+}
+
 /** Existing TTY session key helper, shared only for worker-aware reads. */
 export function ttySessionKey(sessionId: TTYSessionId, suffix: string): string {
   return `tty:session:${sessionId}:${suffix}`

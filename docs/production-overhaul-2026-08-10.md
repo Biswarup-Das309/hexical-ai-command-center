@@ -66,10 +66,12 @@ The first install updates `package-lock.json`. Future clean checkouts should use
 1. Run the PowerShell install and validation sequence above; commit the updated `package-lock.json`.
 2. Back up Supabase production and apply the two migration files in order.
 3. Run the two repair files in order, then the two verification files. Every integrity query should return zero rows.
-4. Confirm server secrets: Clerk, Supabase URL/service role, Upstash REST URL/token, provider keys/models, Razorpay server key/secret/webhook secret, and `TTY_EXECUTION_WORKER_ID`.
-5. Deploy the application and worker from the same commit.
-6. Smoke test: authenticated entitlement, checkout signature verification, duplicate webhook idempotency, Execute session creation, duplicate idempotency key, cancellation, stream replay, stale execution repair, artifact/replay display, and owner isolation.
-7. Monitor the signals below for at least one normal traffic window before enabling broad traffic.
+4. Configure the Vercel application with `TTY_DIRECT_ACTIVATION=false` so serverless requests only admit durable jobs.
+5. Configure the worker service with `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `TTY_EXECUTION_WORKER_ID`, and a 32-character-or-longer `TTY_WORKER_AUTH_SECRET`.
+6. Start the worker service with `npm run worker:start` and confirm the `worker_ready` log, registration, heartbeat, and polling messages.
+7. Deploy the application and worker from the same commit.
+8. Smoke test: authenticated entitlement, checkout signature verification, duplicate webhook idempotency, Execute session creation, duplicate idempotency key, cancellation, stream replay, stale execution repair, artifact/replay display, and owner isolation.
+9. Monitor the signals below for at least one normal traffic window before enabling broad traffic.
 
 ## Rollback checklist
 

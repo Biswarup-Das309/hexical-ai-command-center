@@ -188,6 +188,12 @@ function processSpec(argv: readonly [string, ...string[]]): {
   readonly file: string
   readonly args: readonly string[]
 } {
+  if (commandName(argv[0]) === 'echo') {
+    return {
+      file: process.execPath,
+      args: ['-e', `process.stdout.write(${JSON.stringify(`${argv.slice(1).join(' ')}\n`)})`],
+    }
+  }
   const output = VIRTUAL_SESSION_UTILITIES[commandName(argv[0])]
   if (output === undefined) return { file: argv[0], args: argv.slice(1) }
   return {

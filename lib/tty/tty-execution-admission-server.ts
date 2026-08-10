@@ -9,6 +9,7 @@ import { log } from '@/lib/hexical/telemetry'
 import { activateTTYExecution } from './tty-execution-activator-server'
 import { TTYExecutionAdmission } from './tty-execution-admission'
 import { createTTYExecutionAdmissionApi } from './tty-execution-admission-api'
+import { usesDirectTTYActivation } from './tty-execution-mode'
 import { extractTargetCandidates, isTargetGatedExecutionKind } from './tty-policy'
 import { createTTYSessionStore } from './tty-session-store'
 
@@ -41,6 +42,6 @@ export function createTTYAdmissionApiForRequest(options: { readonly activate?: b
     getSession: (sessionId, ownerUserId) => store.getSession(sessionId, ownerUserId),
     admission,
     log: (event, fields) => log.info(event, fields),
-    ...(options.activate === false ? {} : { startExecution: activateTTYExecution }),
+    ...(options.activate === false || !usesDirectTTYActivation() ? {} : { startExecution: activateTTYExecution }),
   })
 }

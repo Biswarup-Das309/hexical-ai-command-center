@@ -8,6 +8,7 @@ import {
   type TTYExecutionStatus,
   type TTYSessionId,
 } from './tty-types'
+import { ttyPendingExecutionIndexKey } from './tty-worker-keys'
 import type { TTYWorkerAuthContext, TTYWorkerCapability } from './tty-worker-types'
 
 export interface TTYQueuedJob {
@@ -130,6 +131,7 @@ redis.call('SET', KEYS[2], ARGV[7], 'EX', ARGV[2])
 redis.call('SET', KEYS[1], ARGV[8], 'EX', ARGV[9])
 redis.call('SADD', KEYS[9], ARGV[1])
 redis.call('SADD', KEYS[10], KEYS[1])
+redis.call('SADD', KEYS[11], ARGV[1])
 redis.call('EXPIRE', KEYS[9], ARGV[2])
 redis.call('EXPIRE', KEYS[10], ARGV[9])
 return {1, ARGV[7]}
@@ -200,6 +202,7 @@ export class TTYExecutionAdmission {
         sessionKey(args.session.sessionId, 'status'),
         sessionKey(args.session.sessionId, 'jobs'),
         sessionKey(args.session.sessionId, 'idempotencies'),
+        ttyPendingExecutionIndexKey(),
       ],
       [
         executionId,
