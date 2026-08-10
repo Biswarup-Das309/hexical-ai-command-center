@@ -1,7 +1,6 @@
 /** Ordered, bounded Redis-stream persistence for worker output and telemetry. */
 
 import type { Redis } from '@upstash/redis'
-
 import type { TTYExecutionId, TTYSessionId } from './tty-types'
 import { ttyExecutionOutputSequenceKey, ttyExecutionOutputStreamKey } from './tty-worker-keys'
 
@@ -66,7 +65,11 @@ function fieldMap(value: unknown): Record<string, string> | null {
     for (let index = 0; index + 1 < value.length; index += 2) {
       const key = value[index]
       const fieldValue = value[index + 1]
-      if (typeof key !== 'string' || (typeof fieldValue !== 'string' && typeof fieldValue !== 'number' && typeof fieldValue !== 'boolean')) return null
+      if (
+        typeof key !== 'string' ||
+        (typeof fieldValue !== 'string' && typeof fieldValue !== 'number' && typeof fieldValue !== 'boolean')
+      )
+        return null
       fields[key] = String(fieldValue)
     }
     return fields
@@ -83,14 +86,28 @@ function fieldMap(value: unknown): Record<string, string> | null {
 function parseEvent(value: unknown): TTYOutputEvent | null {
   if (!Array.isArray(value) || value.length < 2 || typeof value[0] !== 'string') return null
   const fields = fieldMap(value[1])
-  if (fields === null || !fields.eventId || !fields.timestamp || !fields.executionId || !fields.sessionId || !isOutputEventType(fields.type)) return null
+  if (
+    fields === null ||
+    !fields.eventId ||
+    !fields.timestamp ||
+    !fields.executionId ||
+    !fields.sessionId ||
+    !isOutputEventType(fields.type)
+  )
+    return null
   const sequence = Number(fields.sequence)
   if (!Number.isSafeInteger(sequence) || sequence <= 0) return null
   try {
     const data: unknown = JSON.parse(fields.data ?? '{}')
     if (typeof data !== 'object' || data === null || Array.isArray(data)) return null
     const values = Object.values(data)
-    if (!values.every(value => value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')) return null
+    if (
+      !values.every(
+        (value) =>
+          value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean',
+      )
+    )
+      return null
     return {
       eventId: fields.eventId,
       sequence,
@@ -98,7 +115,7 @@ function parseEvent(value: unknown): TTYOutputEvent | null {
       executionId: fields.executionId as TTYExecutionId,
       sessionId: fields.sessionId as TTYSessionId,
       type: fields.type,
-      data: data as TTYOutputEventData
+      data: data as TTYOutputEventData,
     }
   } catch {
     return null
@@ -119,12 +136,19 @@ export class TTYOutputStreamManager {
   private readonly pending = new Map<TTYExecutionId, PendingState>()
   private readonly maxPendingEvents: number
 
-  constructor(private readonly redis: Redis, options: { readonly maxPendingEvents?: number } = {}) {
-    this.maxPendingEvents = Math.max(1, Math.min(MAX_PENDING_EVENTS, Math.floor(options.maxPendingEvents ?? MAX_PENDING_EVENTS)))
+  constructor(
+    private readonly redis: Redis,
+    options: { readonly maxPendingEvents?: number } = {},
+  ) {
+    this.maxPendingEvents = Math.max(
+      1,
+      Math.min(MAX_PENDING_EVENTS, Math.floor(options.maxPendingEvents ?? MAX_PENDING_EVENTS)),
+    )
   }
 
   async append(input: TTYOutputEventInput): Promise<TTYOutputEvent> {
-    if (!isOutputEventType(input.type) || serializedDataBytes(input.data) > MAX_OUTPUT_EVENT_DATA_BYTES) throw new Error('Invalid TTY output event.')
+    if (!isOutputEventType(input.type) || serializedDataBytes(input.data) > MAX_OUTPUT_EVENT_DATA_BYTES)
+      throw new Error('Invalid TTY output event.')
     const previous = this.pending.get(input.executionId)
     if (previous && previous.count >= this.maxPendingEvents) await previous.tail
 
@@ -135,7 +159,13 @@ export class TTYOutputStreamManager {
       const eventId = crypto.randomUUID()
       const timestamp = input.timestamp ?? new Date().toISOString()
       const data = Object.freeze({ ...input.data })
-      const sequence = parseSequence(await this.redis.eval(APPEND_OUTPUT_SCRIPT, [ttyExecutionOutputStreamKey(input.executionId), ttyExecutionOutputSequenceKey(input.executionId)], [eventId, timestamp, input.executionId, input.sessionId, input.type, JSON.stringify(data)]))
+      const sequence = parseSequence(
+        await this.redis.eval(
+          APPEND_OUTPUT_SCRIPT,
+          [ttyExecutionOutputStreamKey(input.executionId), ttyExecutionOutputSequenceKey(input.executionId)],
+          [eventId, timestamp, input.executionId, input.sessionId, input.type, JSON.stringify(data)],
+        ),
+      )
       const event: TTYOutputEvent = Object.freeze({
         eventId,
         sequence,
@@ -143,7 +173,7 @@ export class TTYOutputStreamManager {
         executionId: input.executionId,
         sessionId: input.sessionId,
         type: input.type,
-        data
+        data,
       })
       return event
     })()
@@ -168,19 +198,35 @@ export class TTYOutputStreamManager {
       sessionId: input.sessionId,
       type: input.stream,
       timestamp: input.timestamp,
-      data: { text: input.text, byteLength: Buffer.byteLength(input.text, 'utf8') }
+      data: { text: input.text, byteLength: Buffer.byteLength(input.text, 'utf8') },
     })
   }
 
-  appendState(input: { readonly executionId: TTYExecutionId; readonly sessionId: TTYSessionId; readonly state: string; readonly timestamp?: string }): Promise<TTYOutputEvent> {
+  appendState(input: {
+    readonly executionId: TTYExecutionId
+    readonly sessionId: TTYSessionId
+    readonly state: string
+    readonly timestamp?: string
+  }): Promise<TTYOutputEvent> {
     return this.append({ ...input, type: 'state', data: { state: input.state } })
   }
 
-  appendMetric(input: { readonly executionId: TTYExecutionId; readonly sessionId: TTYSessionId; readonly name: string; readonly value: number; readonly timestamp?: string }): Promise<TTYOutputEvent> {
+  appendMetric(input: {
+    readonly executionId: TTYExecutionId
+    readonly sessionId: TTYSessionId
+    readonly name: string
+    readonly value: number
+    readonly timestamp?: string
+  }): Promise<TTYOutputEvent> {
     return this.append({ ...input, type: 'metric', data: { name: input.name, value: input.value } })
   }
 
-  appendCompletion(input: { readonly executionId: TTYExecutionId; readonly sessionId: TTYSessionId; readonly state: string; readonly timestamp?: string }): Promise<TTYOutputEvent> {
+  appendCompletion(input: {
+    readonly executionId: TTYExecutionId
+    readonly sessionId: TTYSessionId
+    readonly state: string
+    readonly timestamp?: string
+  }): Promise<TTYOutputEvent> {
     return this.append({ ...input, type: 'completion', data: { state: input.state } })
   }
 
@@ -189,9 +235,10 @@ export class TTYOutputStreamManager {
     const end = options.end ?? '+'
     const count = options.count === undefined ? undefined : Math.max(1, Math.floor(options.count))
     try {
-      const raw = count === undefined
-        ? await this.redis.xrange(ttyExecutionOutputStreamKey(executionId), start, end)
-        : await this.redis.xrange(ttyExecutionOutputStreamKey(executionId), start, end, count)
+      const raw =
+        count === undefined
+          ? await this.redis.xrange(ttyExecutionOutputStreamKey(executionId), start, end)
+          : await this.redis.xrange(ttyExecutionOutputStreamKey(executionId), start, end, count)
       return (raw as unknown as unknown[])
         .map(parseEvent)
         .filter((event): event is TTYOutputEvent => event !== null)
@@ -201,4 +248,3 @@ export class TTYOutputStreamManager {
     }
   }
 }
-

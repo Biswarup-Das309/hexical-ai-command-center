@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useRef, useEffect, type FormEvent, type KeyboardEvent } from 'react'
 import { ChevronRight, CornerDownLeft, Square, Zap, ShieldAlert } from 'lucide-react'
+import { useState, useRef, useEffect, type FormEvent, type KeyboardEvent } from 'react'
 
 // -----------------------------------------------------------------------------
 // TYPE DEFINITIONS
@@ -28,23 +28,31 @@ export function CommandInput({ onSubmit, busy, onStop, activeTier = 'free' }: Co
   // ---------------------------------------------------------------------------
   // TIER-BASED FOMO LOGIC (Dynamic Placeholders & Styles)
   // ---------------------------------------------------------------------------
-  
+
   const getPlaceholderText = () => {
     switch (normalizedTier) {
-      case 'pro': return "Describe an engineering goal for the coordinated agent swarm..."
-      case 'plus': return "Describe a repository problem, change, or validation request..."
-      case 'go': return "Investigate an engineering problem..."
-      default: return "Describe what you want to investigate..."
+      case 'pro':
+        return 'Describe an engineering goal for the coordinated agent swarm...'
+      case 'plus':
+        return 'Describe a repository problem, change, or validation request...'
+      case 'go':
+        return 'Investigate an engineering problem...'
+      default:
+        return 'Describe what you want to investigate...'
     }
   }
 
   const getTierTheme = () => {
     if (focused) {
       switch (normalizedTier) {
-        case 'pro': return 'border-amber-500/70 shadow-[0_0_20px_rgba(245,158,11,0.15)] bg-amber-500/[0.02]'
-        case 'plus': return 'border-cyan-500/70 shadow-[0_0_20px_rgba(34,211,238,0.15)] bg-cyan-500/[0.02]'
-        case 'go': return 'border-emerald-500/70 shadow-[0_0_15px_rgba(16,185,129,0.15)] bg-emerald-500/[0.02]'
-        default: return 'border-primary/50 shadow-[0_0_15px_rgba(var(--primary-rgb),0.1)] bg-background/60'
+        case 'pro':
+          return 'border-amber-500/70 shadow-[0_0_20px_rgba(245,158,11,0.15)] bg-amber-500/[0.02]'
+        case 'plus':
+          return 'border-cyan-500/70 shadow-[0_0_20px_rgba(34,211,238,0.15)] bg-cyan-500/[0.02]'
+        case 'go':
+          return 'border-emerald-500/70 shadow-[0_0_15px_rgba(16,185,129,0.15)] bg-emerald-500/[0.02]'
+        default:
+          return 'border-primary/50 shadow-[0_0_15px_rgba(var(--primary-rgb),0.1)] bg-background/60'
       }
     }
     return 'border-border bg-background/40 hover:border-white/10'
@@ -52,12 +60,16 @@ export function CommandInput({ onSubmit, busy, onStop, activeTier = 'free' }: Co
 
   const getButtonTheme = () => {
     if (busy) return 'border-red-500/40 bg-red-500/10 text-red-500 hover:bg-red-500/20'
-    
+
     switch (normalizedTier) {
-      case 'pro': return 'border-amber-500/40 bg-amber-500/10 text-amber-500 hover:bg-amber-500/20'
-      case 'plus': return 'border-cyan-500/40 bg-cyan-500/10 text-cyan-500 hover:bg-cyan-500/20'
-      case 'go': return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20'
-      default: return 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/20'
+      case 'pro':
+        return 'border-amber-500/40 bg-amber-500/10 text-amber-500 hover:bg-amber-500/20'
+      case 'plus':
+        return 'border-cyan-500/40 bg-cyan-500/10 text-cyan-500 hover:bg-cyan-500/20'
+      case 'go':
+        return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20'
+      default:
+        return 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/20'
     }
   }
 
@@ -101,7 +113,6 @@ export function CommandInput({ onSubmit, busy, onStop, activeTier = 'free' }: Co
   // ---------------------------------------------------------------------------
   return (
     <form onSubmit={handleSubmit} className="relative w-full group">
-      
       {/* FOMO Upsell Badge for Free Users */}
       {normalizedTier === 'free' && value.length > 50 && (
         <div className="absolute -top-8 right-2 flex items-center gap-1.5 text-[10px] text-amber-500 font-mono animate-fade-in bg-amber-500/10 px-2 py-1 rounded border border-amber-500/20 backdrop-blur-md">
@@ -110,11 +121,24 @@ export function CommandInput({ onSubmit, busy, onStop, activeTier = 'free' }: Co
         </div>
       )}
 
-      <div className={`glass relative flex items-center gap-3 rounded-2xl px-4 py-3 transition-all duration-500 ${getTierTheme()} ${busy ? 'animate-pulse' : ''}`}>
-        
+      <div
+        className={`glass relative flex items-center gap-3 rounded-2xl px-4 py-3 transition-all duration-500 ${getTierTheme()} ${
+          busy ? 'animate-pulse' : ''
+        }`}
+      >
         {/* Visual Indicator */}
-        <ChevronRight className={`size-5 shrink-0 transition-colors duration-500 ${focused ? (normalizedTier === 'pro' ? 'text-amber-500' : normalizedTier === 'plus' ? 'text-cyan-400' : 'text-primary') : 'text-muted-foreground'}`} />
-        
+        <ChevronRight
+          className={`size-5 shrink-0 transition-colors duration-500 ${
+            focused
+              ? normalizedTier === 'pro'
+                ? 'text-amber-500'
+                : normalizedTier === 'plus'
+                ? 'text-cyan-400'
+                : 'text-primary'
+              : 'text-muted-foreground'
+          }`}
+        />
+
         {/* Textarea */}
         <textarea
           ref={textareaRef}
@@ -141,9 +165,13 @@ export function CommandInput({ onSubmit, busy, onStop, activeTier = 'free' }: Co
           className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-4 py-2 font-mono text-[11px] uppercase tracking-[0.15em] transition-all self-center shadow-lg ${getButtonTheme()}`}
         >
           {busy ? (
-            <><Square className="size-3.5 fill-current" /> Stop</>
+            <>
+              <Square className="size-3.5 fill-current" /> Stop
+            </>
           ) : (
-            <><CornerDownLeft className="size-3.5" /> Investigate</>
+            <>
+              <CornerDownLeft className="size-3.5" /> Investigate
+            </>
           )}
         </button>
       </div>

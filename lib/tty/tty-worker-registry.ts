@@ -1,6 +1,6 @@
 import type { Redis } from '@upstash/redis'
-
 import type { TTYWorkerAuditEvent, TTYWorkerAuditSink } from './tty-worker-audit'
+import { ttyWorkerMetadataKey, ttyWorkerRegistryKey } from './tty-worker-keys'
 import {
   isTTYWorkerCapability,
   normalizeTTYWorkerCapabilities,
@@ -9,9 +9,8 @@ import {
   type TTYWorkerId,
   type TTYWorkerMetadata,
   type TTYWorkerRegistration,
-  type TTYWorkerUpdate
+  type TTYWorkerUpdate,
 } from './tty-worker-types'
-import { ttyWorkerMetadataKey, ttyWorkerRegistryKey } from './tty-worker-keys'
 
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
 const MAX_METADATA_KEYS = 32
@@ -124,7 +123,7 @@ function validateRegistration(registration: TTYWorkerRegistration): TTYWorkerReg
     identity,
     version,
     capabilities: normalizeTTYWorkerCapabilities(registration.capabilities),
-    ...(registration.metadata ? { metadata: { ...registration.metadata } } : {})
+    ...(registration.metadata ? { metadata: { ...registration.metadata } } : {}),
   }
 }
 
@@ -137,7 +136,7 @@ function validateUpdate(update: TTYWorkerUpdate): TTYWorkerUpdate | null {
   return {
     ...(version !== undefined ? { version } : {}),
     ...(update.capabilities !== undefined ? { capabilities: normalizeTTYWorkerCapabilities(update.capabilities) } : {}),
-    ...(update.metadata !== undefined ? { metadata: { ...update.metadata } } : {})
+    ...(update.metadata !== undefined ? { metadata: { ...update.metadata } } : {}),
   }
 }
 
@@ -154,16 +153,19 @@ function parseWorker(value: unknown): TTYWorkerMetadata | null {
       typeof record.identity !== 'string' ||
       typeof record.version !== 'string' ||
       !Array.isArray(capabilities) ||
-      !capabilities.every((item): item is TTYWorkerCapability => typeof item === 'string' && isTTYWorkerCapability(item)) ||
+      !capabilities.every(
+        (item): item is TTYWorkerCapability => typeof item === 'string' && isTTYWorkerCapability(item),
+      ) ||
       (status !== 'active' && status !== 'offline' && status !== 'inactive') ||
       typeof record.metadata !== 'object' ||
       record.metadata === null ||
       typeof record.registeredAt !== 'string' ||
       typeof record.updatedAt !== 'string' ||
       (record.deactivatedAt !== null && typeof record.deactivatedAt !== 'string')
-    ) return null
+    )
+      return null
     const metadata = record.metadata as Record<string, unknown>
-    if (!Object.values(metadata).every(item => typeof item === 'string')) return null
+    if (!Object.values(metadata).every((item) => typeof item === 'string')) return null
     return {
       workerId,
       identity: record.identity,
@@ -173,7 +175,7 @@ function parseWorker(value: unknown): TTYWorkerMetadata | null {
       registeredAt: record.registeredAt,
       updatedAt: record.updatedAt,
       status,
-      deactivatedAt: record.deactivatedAt
+      deactivatedAt: record.deactivatedAt,
     }
   } catch {
     return null
@@ -184,7 +186,7 @@ function eventForWorker(
   eventType: TTYWorkerAuditEvent['eventType'],
   worker: TTYWorkerMetadata,
   timestamp: string,
-  metadata: Readonly<Record<string, string | number | boolean | null>> = {}
+  metadata: Readonly<Record<string, string | number | boolean | null>> = {},
 ): TTYWorkerAuditEvent {
   return {
     eventId: crypto.randomUUID(),
@@ -194,7 +196,7 @@ function eventForWorker(
     executionId: null,
     leaseId: null,
     eventType,
-    metadata
+    metadata,
   }
 }
 
@@ -203,7 +205,10 @@ export class TTYWorkerRegistry {
 
   constructor(
     private readonly redis: Redis,
-    private readonly options: { readonly audit?: TTYWorkerAuditSink; readonly dependencies?: RegistryDependencies } = {}
+    private readonly options: {
+      readonly audit?: TTYWorkerAuditSink
+      readonly dependencies?: RegistryDependencies
+    } = {},
   ) {
     this.now = options.dependencies?.now ?? (() => new Date())
   }
@@ -218,15 +223,21 @@ export class TTYWorkerRegistry {
       registeredAt,
       updatedAt: registeredAt,
       status: 'active',
-      deactivatedAt: null
+      deactivatedAt: null,
     }
     try {
-      const result = parseScriptResult(await this.redis.eval(
-        REGISTER_SCRIPT,
-        [ttyWorkerMetadataKey(worker.workerId), ttyWorkerRegistryKey()],
-        [JSON.stringify(worker), worker.workerId]
-      ))
-      if (result.code !== 1) return { registered: false, reason: result.value === 'duplicate_worker' ? 'duplicate_worker' : 'internal_error' }
+      const result = parseScriptResult(
+        await this.redis.eval(
+          REGISTER_SCRIPT,
+          [ttyWorkerMetadataKey(worker.workerId), ttyWorkerRegistryKey()],
+          [JSON.stringify(worker), worker.workerId],
+        ),
+      )
+      if (result.code !== 1)
+        return {
+          registered: false,
+          reason: result.value === 'duplicate_worker' ? 'duplicate_worker' : 'internal_error',
+        }
       const stored = parseWorker(result.value)
       if (stored === null) return { registered: false, reason: 'internal_error' }
       await this.emit(eventForWorker('worker_registered', stored, registeredAt, { version: stored.version }))
@@ -252,12 +263,21 @@ export class TTYWorkerRegistry {
     if (validated === null) return { updated: false, reason: 'invalid_update' }
     const updatedAt = this.now().toISOString()
     try {
-      const result = parseScriptResult(await this.redis.eval(
-        UPDATE_SCRIPT,
-        [ttyWorkerMetadataKey(workerId)],
-        [JSON.stringify(validated), validated.version === undefined ? '0' : '1', validated.capabilities === undefined ? '0' : '1', validated.metadata === undefined ? '0' : '1', updatedAt]
-      ))
-      if (result.code !== 1) return { updated: false, reason: result.value === 'unknown_worker' ? 'unknown_worker' : 'internal_error' }
+      const result = parseScriptResult(
+        await this.redis.eval(
+          UPDATE_SCRIPT,
+          [ttyWorkerMetadataKey(workerId)],
+          [
+            JSON.stringify(validated),
+            validated.version === undefined ? '0' : '1',
+            validated.capabilities === undefined ? '0' : '1',
+            validated.metadata === undefined ? '0' : '1',
+            updatedAt,
+          ],
+        ),
+      )
+      if (result.code !== 1)
+        return { updated: false, reason: result.value === 'unknown_worker' ? 'unknown_worker' : 'internal_error' }
       const worker = parseWorker(result.value)
       if (worker === null) return { updated: false, reason: 'internal_error' }
       return { updated: true, worker }
@@ -269,10 +289,12 @@ export class TTYWorkerRegistry {
   async listWorkers(): Promise<readonly TTYWorkerMetadata[]> {
     try {
       const ids = await this.redis.smembers(ttyWorkerRegistryKey())
-      const workers = await Promise.all(ids.map(id => {
-        const workerId = parseTTYWorkerId(id)
-        return workerId === null ? Promise.resolve(null) : this.getWorker(workerId)
-      }))
+      const workers = await Promise.all(
+        ids.map((id) => {
+          const workerId = parseTTYWorkerId(id)
+          return workerId === null ? Promise.resolve(null) : this.getWorker(workerId)
+        }),
+      )
       return workers.filter((worker): worker is TTYWorkerMetadata => worker !== null)
     } catch {
       return []
@@ -291,15 +313,20 @@ export class TTYWorkerRegistry {
     workerId: TTYWorkerId,
     script: string,
     eventType: 'worker_deactivated' | 'worker_reactivated',
-    expectedStatus: 'active' | 'inactive'
+    expectedStatus: 'active' | 'inactive',
   ): Promise<TTYWorkerStateResult> {
     if (parseTTYWorkerId(workerId) === null) return { changed: false, reason: 'unknown_worker' }
     const changedAt = this.now().toISOString()
     try {
       const result = parseScriptResult(await this.redis.eval(script, [ttyWorkerMetadataKey(workerId)], [changedAt]))
-      if (result.code !== 1) return { changed: false, reason: result.value === 'unknown_worker' ? 'unknown_worker' : 'internal_error' }
+      if (result.code !== 1)
+        return { changed: false, reason: result.value === 'unknown_worker' ? 'unknown_worker' : 'internal_error' }
       const worker = parseWorker(result.value)
-      if (worker === null || (eventType === 'worker_deactivated' && worker.status !== 'inactive') || (eventType === 'worker_reactivated' && worker.status !== expectedStatus)) {
+      if (
+        worker === null ||
+        (eventType === 'worker_deactivated' && worker.status !== 'inactive') ||
+        (eventType === 'worker_reactivated' && worker.status !== expectedStatus)
+      ) {
         return { changed: false, reason: 'internal_error' }
       }
       await this.emit(eventForWorker(eventType, worker, changedAt))

@@ -1,6 +1,5 @@
-import test from 'node:test'
 import assert from 'node:assert/strict'
-
+import test from 'node:test'
 import { TERMINAL_FONT_SIZE, TERMINAL_SCROLLBACK, TERMINAL_THEME } from '@/lib/tty/TerminalTheme'
 import { calculateTTYTerminalGeometry } from '@/lib/tty/tty-terminal-layout'
 
@@ -19,4 +18,3 @@ test('terminal geometry remains usable under resize and invalid measurements', (
   assert.deepEqual(calculateTTYTerminalGeometry(Number.NaN, Number.POSITIVE_INFINITY), { cols: 1, rows: 1 })
   assert.deepEqual(calculateTTYTerminalGeometry(800, 360, 0, -1), { cols: 96, rows: 20 })
 })
-

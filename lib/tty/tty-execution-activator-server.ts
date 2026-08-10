@@ -1,12 +1,10 @@
 import 'server-only'
 
 import { Redis } from '@upstash/redis'
-
 import { log } from '@/lib/hexical/telemetry'
-
+import { recordActivationLatency, recordActivationTimeout } from './tty-activation-metrics'
 import { TTYExecutionCoordinator, type TTYExecutionCoordinatorFailureReason } from './tty-execution-coordinator'
 import { TTYExecutionLeaseManager } from './tty-execution-lease'
-import { recordActivationLatency, recordActivationTimeout } from './tty-activation-metrics'
 import { TTYOutputStreamManager } from './tty-output-stream'
 import { createDefaultTTYProcessRuntime } from './tty-process-runtime'
 import { TTYResourceGuard } from './tty-resource-guard'
@@ -63,7 +61,7 @@ function workerContext(): TTYWorkerAuthContext {
     capability: 'execute',
     tokenId: `web-execution:${workerId}`,
     authenticatedAt: new Date(now).toISOString(),
-    expiresAt: new Date(now + WORKER_CONTEXT_TTL_MS).toISOString()
+    expiresAt: new Date(now + WORKER_CONTEXT_TTL_MS).toISOString(),
   }
 }
 
@@ -79,10 +77,16 @@ function createRuntime(): TTYExecutionActivationRuntime {
     processRuntime: createDefaultTTYProcessRuntime({ rootDir: process.env.TTY_RUNTIME_ROOT }),
     resourceGuard: new TTYResourceGuard({
       maxConcurrentProcesses: positiveInteger(process.env.TTY_MAX_CONCURRENT_PROCESSES, 1),
-      maxStdoutBytesPerSecond: positiveInteger(process.env.TTY_MAX_STDOUT_BYTES_PER_SECOND, DEFAULT_MAX_OUTPUT_BYTES_PER_SECOND),
-      maxStderrBytesPerSecond: positiveInteger(process.env.TTY_MAX_STDERR_BYTES_PER_SECOND, DEFAULT_MAX_OUTPUT_BYTES_PER_SECOND)
+      maxStdoutBytesPerSecond: positiveInteger(
+        process.env.TTY_MAX_STDOUT_BYTES_PER_SECOND,
+        DEFAULT_MAX_OUTPUT_BYTES_PER_SECOND,
+      ),
+      maxStderrBytesPerSecond: positiveInteger(
+        process.env.TTY_MAX_STDERR_BYTES_PER_SECOND,
+        DEFAULT_MAX_OUTPUT_BYTES_PER_SECOND,
+      ),
     }),
-    outputStream: new TTYOutputStreamManager(redis)
+    outputStream: new TTYOutputStreamManager(redis),
   })
   return { coordinator }
 }
@@ -111,7 +115,10 @@ function getRuntime(): TTYExecutionActivationRuntime {
  * transitioned" vs. "transitioned but activator never observed it" instead
  * of showing up as an opaque timeout with no diagnostic value.
  */
-export async function activateTTYExecution(rawExecutionId: string, rawSessionId: string): Promise<TTYExecutionActivationResult> {
+export async function activateTTYExecution(
+  rawExecutionId: string,
+  rawSessionId: string,
+): Promise<TTYExecutionActivationResult> {
   const executionId = rawExecutionId as TTYExecutionId
   const sessionId = rawSessionId as TTYSessionId
   const startedAt = Date.now()
@@ -126,35 +133,57 @@ export async function activateTTYExecution(rawExecutionId: string, rawSessionId:
   }
 
   let resolveAccepted!: (result: TTYExecutionActivationResult) => void
-  const accepted = new Promise<TTYExecutionActivationResult>(resolve => { resolveAccepted = resolve })
+  const accepted = new Promise<TTYExecutionActivationResult>((resolve) => {
+    resolveAccepted = resolve
+  })
   let settled = false
   const settle = (result: TTYExecutionActivationResult, phase: string) => {
     if (settled) return
     settled = true
     const elapsedMs = elapsed()
-    log.info('tty.activation.settled', { executionId, sessionId, phase, accepted: result.accepted, reason: result.reason, state: result.state?.state ?? null, elapsedMs })
+    log.info('tty.activation.settled', {
+      executionId,
+      sessionId,
+      phase,
+      accepted: result.accepted,
+      reason: result.reason,
+      state: result.state?.state ?? null,
+      elapsedMs,
+    })
     recordActivationLatency(elapsedMs)
     resolveAccepted(result)
   }
 
   const run = coordinator.run(executionId, sessionId, {
-    onAccepted: state => {
+    onAccepted: (state) => {
       log.info('tty.activation.leased', { executionId, sessionId, elapsedMs: elapsed() })
       settle({ accepted: true, state }, 'leased')
-    }
+    },
   })
-  void run.then(result => {
-    if (result.accepted) settle({ accepted: true, state: result.state }, 'run_completed')
-    else settle({ accepted: false, state: result.state, reason: result.reason }, 'run_rejected')
-  }).catch(error => {
-    log.error('tty.activation.run_threw', { executionId, sessionId, elapsedMs: elapsed(), message: error instanceof Error ? error.message : String(error) })
-    settle({ accepted: false, state: null, reason: 'internal_error' }, 'run_threw')
-  })
+  void run
+    .then((result) => {
+      if (result.accepted) settle({ accepted: true, state: result.state }, 'run_completed')
+      else settle({ accepted: false, state: result.state, reason: result.reason }, 'run_rejected')
+    })
+    .catch((error) => {
+      log.error('tty.activation.run_threw', {
+        executionId,
+        sessionId,
+        elapsedMs: elapsed(),
+        message: error instanceof Error ? error.message : String(error),
+      })
+      settle({ accepted: false, state: null, reason: 'internal_error' }, 'run_threw')
+    })
 
-  const timeout = new Promise<TTYExecutionActivationResult>(resolve => {
+  const timeout = new Promise<TTYExecutionActivationResult>((resolve) => {
     setTimeout(() => {
       if (settled) return
-      log.warn('tty.activation.timeout', { executionId, sessionId, elapsedMs: elapsed(), timeoutMs: DEFAULT_ACTIVATION_TIMEOUT_MS })
+      log.warn('tty.activation.timeout', {
+        executionId,
+        sessionId,
+        elapsedMs: elapsed(),
+        timeoutMs: DEFAULT_ACTIVATION_TIMEOUT_MS,
+      })
       recordActivationTimeout()
       resolve({ accepted: false, state: null, reason: 'internal_error' })
     }, DEFAULT_ACTIVATION_TIMEOUT_MS)
@@ -167,12 +196,24 @@ export async function activateTTYExecution(rawExecutionId: string, rawSessionId:
  * deliberately conservative: queued and terminal executions are returned as
  * is, while only an active execution is handed to the coordinator's fenced
  * lease recovery path. */
-export async function repairTTYExecution(rawExecutionId: string, rawSessionId: string): Promise<{ readonly repaired: boolean; readonly state: Awaited<ReturnType<TTYExecutionCoordinator['getState']>> }> {
+export async function repairTTYExecution(
+  rawExecutionId: string,
+  rawSessionId: string,
+): Promise<{ readonly repaired: boolean; readonly state: Awaited<ReturnType<TTYExecutionCoordinator['getState']>> }> {
   const executionId = rawExecutionId as TTYExecutionId
   const sessionId = rawSessionId as TTYSessionId
   const coordinator = getRuntime().coordinator
   const current = await coordinator.getState(executionId)
-  if (current === null || current.sessionId !== sessionId || current.state === 'queued' || current.state === 'succeeded' || current.state === 'failed' || current.state === 'cancelled' || current.state === 'timed_out' || current.state === 'expired') {
+  if (
+    current === null ||
+    current.sessionId !== sessionId ||
+    current.state === 'queued' ||
+    current.state === 'succeeded' ||
+    current.state === 'failed' ||
+    current.state === 'cancelled' ||
+    current.state === 'timed_out' ||
+    current.state === 'expired'
+  ) {
     return { repaired: false, state: current }
   }
   const recovered = await coordinator.recoverExecution(executionId, sessionId)

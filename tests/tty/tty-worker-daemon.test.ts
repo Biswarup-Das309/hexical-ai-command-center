@@ -1,21 +1,25 @@
-import test from 'node:test'
 import assert from 'node:assert/strict'
-
+import test from 'node:test'
 import {
   TTY_WORKER_DAEMON_HEARTBEAT_INTERVAL_MS,
   TTYWorkerDaemon,
   type TTYWorkerDaemonLogger,
-  type TTYWorkerDaemonSignalSource
+  type TTYWorkerDaemonSignalSource,
 } from '../../lib/tty/tty-worker-daemon'
 import type { TTYWorkerHeartbeatResult } from '../../lib/tty/tty-worker-heartbeat'
-import { createTTYWorkerId, type TTYWorkerAuthContext, type TTYWorkerCapability, type TTYWorkerRegistration } from '../../lib/tty/tty-worker-types'
+import {
+  createTTYWorkerId,
+  type TTYWorkerAuthContext,
+  type TTYWorkerCapability,
+  type TTYWorkerRegistration,
+} from '../../lib/tty/tty-worker-types'
 
 const workerId = createTTYWorkerId('daemon-test-worker')
 const registration: TTYWorkerRegistration = {
   workerId,
   identity: 'daemon-test-host',
   version: '1.0.0',
-  capabilities: ['claim_lease', 'renew_lease', 'execute']
+  capabilities: ['claim_lease', 'renew_lease', 'execute'],
 }
 
 class ManualTimer {
@@ -37,7 +41,7 @@ class ManualTimer {
 
   async tick(): Promise<void> {
     this.callback?.()
-    await new Promise<void>(resolve => setImmediate(resolve))
+    await new Promise<void>((resolve) => setImmediate(resolve))
   }
 }
 
@@ -64,38 +68,61 @@ class SignalHarness implements TTYWorkerDaemonSignalSource {
 }
 
 class CaptureLogger implements TTYWorkerDaemonLogger {
-  readonly entries: Array<{ readonly level: string; readonly event: string; readonly fields: Readonly<Record<string, unknown>> | undefined }> = []
+  readonly entries: Array<{
+    readonly level: string
+    readonly event: string
+    readonly fields: Readonly<Record<string, unknown>> | undefined
+  }> = []
 
-  info(event: string, fields?: Readonly<Record<string, unknown>>): void { this.entries.push({ level: 'info', event, fields }) }
-  warn(event: string, fields?: Readonly<Record<string, unknown>>): void { this.entries.push({ level: 'warn', event, fields }) }
-  error(event: string, fields?: Readonly<Record<string, unknown>>): void { this.entries.push({ level: 'error', event, fields }) }
+  info(event: string, fields?: Readonly<Record<string, unknown>>): void {
+    this.entries.push({ level: 'info', event, fields })
+  }
+  warn(event: string, fields?: Readonly<Record<string, unknown>>): void {
+    this.entries.push({ level: 'warn', event, fields })
+  }
+  error(event: string, fields?: Readonly<Record<string, unknown>>): void {
+    this.entries.push({ level: 'error', event, fields })
+  }
 }
 
 function successfulHeartbeat(sequence: number, now: string): TTYWorkerHeartbeatResult {
   return {
     recorded: true,
     heartbeat: { workerId, sequence, sentAt: now, receivedAt: now, receivedAtMs: Date.parse(now), latencyMs: 0 },
-    health: { workerId, state: 'online', lastHeartbeatAt: now, heartbeatLatencyMs: 0, missedIntervals: 0, healthScore: 100, checkedAt: now }
+    health: {
+      workerId,
+      state: 'online',
+      lastHeartbeatAt: now,
+      heartbeatLatencyMs: 0,
+      missedIntervals: 0,
+      healthScore: 100,
+      checkedAt: now,
+    },
   }
 }
 
-function createHarness(options: {
-  readonly authenticate?: () => Promise<{ readonly authenticated: false; readonly reason: 'invalid_token' } | { readonly authenticated: true; readonly context: TTYWorkerAuthContext }>
-  readonly heartbeat?: (sequence: number, now: string) => Promise<TTYWorkerHeartbeatResult>
-  readonly recovery?: { readonly start: () => Promise<unknown>; readonly stop: () => Promise<unknown> }
-} = {}) {
+function createHarness(
+  options: {
+    readonly authenticate?: () => Promise<
+      | { readonly authenticated: false; readonly reason: 'invalid_token' }
+      | { readonly authenticated: true; readonly context: TTYWorkerAuthContext }
+    >
+    readonly heartbeat?: (sequence: number, now: string) => Promise<TTYWorkerHeartbeatResult>
+    readonly recovery?: { readonly start: () => Promise<unknown>; readonly stop: () => Promise<unknown> }
+  } = {},
+) {
   const events: string[] = []
   const timer = new ManualTimer()
   const signals = new SignalHarness()
   const logger = new CaptureLogger()
-  let nowMs = 1_700_000_000_000
+  const nowMs = 1_700_000_000_000
   let heartbeatCalls = 0
   const authContext: TTYWorkerAuthContext = {
     workerId,
     capability: 'execute',
     tokenId: 'daemon-test-token-id',
     authenticatedAt: new Date(nowMs).toISOString(),
-    expiresAt: new Date(nowMs + 60_000).toISOString()
+    expiresAt: new Date(nowMs + 60_000).toISOString(),
   }
   const daemon = new TTYWorkerDaemon({
     registration,
@@ -104,28 +131,28 @@ function createHarness(options: {
       registerWorker: async () => {
         events.push('register')
         return { registered: true, worker: {} as never }
-      }
+      },
     },
     authenticator: {
       authenticateWorker: async (_token: string, _requiredCapability?: TTYWorkerCapability) => {
         events.push('authenticate')
         return options.authenticate?.() ?? { authenticated: true, context: authContext }
-      }
+      },
     },
     heartbeat: {
-      recordHeartbeat: async input => {
+      recordHeartbeat: async (input) => {
         heartbeatCalls += 1
         events.push(`heartbeat:${input.sequence}`)
         const sentAt = new Date(nowMs).toISOString()
         return options.heartbeat?.(input.sequence, sentAt) ?? successfulHeartbeat(input.sequence, sentAt)
-      }
+      },
     },
     recovery: options.recovery,
     now: () => new Date(nowMs),
     setInterval: (callback, delayMs) => timer.setInterval(callback, delayMs),
-    clearInterval: handle => timer.clearInterval(handle),
+    clearInterval: (handle) => timer.clearInterval(handle),
     signals,
-    logger
+    logger,
   })
   return { daemon, events, timer, signals, logger, getHeartbeatCalls: () => heartbeatCalls }
 }
@@ -145,7 +172,7 @@ test('starts by registering, authenticating, and heartbeating without executing 
   await harness.timer.tick()
   assert.equal(harness.daemon.getStatus().heartbeatSequence, 2)
   assert.equal(harness.getHeartbeatCalls(), 2)
-  assert.ok(harness.logger.entries.some(entry => entry.event === 'daemon_started'))
+  assert.ok(harness.logger.entries.some((entry) => entry.event === 'daemon_started'))
 
   await harness.daemon.stop()
 })
@@ -154,9 +181,13 @@ test('recovery completes its restart scan before readiness and stops with the da
   const lifecycle: string[] = []
   const harness = createHarness({
     recovery: {
-      start: async () => { lifecycle.push('start') },
-      stop: async () => { lifecycle.push('stop') }
-    }
+      start: async () => {
+        lifecycle.push('start')
+      },
+      stop: async () => {
+        lifecycle.push('stop')
+      },
+    },
   })
 
   const status = await harness.daemon.start()
@@ -173,14 +204,16 @@ test('SIGTERM performs graceful shutdown and removes heartbeat resources', async
   await harness.daemon.start()
 
   harness.signals.emit('SIGTERM')
-  await new Promise<void>(resolve => setImmediate(resolve))
+  await new Promise<void>((resolve) => setImmediate(resolve))
 
   assert.equal(harness.daemon.getStatus().state, 'stopped')
   assert.equal(harness.daemon.getStatus().authenticated, false)
   assert.equal(harness.timer.cleared, true)
   assert.equal(harness.signals.count('SIGINT'), 0)
   assert.equal(harness.signals.count('SIGTERM'), 0)
-  assert.ok(harness.logger.entries.some(entry => entry.event === 'daemon_stopped' && entry.fields?.reason === 'SIGTERM'))
+  assert.ok(
+    harness.logger.entries.some((entry) => entry.event === 'daemon_stopped' && entry.fields?.reason === 'SIGTERM'),
+  )
 })
 
 test('startup authentication failure fails closed without starting timers or signal handlers', async () => {
@@ -193,21 +226,20 @@ test('startup authentication failure fails closed without starting timers or sig
   assert.equal(harness.timer.delayMs, null)
   assert.equal(harness.signals.count('SIGINT'), 0)
   assert.equal(harness.signals.count('SIGTERM'), 0)
-  assert.ok(harness.logger.entries.some(entry => entry.event === 'daemon_start_failed'))
+  assert.ok(harness.logger.entries.some((entry) => entry.event === 'daemon_start_failed'))
 })
 
 test('transient heartbeat failures are observable while the daemon remains available to stop cleanly', async () => {
   const harness = createHarness({
-    heartbeat: async (sequence, now) => sequence === 1
-      ? successfulHeartbeat(sequence, now)
-      : { recorded: false, reason: 'internal_error' }
+    heartbeat: async (sequence, now) =>
+      sequence === 1 ? successfulHeartbeat(sequence, now) : { recorded: false, reason: 'internal_error' },
   })
   await harness.daemon.start()
   await harness.timer.tick()
 
   assert.equal(harness.daemon.getStatus().state, 'running')
   assert.equal(harness.daemon.getStatus().lastError, 'heartbeat_internal_error')
-  assert.ok(harness.logger.entries.some(entry => entry.event === 'heartbeat_failed'))
+  assert.ok(harness.logger.entries.some((entry) => entry.event === 'heartbeat_failed'))
   await harness.daemon.stop()
   assert.equal(harness.timer.cleared, true)
 })
@@ -217,7 +249,9 @@ test('shutdown requested during startup cancels startup instead of resurrecting 
   const signals = new SignalHarness()
   const logger = new CaptureLogger()
   let releaseRegistration!: (result: { readonly registered: true; readonly worker: never }) => void
-  const registrationGate = new Promise<{ readonly registered: true; readonly worker: never }>(resolve => { releaseRegistration = resolve })
+  const registrationGate = new Promise<{ readonly registered: true; readonly worker: never }>((resolve) => {
+    releaseRegistration = resolve
+  })
   let authenticated = false
   const daemon = new TTYWorkerDaemon({
     registration,
@@ -226,15 +260,24 @@ test('shutdown requested during startup cancels startup instead of resurrecting 
     authenticator: {
       authenticateWorker: async () => {
         authenticated = true
-        return { authenticated: true, context: { workerId, capability: 'execute', tokenId: 'token', authenticatedAt: new Date(0).toISOString(), expiresAt: new Date(60_000).toISOString() } }
-      }
+        return {
+          authenticated: true,
+          context: {
+            workerId,
+            capability: 'execute',
+            tokenId: 'token',
+            authenticatedAt: new Date(0).toISOString(),
+            expiresAt: new Date(60_000).toISOString(),
+          },
+        }
+      },
     },
-    heartbeat: { recordHeartbeat: async input => successfulHeartbeat(input.sequence, input.sentAt) },
+    heartbeat: { recordHeartbeat: async (input) => successfulHeartbeat(input.sequence, input.sentAt) },
     now: () => new Date(1_700_000_000_000),
     setInterval: (callback, delayMs) => timer.setInterval(callback, delayMs),
-    clearInterval: handle => timer.clearInterval(handle),
+    clearInterval: (handle) => timer.clearInterval(handle),
     signals,
-    logger
+    logger,
   })
 
   const starting = daemon.start()
@@ -246,5 +289,5 @@ test('shutdown requested during startup cancels startup instead of resurrecting 
   assert.equal((await stopping).state, 'stopped')
   assert.equal(authenticated, false)
   assert.equal(timer.delayMs, null)
-  assert.ok(logger.entries.some(entry => entry.event === 'daemon_start_cancelled'))
+  assert.ok(logger.entries.some((entry) => entry.event === 'daemon_start_cancelled'))
 })

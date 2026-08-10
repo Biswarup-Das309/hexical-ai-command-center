@@ -6,49 +6,49 @@ Execute queued TTY jobs automatically through authenticated workers.
 
 ## Phase A — worker daemon
 
-* daemon startup
+- daemon startup
 
-* worker authentication
+- worker authentication
 
-* worker registration
+- worker registration
 
-* heartbeat loop
+- heartbeat loop
 
-* graceful shutdown
+- graceful shutdown
 
 ## Phase B — queue polling
 
-* poll pending executions
+- poll pending executions
 
-* backoff
+- backoff
 
-* jitter
+- jitter
 
-* queue metrics
+- queue metrics
 
 ## Phase C — lease execution
 
-* claim lease
+- claim lease
 
-* start coordinator
+- start coordinator
 
-* stream output
+- stream output
 
-* renew lease
+- renew lease
 
-* finalize
+- finalize
 
-* release lease
+- release lease
 
 ## Phase D — recovery
 
-* worker restart
+- worker restart
 
-* orphan recovery
+- orphan recovery
 
-* lease expiration
+- lease expiration
 
-* metrics
+- metrics
 
 ## Milestone 3 scope checkpoint
 

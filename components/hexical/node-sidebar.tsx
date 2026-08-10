@@ -1,13 +1,6 @@
 'use client'
 
-import {
-  Database,
-  Sigma,
-  Cloud,
-  Cpu,
-  ShieldCheck,
-  Activity,
-} from 'lucide-react'
+import { Database, Sigma, Cloud, Cpu, ShieldCheck, Activity } from 'lucide-react'
 import type { RoutePath } from '@/lib/hexical-types'
 
 interface NodeDef {
@@ -47,15 +40,11 @@ export function NodeSidebar({ activeRoute }: { activeRoute: RoutePath | null }) 
     <aside className="glass scanlines relative flex h-full flex-col overflow-hidden rounded-lg">
       <header className="flex items-center gap-2 border-b border-border px-4 py-3">
         <Cpu className="size-4 text-primary text-glow-cyan" />
-        <h2 className="font-mono text-[11px] uppercase tracking-[0.25em] text-foreground">
-          Data Sources
-        </h2>
+        <h2 className="font-mono text-[11px] uppercase tracking-[0.25em] text-foreground">Data Sources</h2>
       </header>
 
       <div className="px-4 pt-4 pb-2">
-        <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
-          Active Nodes
-        </span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">Active Nodes</span>
       </div>
 
       <ul className="flex flex-col gap-2 px-3">
@@ -82,26 +71,16 @@ export function NodeSidebar({ activeRoute }: { activeRoute: RoutePath | null }) 
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="truncate text-sm font-medium text-foreground">
-                      {node.label}
-                    </p>
+                    <p className="truncate text-sm font-medium text-foreground">{node.label}</p>
                     <span
                       className={`animate-node size-1.5 shrink-0 rounded-full ${
-                        node.id === 'global'
-                          ? 'bg-accent text-accent'
-                          : 'bg-primary text-primary'
+                        node.id === 'global' ? 'bg-accent text-accent' : 'bg-primary text-primary'
                       }`}
                     />
                   </div>
-                  <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
-                    {node.sub}
-                  </p>
+                  <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">{node.sub}</p>
                   <div className="mt-2 flex items-center justify-between font-mono text-[10px]">
-                    <span
-                      className={
-                        active ? 'text-primary' : 'text-muted-foreground'
-                      }
-                    >
+                    <span className={active ? 'text-primary' : 'text-muted-foreground'}>
                       {active ? 'ENGAGED' : 'STANDBY'}
                     </span>
                     <span className="text-muted-foreground">{node.latency}</span>

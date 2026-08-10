@@ -1,12 +1,35 @@
 'use client'
 
-import { useState, type ReactElement } from 'react'
+import type { LucideIcon } from 'lucide-react'
+import {
+  X,
+  Sparkles,
+  Shield,
+  Network,
+  Activity,
+  TerminalSquare,
+  Crosshair,
+  FileJson,
+  Zap,
+  GitMerge,
+  Target,
+  FileBadge,
+  Loader2,
+  Mail,
+  Phone,
+} from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import Script from 'next/script'
+import { useState, type ReactElement } from 'react'
 import { toast } from 'sonner'
-import type { LucideIcon } from 'lucide-react'
-import { X, Sparkles, Shield, Network, Activity, TerminalSquare, Crosshair, FileJson, Zap, GitMerge, Target, FileBadge, Loader2, Mail, Phone } from 'lucide-react'
-import { PLAN_CATALOG, PLAN_ORDER, type PlanDisplayConfig, type PlanFeatureIcon, type PlanFeatureTone, type PlanTier } from '@/lib/plans'
+import {
+  PLAN_CATALOG,
+  PLAN_ORDER,
+  type PlanDisplayConfig,
+  type PlanFeatureIcon,
+  type PlanFeatureTone,
+  type PlanTier,
+} from '@/lib/plans'
 
 interface UpgradeModalProps {
   onClose: () => void
@@ -57,30 +80,36 @@ const FEATURE_ICON_CLASSES: Record<PlanTier, Record<PlanFeatureTone, string>> = 
 
 const PLAN_CARD_UI: Record<PlanTier, PlanCardUi> = {
   free: {
-    cardClassName: 'bg-[#111116] border border-white/5 rounded-2xl p-6 flex flex-col hover:border-white/10 transition-colors relative',
+    cardClassName:
+      'bg-[#111116] border border-white/5 rounded-2xl p-6 flex flex-col hover:border-white/10 transition-colors relative',
     periodClassName: 'text-xs text-muted-foreground font-normal tracking-wide',
     descriptionClassName: 'text-sm text-muted-foreground mb-6 h-10',
     featuresClassName: 'space-y-4 text-sm text-foreground/80 flex-1 font-medium',
   },
   go: {
-    cardClassName: 'bg-[#111116] border border-emerald-500/10 rounded-2xl p-6 flex flex-col hover:border-emerald-500/30 transition-colors',
+    cardClassName:
+      'bg-[#111116] border border-emerald-500/10 rounded-2xl p-6 flex flex-col hover:border-emerald-500/30 transition-colors',
     periodClassName: 'text-xs text-muted-foreground font-normal tracking-wide',
     descriptionClassName: 'text-sm text-muted-foreground mb-6 h-10',
     featuresClassName: 'space-y-4 text-sm text-foreground/80 flex-1 font-medium',
   },
   plus: {
-    cardClassName: 'bg-[#111116] border border-cyan-500/50 rounded-2xl p-6 flex flex-col relative shadow-[0_0_30px_rgba(34,211,238,0.15)] hover:shadow-[0_0_40px_rgba(34,211,238,0.25)] transition-all',
+    cardClassName:
+      'bg-[#111116] border border-cyan-500/50 rounded-2xl p-6 flex flex-col relative shadow-[0_0_30px_rgba(34,211,238,0.15)] hover:shadow-[0_0_40px_rgba(34,211,238,0.25)] transition-all',
     periodClassName: 'text-xs text-cyan-200/50 font-normal tracking-wide',
     descriptionClassName: 'text-sm text-cyan-200/70 mb-6 h-10',
     featuresClassName: 'space-y-4 text-sm text-white flex-1 font-medium',
-    badgeClassName: 'absolute top-5 right-5 bg-cyan-500/20 text-cyan-400 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-cyan-500/30',
+    badgeClassName:
+      'absolute top-5 right-5 bg-cyan-500/20 text-cyan-400 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-cyan-500/30',
   },
   pro: {
-    cardClassName: 'bg-[#111116] border border-amber-500/30 rounded-2xl p-6 flex flex-col relative shadow-[0_0_20px_rgba(245,158,11,0.05)] hover:border-amber-500/50 transition-colors',
+    cardClassName:
+      'bg-[#111116] border border-amber-500/30 rounded-2xl p-6 flex flex-col relative shadow-[0_0_20px_rgba(245,158,11,0.05)] hover:border-amber-500/50 transition-colors',
     periodClassName: 'text-xs text-muted-foreground font-normal tracking-wide',
     descriptionClassName: 'text-sm text-muted-foreground mb-6 h-10',
     featuresClassName: 'space-y-4 text-sm text-foreground/80 flex-1 font-medium',
-    badgeClassName: 'absolute top-5 right-5 bg-amber-500/10 text-amber-500 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-amber-500/20',
+    badgeClassName:
+      'absolute top-5 right-5 bg-amber-500/10 text-amber-500 text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-amber-500/20',
   },
 }
 
@@ -108,7 +137,9 @@ function PricingCard({ action, plan }: { action: ReactElement; plan: PlanDisplay
 
       <div className={ui.featuresClassName}>
         {plan.includesLabel && (
-          <div className="text-[10px] font-bold text-amber-500/80 uppercase tracking-widest mb-3">{plan.includesLabel}</div>
+          <div className="text-[10px] font-bold text-amber-500/80 uppercase tracking-widest mb-3">
+            {plan.includesLabel}
+          </div>
         )}
 
         {plan.features.map((feature) => {
@@ -168,7 +199,11 @@ export default function UpgradeModal({ onClose, onSuccess, currentTier = 'free' 
           email: orderData.userMeta?.email || '',
         },
         theme: { color: '#06b6d4' },
-        handler: async function (response: { razorpay_payment_id: string; razorpay_order_id: string; razorpay_signature: string }) {
+        async handler(response: {
+          razorpay_payment_id: string
+          razorpay_order_id: string
+          razorpay_signature: string
+        }) {
           setIsVerifying(true)
           toast.loading('Verifying cryptographic signature...', { id: 'payment-verify' })
 
@@ -204,14 +239,21 @@ export default function UpgradeModal({ onClose, onSuccess, currentTier = 'free' 
           }
         },
         modal: {
-          ondismiss: function () {
+          ondismiss() {
             setLoadingPlan(null)
             setIsVerifying(false)
           },
         },
       }
 
-      const RazorpayCtor = (window as unknown as { Razorpay: new (opts: unknown) => { open: () => void; on: (event: string, cb: (r: { error: { description: string } }) => void) => void } }).Razorpay
+      const RazorpayCtor = (
+        window as unknown as {
+          Razorpay: new (opts: unknown) => {
+            open: () => void
+            on: (event: string, cb: (r: { error: { description: string } }) => void) => void
+          }
+        }
+      ).Razorpay
       const rzp = new RazorpayCtor(options)
       rzp.on('payment.failed', function (response) {
         toast.error('Transaction Rejected', { description: response.error.description })
@@ -236,7 +278,10 @@ export default function UpgradeModal({ onClose, onSuccess, currentTier = 'free' 
           Current License
         </button>
       ) : (
-        <button disabled className="w-full py-3 rounded-xl bg-transparent text-muted-foreground/30 font-medium mb-8 cursor-not-allowed border border-white/5 transition-colors">
+        <button
+          disabled
+          className="w-full py-3 rounded-xl bg-transparent text-muted-foreground/30 font-medium mb-8 cursor-not-allowed border border-white/5 transition-colors"
+        >
           Included in Plan
         </button>
       )
@@ -250,7 +295,9 @@ export default function UpgradeModal({ onClose, onSuccess, currentTier = 'free' 
       ) : (
         <button
           onClick={() => handleUpgrade('Go')}
-          disabled={loadingPlan !== null || activeTier === 'plus' || activeTier === 'pro' || activeTier === 'enterprise'}
+          disabled={
+            loadingPlan !== null || activeTier === 'plus' || activeTier === 'pro' || activeTier === 'enterprise'
+          }
           className="w-full py-3 rounded-xl bg-white/10 text-white hover:bg-white/20 font-medium mb-8 transition-colors flex items-center justify-center gap-2 border border-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {loadingPlan === 'Go' ? (
@@ -315,7 +362,11 @@ export default function UpgradeModal({ onClose, onSuccess, currentTier = 'free' 
 
   return (
     <>
-      <Script id="razorpay-checkout-js" src="https://checkout.razorpay.com/v1/checkout.js" strategy="afterInteractive" />
+      <Script
+        id="razorpay-checkout-js"
+        src="https://checkout.razorpay.com/v1/checkout.js"
+        strategy="afterInteractive"
+      />
 
       <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
         <div className="bg-[#0a0a0c] border border-white/10 w-full max-w-7xl max-h-[90vh] rounded-3xl flex flex-col shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden relative font-sans">
@@ -341,7 +392,9 @@ export default function UpgradeModal({ onClose, onSuccess, currentTier = 'free' 
                 onClick={() => setBillingCycle('personal')}
                 disabled={isVerifying}
                 className={`px-8 py-2 rounded-lg text-sm font-medium transition-all ${
-                  billingCycle === 'personal' ? 'bg-white/[0.08] text-white shadow-sm' : 'text-muted-foreground hover:text-white'
+                  billingCycle === 'personal'
+                    ? 'bg-white/[0.08] text-white shadow-sm'
+                    : 'text-muted-foreground hover:text-white'
                 }`}
               >
                 Researcher
@@ -350,7 +403,9 @@ export default function UpgradeModal({ onClose, onSuccess, currentTier = 'free' 
                 onClick={() => setBillingCycle('business')}
                 disabled={isVerifying}
                 className={`px-8 py-2 rounded-lg text-sm font-medium transition-all ${
-                  billingCycle === 'business' ? 'bg-white/[0.08] text-white shadow-sm' : 'text-muted-foreground hover:text-white'
+                  billingCycle === 'business'
+                    ? 'bg-white/[0.08] text-white shadow-sm'
+                    : 'text-muted-foreground hover:text-white'
                 }`}
               >
                 Enterprise Team
@@ -381,16 +436,20 @@ export default function UpgradeModal({ onClose, onSuccess, currentTier = 'free' 
                     <div className="inline-block bg-white/10 text-white text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-white/20">
                       Custom Deployment
                     </div>
-                    <h3 className="text-3xl md:text-4xl font-bold text-white tracking-tight">Hexical Enterprise Node</h3>
+                    <h3 className="text-3xl md:text-4xl font-bold text-white tracking-tight">
+                      Hexical Enterprise Node
+                    </h3>
                     <p className="text-muted-foreground leading-relaxed text-sm md:text-base">
-                      Designed for massive engineering teams. Bypass all rate limits, deploy custom routing architectures, and integrate directly into your private VPC. Connect with the founder directly to negotiate SLAs and data limits.
+                      Designed for massive engineering teams. Bypass all rate limits, deploy custom routing
+                      architectures, and integrate directly into your private VPC. Connect with the founder directly to
+                      negotiate SLAs and data limits.
                     </p>
 
                     <div className="pt-4 pb-2">
-                      <div className="text-3xl font-bold text-white mb-1">
-                        Custom Pricing
+                      <div className="text-3xl font-bold text-white mb-1">Custom Pricing</div>
+                      <div className="text-xs text-muted-foreground tracking-wide uppercase">
+                        Custom volume based on SLA
                       </div>
-                      <div className="text-xs text-muted-foreground tracking-wide uppercase">Custom volume based on SLA</div>
                     </div>
 
                     <div className="flex flex-col sm:flex-row gap-3">
@@ -425,7 +484,9 @@ export default function UpgradeModal({ onClose, onSuccess, currentTier = 'free' 
                   </div>
 
                   <div className="flex-1 bg-black/40 border border-white/5 rounded-2xl p-6 lg:p-8">
-                    <h4 className="text-xs font-bold text-white/50 uppercase tracking-widest mb-6">Enterprise Capabilities</h4>
+                    <h4 className="text-xs font-bold text-white/50 uppercase tracking-widest mb-6">
+                      Enterprise Capabilities
+                    </h4>
                     <div className="space-y-5">
                       {[
                         { icon: Network, text: 'Private VPC & On-Prem Deployment' },

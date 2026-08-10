@@ -92,13 +92,13 @@ The coordinator calls the lease manager's atomic expiration recovery. Only after
 
 ## Redis runtime keys
 
-| Key | Type | Purpose |
-| --- | --- | --- |
-| `tty:execution:{executionId}:state` | JSON string | Coordinator-owned state record. |
-| `tty:execution:{executionId}:output` | Redis Stream | Ordered output and lifecycle events. |
-| `tty:execution:{executionId}:output-sequence` | Integer | Per-execution event sequence. |
-| `tty:execution:{executionId}:runtime` | JSON string | Worker-internal PID, private cwd, handle, and ownership metadata for recovery. |
-| `tty:executions:active` | Set | Executions in starting/running/streaming state. |
+| Key                                           | Type         | Purpose                                                                        |
+| --------------------------------------------- | ------------ | ------------------------------------------------------------------------------ |
+| `tty:execution:{executionId}:state`           | JSON string  | Coordinator-owned state record.                                                |
+| `tty:execution:{executionId}:output`          | Redis Stream | Ordered output and lifecycle events.                                           |
+| `tty:execution:{executionId}:output-sequence` | Integer      | Per-execution event sequence.                                                  |
+| `tty:execution:{executionId}:runtime`         | JSON string  | Worker-internal PID, private cwd, handle, and ownership metadata for recovery. |
+| `tty:executions:active`                       | Set          | Executions in starting/running/streaming state.                                |
 
 Runtime metadata is server-only. The browser API never reads or projects it.
 
@@ -142,4 +142,3 @@ Run the full control-plane and runtime suite with:
 ```text
 npm run test:tty-all
 ```
-

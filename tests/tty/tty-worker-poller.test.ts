@@ -1,11 +1,10 @@
-import test from 'node:test'
 import assert from 'node:assert/strict'
-
+import test from 'node:test'
 import {
   InMemoryPendingExecutionQueue,
   TTYWorkerPoller,
   type PendingExecutionQueue,
-  type TTYWorkerPollerLogger
+  type TTYWorkerPollerLogger,
 } from '../../lib/tty/tty-worker-poller'
 
 type QueueResponse = readonly string[] | Error | Promise<readonly string[]>
@@ -48,27 +47,39 @@ class ManualTimer {
   }
 
   async fireNext(): Promise<void> {
-    const first = this.entries.entries().next().value as [number, { readonly callback: () => void; readonly delayMs: number }] | undefined
+    const first = this.entries.entries().next().value as
+      | [number, { readonly callback: () => void; readonly delayMs: number }]
+      | undefined
     if (first === undefined) throw new Error('No scheduled timer.')
     this.entries.delete(first[0])
     first[1].callback()
-    await new Promise<void>(resolve => setImmediate(resolve))
+    await new Promise<void>((resolve) => setImmediate(resolve))
   }
 }
 
 class CaptureLogger implements TTYWorkerPollerLogger {
-  readonly entries: Array<{ readonly level: string; readonly message: string; readonly fields: Readonly<Record<string, unknown>> | undefined }> = []
+  readonly entries: Array<{
+    readonly level: string
+    readonly message: string
+    readonly fields: Readonly<Record<string, unknown>> | undefined
+  }> = []
 
-  info(message: string, fields?: Readonly<Record<string, unknown>>): void { this.entries.push({ level: 'info', message, fields }) }
-  warn(message: string, fields?: Readonly<Record<string, unknown>>): void { this.entries.push({ level: 'warn', message, fields }) }
-  error(message: string, fields?: Readonly<Record<string, unknown>>): void { this.entries.push({ level: 'error', message, fields }) }
+  info(message: string, fields?: Readonly<Record<string, unknown>>): void {
+    this.entries.push({ level: 'info', message, fields })
+  }
+  warn(message: string, fields?: Readonly<Record<string, unknown>>): void {
+    this.entries.push({ level: 'warn', message, fields })
+  }
+  error(message: string, fields?: Readonly<Record<string, unknown>>): void {
+    this.entries.push({ level: 'error', message, fields })
+  }
 }
 
 function createPoller(
   queue: PendingExecutionQueue,
   timer: ManualTimer,
   logger: CaptureLogger,
-  options: { readonly random?: () => number; readonly jitterMs?: number } = {}
+  options: { readonly random?: () => number; readonly jitterMs?: number } = {},
 ): TTYWorkerPoller {
   return new TTYWorkerPoller({
     queue,
@@ -79,8 +90,8 @@ function createPoller(
     now: () => new Date('2026-08-09T00:00:00.000Z'),
     random: options.random ?? (() => 0),
     setTimeout: (callback, delayMs) => timer.setTimeout(callback, delayMs),
-    clearTimeout: handle => timer.clearTimeout(handle),
-    logger
+    clearTimeout: (handle) => timer.clearTimeout(handle),
+    logger,
   })
 }
 
@@ -108,8 +119,10 @@ test('performs an immediate poll and schedules the configured base interval', as
   assert.equal(status.pollsPerformed, 1)
   assert.equal(status.currentIntervalMs, 1_000)
   assert.equal(timer.nextDelayMs, 1_000)
-  assert.ok(logger.entries.some(entry => entry.message === 'poll_started'))
-  assert.ok(logger.entries.some(entry => entry.message === 'pending_execution_count' && entry.fields?.pendingCount === 0))
+  assert.ok(logger.entries.some((entry) => entry.message === 'poll_started'))
+  assert.ok(
+    logger.entries.some((entry) => entry.message === 'pending_execution_count' && entry.fields?.pendingCount === 0),
+  )
   await poller.stopPolling()
 })
 
@@ -151,7 +164,10 @@ test('adds jitter within the configured zero-to-five-hundred millisecond bounds'
   const queue = new QueueHarness([[], ['execution-jitter-check']])
   const timer = new ManualTimer()
   const randomValues = [0, 1]
-  const poller = createPoller(queue, timer, new CaptureLogger(), { jitterMs: 500, random: () => randomValues.shift() ?? 0 })
+  const poller = createPoller(queue, timer, new CaptureLogger(), {
+    jitterMs: 500,
+    random: () => randomValues.shift() ?? 0,
+  })
 
   await poller.startPolling()
   assert.equal(timer.nextDelayMs, 1_000)
@@ -162,7 +178,9 @@ test('adds jitter within the configured zero-to-five-hundred millisecond bounds'
 
 test('concurrent starts share one immediate poll and one scheduled loop', async () => {
   let release!: (ids: readonly string[]) => void
-  const gate = new Promise<readonly string[]>(resolve => { release = resolve })
+  const gate = new Promise<readonly string[]>((resolve) => {
+    release = resolve
+  })
   const queue = new QueueHarness([gate])
   const timer = new ManualTimer()
   const poller = createPoller(queue, timer, new CaptureLogger())
@@ -180,7 +198,9 @@ test('concurrent starts share one immediate poll and one scheduled loop', async 
 
 test('shutdown during an active poll waits for it and leaves no timer behind', async () => {
   let release!: (ids: readonly string[]) => void
-  const gate = new Promise<readonly string[]>(resolve => { release = resolve })
+  const gate = new Promise<readonly string[]>((resolve) => {
+    release = resolve
+  })
   const queue = new QueueHarness([gate])
   const timer = new ManualTimer()
   const poller = createPoller(queue, timer, new CaptureLogger())
@@ -209,7 +229,7 @@ test('stopPolling is idempotent and logs one shutdown', async () => {
   await Promise.all([first, second])
 
   assert.equal(poller.getStatus().running, false)
-  assert.equal(logger.entries.filter(entry => entry.message === 'polling_shutdown').length, 1)
+  assert.equal(logger.entries.filter((entry) => entry.message === 'polling_shutdown').length, 1)
   assert.deepEqual(await poller.stopPolling(), poller.getStatus())
 })
 
@@ -225,7 +245,10 @@ test('updates polling metrics without exposing queue payloads', async () => {
   assert.equal(status.executionsObserved, 2)
   assert.equal(status.lastPendingCount, 2)
   assert.equal(typeof status.lastPollAt, 'string')
-  assert.equal(logger.entries.some(entry => JSON.stringify(entry.fields).includes('execution-a')), false)
+  assert.equal(
+    logger.entries.some((entry) => JSON.stringify(entry.fields).includes('execution-a')),
+    false,
+  )
   await poller.stopPolling()
 })
 
@@ -242,7 +265,7 @@ test('polling errors back off and recover on a later poll', async () => {
 
   assert.equal(poller.getStatus().lastError, null)
   assert.equal(poller.getStatus().executionsObserved, 1)
-  assert.ok(logger.entries.some(entry => entry.message === 'polling_error'))
+  assert.ok(logger.entries.some((entry) => entry.message === 'polling_error'))
   await poller.stopPolling()
 })
 

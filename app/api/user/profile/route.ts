@@ -1,6 +1,6 @@
-import { NextResponse } from 'next/server'
 import { auth } from '@clerk/nextjs/server'
 import { createClient } from '@supabase/supabase-js'
+import { NextResponse } from 'next/server'
 
 export async function GET() {
   // Grab the authenticated user's ID from Clerk
@@ -13,18 +13,11 @@ export async function GET() {
   try {
     // 1. Initialize Supabase Admin client using your Service Role Key
     // This allows you to securely read from the profiles table
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!
-    )
+    const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
 
     // 2. Fetch the real tier from the database
     // Note: In your gateway file, you used 'user_id', so we use that here instead of 'clerk_user_id'
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('tier')
-      .eq('user_id', userId)
-      .maybeSingle()
+    const { data, error } = await supabase.from('profiles').select('tier').eq('user_id', userId).maybeSingle()
 
     if (error) {
       console.error('[SUPABASE_DB_ERROR]:', error)

@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-
-import { createInvestigationApi, createInvestigationExecutionApi, createInvestigationSessionApi } from '../../lib/investigations/investigation-api'
+import { FakeInvestigationRedis } from './fake-investigation-redis'
+import {
+  createInvestigationApi,
+  createInvestigationExecutionApi,
+  createInvestigationSessionApi,
+} from '../../lib/investigations/investigation-api'
 import { investigationRecordKey } from '../../lib/investigations/investigation-keys'
 import type { InvestigationLogger } from '../../lib/investigations/investigation-logger'
 import { resolveCanonicalInvestigation } from '../../lib/investigations/investigation-resolver'
@@ -9,7 +13,6 @@ import { InvestigationStore, type InvestigationRedis } from '../../lib/investiga
 import type { InvestigationId } from '../../lib/investigations/investigation-types'
 import { raceActivationBudget } from '../../lib/tty/tty-activation-budget'
 import { resetActivationMetricsForTests, snapshotActivationMetrics } from '../../lib/tty/tty-activation-metrics'
-import { FakeInvestigationRedis } from './fake-investigation-redis'
 
 const OWNER = 'session-404-owner'
 const OTHER = 'session-404-other'
@@ -17,12 +20,12 @@ const OTHER = 'session-404-other'
 function request(method: string, path: string, body?: unknown): Request {
   return new Request(`https://hexical.test${path}`, {
     method,
-    ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
   })
 }
 
 async function read(response: Response): Promise<Record<string, unknown>> {
-  return await response.json() as Record<string, unknown>
+  return (await response.json()) as Record<string, unknown>
 }
 
 /**
@@ -51,16 +54,41 @@ class LaggedInvestigationRedis implements InvestigationRedis {
     return this.inner.get<T>(key)
   }
 
-  set(key: string, value: unknown, options?: { readonly nx?: boolean }) { return this.inner.set(key, value, options) }
-  del(...keys: string[]) { return this.inner.del(...keys) }
-  incr(key: string) { return this.inner.incr(key) }
-  sadd(key: string, member: string) { return this.inner.sadd(key, member) }
-  srem(key: string, member: string) { return this.inner.srem(key, member) }
-  zadd(key: string, value: { readonly score: number; readonly member: string }) { return this.inner.zadd(key, value) }
-  zrange<T extends unknown[]>(key: string, min: number, max: number, options: { readonly rev?: boolean; readonly offset: number; readonly count: number }) { return this.inner.zrange<T>(key, min, max, options) }
-  zrem(key: string, member: string) { return this.inner.zrem(key, member) }
-  xadd(key: string, id: '*', fields: Record<string, string>) { return this.inner.xadd(key, id, fields) }
-  xrange(key: string, start: string, end: string, count?: number) { return this.inner.xrange(key, start, end, count) }
+  set(key: string, value: unknown, options?: { readonly nx?: boolean }) {
+    return this.inner.set(key, value, options)
+  }
+  del(...keys: string[]) {
+    return this.inner.del(...keys)
+  }
+  incr(key: string) {
+    return this.inner.incr(key)
+  }
+  sadd(key: string, member: string) {
+    return this.inner.sadd(key, member)
+  }
+  srem(key: string, member: string) {
+    return this.inner.srem(key, member)
+  }
+  zadd(key: string, value: { readonly score: number; readonly member: string }) {
+    return this.inner.zadd(key, value)
+  }
+  zrange<T extends unknown[]>(
+    key: string,
+    min: number,
+    max: number,
+    options: { readonly rev?: boolean; readonly offset: number; readonly count: number },
+  ) {
+    return this.inner.zrange<T>(key, min, max, options)
+  }
+  zrem(key: string, member: string) {
+    return this.inner.zrem(key, member)
+  }
+  xadd(key: string, id: '*', fields: Record<string, string>) {
+    return this.inner.xadd(key, id, fields)
+  }
+  xrange(key: string, start: string, end: string, count?: number) {
+    return this.inner.xrange(key, start, end, count)
+  }
 }
 
 function sessionApiFixture(redis: InvestigationRedis) {
@@ -80,32 +108,53 @@ function sessionApiFixture(redis: InvestigationRedis) {
     },
     getTTYSession: async (_request, sessionId) => {
       const status = activeSessions.get(sessionId)
-      if (!status) return new Response(JSON.stringify({ ok: false, code: 'SESSION_NOT_FOUND', message: 'not found' }), { status: 404 })
+      if (!status)
+        return new Response(JSON.stringify({ ok: false, code: 'SESSION_NOT_FOUND', message: 'not found' }), {
+          status: 404,
+        })
       return new Response(JSON.stringify({ ok: true, session: { sessionId, status } }), { status: 200 })
     },
     terminateTTYSession: async (_request, sessionId) => {
       activeSessions.set(sessionId, 'terminated')
       return new Response(JSON.stringify({ ok: true, sessionId }), { status: 200 })
-    }
+    },
   })
   const executionApi = createInvestigationExecutionApi({
     authenticate: async () => user,
     getStore: () => store,
-    admitExecution: async () => new Response(JSON.stringify({ ok: true, duplicate: false, job: { executionId: '00000000-0000-4000-8000-0000000000ee', sessionId: [...activeSessions.keys()].at(-1), status: 'queued' } }), { status: 202 })
+    admitExecution: async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          duplicate: false,
+          job: {
+            executionId: '00000000-0000-4000-8000-0000000000ee',
+            sessionId: [...activeSessions.keys()].at(-1),
+            status: 'queued',
+          },
+        }),
+        { status: 202 },
+      ),
   })
   return {
     store,
     workspaceApi,
     sessionApi,
     executionApi,
-    setUser(value: string | null) { user = value },
-    expireExternally(sessionId: string) { activeSessions.delete(sessionId) }
+    setUser(value: string | null) {
+      user = value
+    },
+    expireExternally(sessionId: string) {
+      activeSessions.delete(sessionId)
+    },
   }
 }
 
 test('create investigation -> create session returns 201 and persists the session id', async () => {
   const fixture = sessionApiFixture(new FakeInvestigationRedis())
-  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })))
+  const created = await read(
+    await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })),
+  )
   const id = String((created.investigation as Record<string, unknown>).investigationId)
 
   const response = await fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id)
@@ -117,7 +166,9 @@ test('create investigation -> create session returns 201 and persists the sessio
 
 test('restore session: a second ensure() call after refresh is idempotent and reuses the active session', async () => {
   const fixture = sessionApiFixture(new FakeInvestigationRedis())
-  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })))
+  const created = await read(
+    await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })),
+  )
   const id = String((created.investigation as Record<string, unknown>).investigationId)
 
   const first = await read(await fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id))
@@ -134,7 +185,9 @@ test('restore session: a second ensure() call after refresh is idempotent and re
 
 test('missing session attachment: an investigation with no ttySessionId provisions one on first ensure()', async () => {
   const fixture = sessionApiFixture(new FakeInvestigationRedis())
-  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })))
+  const created = await read(
+    await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })),
+  )
   const id = String((created.investigation as Record<string, unknown>).investigationId)
   assert.equal((created.investigation as Record<string, unknown>).ttySessionId, null)
 
@@ -144,7 +197,9 @@ test('missing session attachment: an investigation with no ttySessionId provisio
 
 test('stale session index: a ttySessionId pointing at a session the TTY store no longer has self-heals instead of 404ing', async () => {
   const fixture = sessionApiFixture(new FakeInvestigationRedis())
-  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })))
+  const created = await read(
+    await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })),
+  )
   const id = String((created.investigation as Record<string, unknown>).investigationId)
   const first = await read(await fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id))
 
@@ -156,19 +211,24 @@ test('stale session index: a ttySessionId pointing at a session the TTY store no
   assert.equal(repaired.status, 201)
   const repairedBody = await read(repaired)
   assert.notEqual(repairedBody.sessionId, first.sessionId)
-  assert.equal((await fixture.store.get(OWNER, id as InvestigationId))?.investigation.ttySessionId, repairedBody.sessionId)
+  assert.equal(
+    (await fixture.store.get(OWNER, id as InvestigationId))?.investigation.ttySessionId,
+    repairedBody.sessionId,
+  )
 })
 
 test('concurrent session creation: parallel ensure() calls converge on exactly one persisted session', async () => {
   const fixture = sessionApiFixture(new FakeInvestigationRedis())
-  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })))
+  const created = await read(
+    await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })),
+  )
   const id = String((created.investigation as Record<string, unknown>).investigationId)
 
   const [a, b] = await Promise.all([
     fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id),
-    fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id)
+    fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id),
   ])
-  assert.ok([a.status, b.status].every(status => status === 200 || status === 201))
+  assert.ok([a.status, b.status].every((status) => status === 200 || status === 201))
   const [bodyA, bodyB] = await Promise.all([read(a), read(b)])
   assert.equal(bodyA.sessionId, bodyB.sessionId)
   assert.equal((await fixture.store.get(OWNER, id as InvestigationId))?.investigation.ttySessionId, bodyA.sessionId)
@@ -176,7 +236,9 @@ test('concurrent session creation: parallel ensure() calls converge on exactly o
 
 test('authorization mismatch: a different owner never sees the investigation and cannot attach a session', async () => {
   const fixture = sessionApiFixture(new FakeInvestigationRedis())
-  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })))
+  const created = await read(
+    await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })),
+  )
   const id = String((created.investigation as Record<string, unknown>).investigationId)
 
   fixture.setUser(OTHER)
@@ -205,7 +267,9 @@ test('diagnoseAbsence categorizes a 404 correctly: absent, owner_mismatch, and d
 
 test('deleted investigation: session creation 404s permanently, not transiently, after deletion', async () => {
   const fixture = sessionApiFixture(new FakeInvestigationRedis())
-  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })))
+  const created = await read(
+    await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })),
+  )
   const id = String((created.investigation as Record<string, unknown>).investigationId)
   assert.equal((await fixture.workspaceApi.delete(request('DELETE', `/api/investigations/${id}`), id)).status, 200)
 
@@ -214,27 +278,52 @@ test('deleted investigation: session creation 404s permanently, not transiently,
 
 test('recovered investigation: an archived-then-restored investigation can attach a session and execute afterward', async () => {
   const fixture = sessionApiFixture(new FakeInvestigationRedis())
-  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })))
+  const created = await read(
+    await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })),
+  )
   const id = String((created.investigation as Record<string, unknown>).investigationId)
-  assert.equal((await fixture.workspaceApi.patch(request('PATCH', `/api/investigations/${id}`, { status: 'archived' }), id)).status, 200)
-  assert.equal((await fixture.workspaceApi.patch(request('PATCH', `/api/investigations/${id}`, { status: 'active' }), id)).status, 200)
+  assert.equal(
+    (await fixture.workspaceApi.patch(request('PATCH', `/api/investigations/${id}`, { status: 'archived' }), id))
+      .status,
+    200,
+  )
+  assert.equal(
+    (await fixture.workspaceApi.patch(request('PATCH', `/api/investigations/${id}`, { status: 'active' }), id)).status,
+    200,
+  )
 
   const session = await read(await fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id))
   assert.ok(typeof session.sessionId === 'string')
 
-  const execution = await fixture.executionApi.attach(request('POST', `/api/investigations/${id}/executions`, { sessionId: session.sessionId, input: 'run', idempotencyKey: 'recovered-investigation-exec-1' }), id)
+  const execution = await fixture.executionApi.attach(
+    request('POST', `/api/investigations/${id}/executions`, {
+      sessionId: session.sessionId,
+      input: 'run',
+      idempotencyKey: 'recovered-investigation-exec-1',
+    }),
+    id,
+  )
   assert.equal(execution.status, 202)
 })
 
 test('execute after restore: attaching an execution to a restored (reused) session succeeds', async () => {
   const fixture = sessionApiFixture(new FakeInvestigationRedis())
-  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })))
+  const created = await read(
+    await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Case' })),
+  )
   const id = String((created.investigation as Record<string, unknown>).investigationId)
   await fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id)
   const restored = await read(await fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id))
   assert.equal(restored.reused, true)
 
-  const execution = await fixture.executionApi.attach(request('POST', `/api/investigations/${id}/executions`, { sessionId: restored.sessionId, input: 'run', idempotencyKey: 'execute-after-restore-1' }), id)
+  const execution = await fixture.executionApi.attach(
+    request('POST', `/api/investigations/${id}/executions`, {
+      sessionId: restored.sessionId,
+      input: 'run',
+      idempotencyKey: 'execute-after-restore-1',
+    }),
+    id,
+  )
   assert.equal(execution.status, 202)
 })
 
@@ -259,7 +348,9 @@ test('canonical resolver alone self-heals a single transient replica-lag miss on
 test('split-brain reproduction: POST /session returns 200/201, not 404, despite the exact replica-lag race that produced the production bug', async () => {
   const lagged = new LaggedInvestigationRedis(new FakeInvestigationRedis())
   const fixture = sessionApiFixture(lagged)
-  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Race case' })))
+  const created = await read(
+    await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Race case' })),
+  )
   const id = String((created.investigation as Record<string, unknown>).investigationId)
 
   // Workspace hydration (GET) observes the write immediately — this is "HYDRATED ACTIVE".
@@ -276,7 +367,9 @@ test('split-brain reproduction: POST /session returns 200/201, not 404, despite 
 
 test('activation response budget: a slow startExecution degrades to 202 activationPending instead of blocking the request', async () => {
   const fixture = sessionApiFixture(new FakeInvestigationRedis())
-  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Slow activation' })))
+  const created = await read(
+    await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Slow activation' })),
+  )
   const id = String((created.investigation as Record<string, unknown>).investigationId)
   const session = await read(await fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id))
 
@@ -286,17 +379,32 @@ test('activation response budget: a slow startExecution degrades to 202 activati
     authenticate: async () => OWNER,
     getStore: () => store,
     activationResponseBudgetMs: 30,
-    admitExecution: async () => new Response(JSON.stringify({ ok: true, duplicate: false, job: { executionId: '00000000-0000-4000-8000-0000000000aa', sessionId: session.sessionId, status: 'queued' } }), { status: 202 }),
+    admitExecution: async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          duplicate: false,
+          job: { executionId: '00000000-0000-4000-8000-0000000000aa', sessionId: session.sessionId, status: 'queued' },
+        }),
+        { status: 202 },
+      ),
     startExecution: async () => {
-      await new Promise(resolve => setTimeout(resolve, 80))
+      await new Promise((resolve) => setTimeout(resolve, 80))
       const result = { accepted: true }
       lateSettleObserved = result
       return result
-    }
+    },
   })
 
   const started = Date.now()
-  const response = await executionApi.attach(request('POST', `/api/investigations/${id}/executions`, { sessionId: session.sessionId, input: 'run', idempotencyKey: 'slow-activation-1' }), id)
+  const response = await executionApi.attach(
+    request('POST', `/api/investigations/${id}/executions`, {
+      sessionId: session.sessionId,
+      input: 'run',
+      idempotencyKey: 'slow-activation-1',
+    }),
+    id,
+  )
   const elapsedMs = Date.now() - started
   assert.equal(response.status, 202)
   const body = await read(response)
@@ -304,13 +412,15 @@ test('activation response budget: a slow startExecution degrades to 202 activati
   assert.ok(elapsedMs < 80, `attach() should return before startExecution settles (took ${elapsedMs}ms)`)
 
   // The activation keeps running in the background rather than being abandoned.
-  await new Promise(resolve => setTimeout(resolve, 100))
+  await new Promise((resolve) => setTimeout(resolve, 100))
   assert.deepEqual(lateSettleObserved, { accepted: true })
 })
 
 test('activation response budget: a fast rejection (resource_denied/session_terminated/etc.) still returns synchronously as 503', async () => {
   const fixture = sessionApiFixture(new FakeInvestigationRedis())
-  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Fast rejection' })))
+  const created = await read(
+    await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Fast rejection' })),
+  )
   const id = String((created.investigation as Record<string, unknown>).investigationId)
   const session = await read(await fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id))
 
@@ -318,11 +428,26 @@ test('activation response budget: a fast rejection (resource_denied/session_term
     authenticate: async () => OWNER,
     getStore: () => fixture.store,
     activationResponseBudgetMs: 3000,
-    admitExecution: async () => new Response(JSON.stringify({ ok: true, duplicate: false, job: { executionId: '00000000-0000-4000-8000-0000000000bb', sessionId: session.sessionId, status: 'queued' } }), { status: 202 }),
-    startExecution: async () => ({ accepted: false, reason: 'resource_denied' })
+    admitExecution: async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          duplicate: false,
+          job: { executionId: '00000000-0000-4000-8000-0000000000bb', sessionId: session.sessionId, status: 'queued' },
+        }),
+        { status: 202 },
+      ),
+    startExecution: async () => ({ accepted: false, reason: 'resource_denied' }),
   })
 
-  const response = await executionApi.attach(request('POST', `/api/investigations/${id}/executions`, { sessionId: session.sessionId, input: 'run', idempotencyKey: 'fast-rejection-1' }), id)
+  const response = await executionApi.attach(
+    request('POST', `/api/investigations/${id}/executions`, {
+      sessionId: session.sessionId,
+      input: 'run',
+      idempotencyKey: 'fast-rejection-1',
+    }),
+    id,
+  )
   assert.equal(response.status, 503)
   const body = await read(response)
   assert.equal(body.code, 'EXECUTION_NOT_STARTED')
@@ -339,15 +464,19 @@ test('activation metrics: pending/late-settlement counters and latency samples r
   await raceActivationBudget(async () => ({ accepted: false, reason: 'resource_denied' }), 50, {})
   assert.equal(snapshotActivationMetrics().pendingCount, 0)
 
-  const slow = raceActivationBudget(async () => {
-    await new Promise(resolve => setTimeout(resolve, 60))
-    return { accepted: true }
-  }, 10, {})
+  const slow = raceActivationBudget(
+    async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60))
+      return { accepted: true }
+    },
+    10,
+    {},
+  )
   const pendingResult = await slow
   assert.equal(pendingResult.kind, 'pending')
   assert.equal(snapshotActivationMetrics().pendingCount, 1)
 
-  await new Promise(resolve => setTimeout(resolve, 80))
+  await new Promise((resolve) => setTimeout(resolve, 80))
   const finalSnapshot = snapshotActivationMetrics()
   assert.equal(finalSnapshot.pendingCount, 1)
   assert.equal(finalSnapshot.lateSettledAcceptedCount, 1)
@@ -355,7 +484,9 @@ test('activation metrics: pending/late-settlement counters and latency samples r
 
 test('phase timing: attach() logs a per-phase breakdown so a slow-but-resolved request is attributable, not opaque', async () => {
   const fixture = sessionApiFixture(new FakeInvestigationRedis())
-  const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Phase timing case' })))
+  const created = await read(
+    await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Phase timing case' })),
+  )
   const id = String((created.investigation as Record<string, unknown>).investigationId)
   const session = await read(await fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id))
 
@@ -363,7 +494,7 @@ test('phase timing: attach() logs a per-phase breakdown so a slow-but-resolved r
   const logger: InvestigationLogger = {
     info: (event, fields) => logged.push({ event, fields }),
     warn: (event, fields) => logged.push({ event, fields }),
-    error: (event, fields) => logged.push({ event, fields })
+    error: (event, fields) => logged.push({ event, fields }),
   }
 
   const executionApi = createInvestigationExecutionApi({
@@ -371,18 +502,32 @@ test('phase timing: attach() logs a per-phase breakdown so a slow-but-resolved r
     getStore: () => fixture.store,
     logger,
     admitExecution: async () => {
-      await new Promise(resolve => setTimeout(resolve, 15))
-      return new Response(JSON.stringify({ ok: true, duplicate: false, job: { executionId: '00000000-0000-4000-8000-0000000000cc', sessionId: session.sessionId, status: 'queued' } }), { status: 202 })
+      await new Promise((resolve) => setTimeout(resolve, 15))
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          duplicate: false,
+          job: { executionId: '00000000-0000-4000-8000-0000000000cc', sessionId: session.sessionId, status: 'queued' },
+        }),
+        { status: 202 },
+      )
     },
     startExecution: async () => {
-      await new Promise(resolve => setTimeout(resolve, 15))
+      await new Promise((resolve) => setTimeout(resolve, 15))
       return { accepted: true }
-    }
+    },
   })
 
-  await executionApi.attach(request('POST', `/api/investigations/${id}/executions`, { sessionId: session.sessionId, input: 'run', idempotencyKey: 'phase-timing-case-1' }), id)
+  await executionApi.attach(
+    request('POST', `/api/investigations/${id}/executions`, {
+      sessionId: session.sessionId,
+      input: 'run',
+      idempotencyKey: 'phase-timing-case-1',
+    }),
+    id,
+  )
 
-  const phaseLog = logged.find(entry => entry.event === 'investigation.execution_attach_phases')
+  const phaseLog = logged.find((entry) => entry.event === 'investigation.execution_attach_phases')
   assert.ok(phaseLog, 'expected a phase breakdown log line')
   assert.equal(typeof phaseLog!.fields.resolve, 'number')
   assert.equal(typeof phaseLog!.fields.admit, 'number')
@@ -398,7 +543,9 @@ test('phase timing: attach() logs a per-phase breakdown so a slow-but-resolved r
 test('100 repeated create/restore/execute cycles remain consistent', async () => {
   const fixture = sessionApiFixture(new FakeInvestigationRedis())
   for (let cycle = 0; cycle < 100; cycle += 1) {
-    const created = await read(await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: `Cycle ${cycle}` })))
+    const created = await read(
+      await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: `Cycle ${cycle}` })),
+    )
     const id = String((created.investigation as Record<string, unknown>).investigationId)
 
     const first = await fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id)
@@ -410,7 +557,14 @@ test('100 repeated create/restore/execute cycles remain consistent', async () =>
     const restoredBody = await read(restored)
     assert.equal(restoredBody.sessionId, firstBody.sessionId, `cycle ${cycle}: restore should reuse the same session`)
 
-    const execution = await fixture.executionApi.attach(request('POST', `/api/investigations/${id}/executions`, { sessionId: restoredBody.sessionId, input: 'run', idempotencyKey: `regression-cycle-${cycle}-execution` }), id)
+    const execution = await fixture.executionApi.attach(
+      request('POST', `/api/investigations/${id}/executions`, {
+        sessionId: restoredBody.sessionId,
+        input: 'run',
+        idempotencyKey: `regression-cycle-${cycle}-execution`,
+      }),
+      id,
+    )
     assert.equal(execution.status, 202, `cycle ${cycle}: execute after restore should be 202`)
   }
 })

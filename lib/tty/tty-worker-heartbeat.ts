@@ -1,5 +1,4 @@
 import type { Redis } from '@upstash/redis'
-
 import { appendTTYWorkerAuditEvent, type TTYWorkerAuditSink } from './tty-worker-audit'
 import { ttyWorkerHeartbeatKey, ttyWorkerHealthKey, ttyWorkerMetadataKey } from './tty-worker-keys'
 import type { TTYWorkerRegistry } from './tty-worker-registry'
@@ -8,7 +7,7 @@ import {
   type TTYWorkerHealth,
   type TTYWorkerHeartbeat,
   type TTYWorkerId,
-  type TTYWorkerMetadata
+  type TTYWorkerMetadata,
 } from './tty-worker-types'
 
 export interface TTYWorkerHeartbeatConfig {
@@ -18,7 +17,7 @@ export interface TTYWorkerHeartbeatConfig {
 
 export const DEFAULT_TTY_WORKER_HEARTBEAT_CONFIG: TTYWorkerHeartbeatConfig = {
   heartbeatIntervalMs: 10_000,
-  offlineAfterMs: 30_000
+  offlineAfterMs: 30_000,
 }
 
 export type TTYWorkerHeartbeatFailure =
@@ -90,12 +89,18 @@ return {1, ARGV[3]}
 `
 
 function parseScriptResult(value: unknown): StoredHeartbeatScriptResult {
-  if (!Array.isArray(value) || typeof value[0] !== 'number' || typeof value[1] !== 'string') return { code: 0, value: 'internal_error' }
+  if (!Array.isArray(value) || typeof value[0] !== 'number' || typeof value[1] !== 'string')
+    return { code: 0, value: 'internal_error' }
   return { code: value[0], value: value[1] }
 }
 
 function validConfig(config: TTYWorkerHeartbeatConfig): boolean {
-  return Number.isSafeInteger(config.heartbeatIntervalMs) && config.heartbeatIntervalMs > 0 && Number.isSafeInteger(config.offlineAfterMs) && config.offlineAfterMs >= config.heartbeatIntervalMs
+  return (
+    Number.isSafeInteger(config.heartbeatIntervalMs) &&
+    config.heartbeatIntervalMs > 0 &&
+    Number.isSafeInteger(config.offlineAfterMs) &&
+    config.offlineAfterMs >= config.heartbeatIntervalMs
+  )
 }
 
 function parseHeartbeat(value: unknown): TTYWorkerHeartbeat | null {
@@ -104,8 +109,26 @@ function parseHeartbeat(value: unknown): TTYWorkerHeartbeat | null {
     if (typeof parsed !== 'object' || parsed === null) return null
     const record = parsed as Record<string, unknown>
     const workerId = typeof record.workerId === 'string' ? parseTTYWorkerId(record.workerId) : null
-    if (workerId === null || typeof record.sequence !== 'number' || !Number.isSafeInteger(record.sequence) || record.sequence < 0 || typeof record.sentAt !== 'string' || typeof record.receivedAt !== 'string' || typeof record.receivedAtMs !== 'number' || typeof record.latencyMs !== 'number' || record.latencyMs < 0) return null
-    return { workerId, sequence: record.sequence, sentAt: record.sentAt, receivedAt: record.receivedAt, receivedAtMs: record.receivedAtMs, latencyMs: record.latencyMs }
+    if (
+      workerId === null ||
+      typeof record.sequence !== 'number' ||
+      !Number.isSafeInteger(record.sequence) ||
+      record.sequence < 0 ||
+      typeof record.sentAt !== 'string' ||
+      typeof record.receivedAt !== 'string' ||
+      typeof record.receivedAtMs !== 'number' ||
+      typeof record.latencyMs !== 'number' ||
+      record.latencyMs < 0
+    )
+      return null
+    return {
+      workerId,
+      sequence: record.sequence,
+      sentAt: record.sentAt,
+      receivedAt: record.receivedAt,
+      receivedAtMs: record.receivedAtMs,
+      latencyMs: record.latencyMs,
+    }
   } catch {
     return null
   }
@@ -118,8 +141,25 @@ function parseHealth(value: unknown): TTYWorkerHealth | null {
     const record = parsed as Record<string, unknown>
     const workerId = typeof record.workerId === 'string' ? parseTTYWorkerId(record.workerId) : null
     const state = record.state
-    if (workerId === null || (state !== 'online' && state !== 'offline') || (record.lastHeartbeatAt !== null && typeof record.lastHeartbeatAt !== 'string') || (record.heartbeatLatencyMs !== null && typeof record.heartbeatLatencyMs !== 'number') || typeof record.missedIntervals !== 'number' || typeof record.healthScore !== 'number' || typeof record.checkedAt !== 'string') return null
-    return { workerId, state, lastHeartbeatAt: record.lastHeartbeatAt, heartbeatLatencyMs: record.heartbeatLatencyMs, missedIntervals: record.missedIntervals, healthScore: record.healthScore, checkedAt: record.checkedAt }
+    if (
+      workerId === null ||
+      (state !== 'online' && state !== 'offline') ||
+      (record.lastHeartbeatAt !== null && typeof record.lastHeartbeatAt !== 'string') ||
+      (record.heartbeatLatencyMs !== null && typeof record.heartbeatLatencyMs !== 'number') ||
+      typeof record.missedIntervals !== 'number' ||
+      typeof record.healthScore !== 'number' ||
+      typeof record.checkedAt !== 'string'
+    )
+      return null
+    return {
+      workerId,
+      state,
+      lastHeartbeatAt: record.lastHeartbeatAt,
+      heartbeatLatencyMs: record.heartbeatLatencyMs,
+      missedIntervals: record.missedIntervals,
+      healthScore: record.healthScore,
+      checkedAt: record.checkedAt,
+    }
   } catch {
     return null
   }
@@ -129,16 +169,24 @@ function healthFor(
   workerId: TTYWorkerId,
   heartbeat: TTYWorkerHeartbeat | null,
   nowMs: number,
-  config: TTYWorkerHeartbeatConfig
+  config: TTYWorkerHeartbeatConfig,
 ): TTYWorkerHealth {
   if (heartbeat === null) {
-    return { workerId, state: 'offline', lastHeartbeatAt: null, heartbeatLatencyMs: null, missedIntervals: 0, healthScore: 0, checkedAt: new Date(nowMs).toISOString() }
+    return {
+      workerId,
+      state: 'offline',
+      lastHeartbeatAt: null,
+      heartbeatLatencyMs: null,
+      missedIntervals: 0,
+      healthScore: 0,
+      checkedAt: new Date(nowMs).toISOString(),
+    }
   }
   const receivedAtMs = Date.parse(heartbeat.receivedAt)
   const elapsedMs = Number.isFinite(receivedAtMs) ? Math.max(0, nowMs - receivedAtMs) : config.offlineAfterMs + 1
   const missedIntervals = Math.max(0, Math.floor(elapsedMs / config.heartbeatIntervalMs))
   const online = elapsedMs <= config.offlineAfterMs
-  const latencyPenalty = Math.min(50, Math.ceil(heartbeat.latencyMs / config.heartbeatIntervalMs * 25))
+  const latencyPenalty = Math.min(50, Math.ceil((heartbeat.latencyMs / config.heartbeatIntervalMs) * 25))
   const healthScore = online ? Math.max(0, 100 - missedIntervals * 20 - latencyPenalty) : 0
   return {
     workerId,
@@ -147,11 +195,13 @@ function healthFor(
     heartbeatLatencyMs: heartbeat.latencyMs,
     missedIntervals,
     healthScore,
-    checkedAt: new Date(nowMs).toISOString()
+    checkedAt: new Date(nowMs).toISOString(),
   }
 }
 
-function parseCombined(value: string): { readonly heartbeat: TTYWorkerHeartbeat; readonly health: TTYWorkerHealth } | null {
+function parseCombined(
+  value: string,
+): { readonly heartbeat: TTYWorkerHeartbeat; readonly health: TTYWorkerHealth } | null {
   const separator = value.indexOf('|')
   if (separator <= 0) return null
   const heartbeat = parseHeartbeat(value.slice(0, separator))
@@ -166,29 +216,53 @@ export class TTYWorkerHeartbeatService {
   constructor(
     private readonly redis: Redis,
     private readonly registry: Pick<TTYWorkerRegistry, 'getWorker'>,
-    private readonly options: HeartbeatDependencies = {}
+    private readonly options: HeartbeatDependencies = {},
   ) {
     this.now = options.now ?? (() => new Date())
     this.config = { ...DEFAULT_TTY_WORKER_HEARTBEAT_CONFIG, ...options.config }
     if (!validConfig(this.config)) throw new Error('Invalid TTY worker heartbeat configuration.')
   }
 
-  async recordHeartbeat(input: { readonly workerId: TTYWorkerId; readonly sequence: number; readonly sentAt: string }): Promise<TTYWorkerHeartbeatResult> {
-    if (parseTTYWorkerId(input.workerId) === null || !Number.isSafeInteger(input.sequence) || input.sequence < 0) return { recorded: false, reason: 'invalid_heartbeat' }
+  async recordHeartbeat(input: {
+    readonly workerId: TTYWorkerId
+    readonly sequence: number
+    readonly sentAt: string
+  }): Promise<TTYWorkerHeartbeatResult> {
+    if (parseTTYWorkerId(input.workerId) === null || !Number.isSafeInteger(input.sequence) || input.sequence < 0)
+      return { recorded: false, reason: 'invalid_heartbeat' }
     const now = this.now()
     const nowMs = now.getTime()
     const sentAtMs = Date.parse(input.sentAt)
-    if (!Number.isFinite(sentAtMs) || sentAtMs > nowMs + this.config.offlineAfterMs) return { recorded: false, reason: 'invalid_heartbeat' }
-    const heartbeat: TTYWorkerHeartbeat = { workerId: input.workerId, sequence: input.sequence, sentAt: input.sentAt, receivedAt: now.toISOString(), receivedAtMs: nowMs, latencyMs: Math.max(0, nowMs - sentAtMs) }
+    if (!Number.isFinite(sentAtMs) || sentAtMs > nowMs + this.config.offlineAfterMs)
+      return { recorded: false, reason: 'invalid_heartbeat' }
+    const heartbeat: TTYWorkerHeartbeat = {
+      workerId: input.workerId,
+      sequence: input.sequence,
+      sentAt: input.sentAt,
+      receivedAt: now.toISOString(),
+      receivedAtMs: nowMs,
+      latencyMs: Math.max(0, nowMs - sentAtMs),
+    }
     const health = healthFor(input.workerId, heartbeat, nowMs, this.config)
     try {
-      const result = parseScriptResult(await this.redis.eval(
-        RECORD_HEARTBEAT_SCRIPT,
-        [ttyWorkerMetadataKey(input.workerId), ttyWorkerHeartbeatKey(input.workerId), ttyWorkerHealthKey(input.workerId)],
-        [JSON.stringify(heartbeat), JSON.stringify(health), String(input.sequence), now.toISOString()]
-      ))
+      const result = parseScriptResult(
+        await this.redis.eval(
+          RECORD_HEARTBEAT_SCRIPT,
+          [
+            ttyWorkerMetadataKey(input.workerId),
+            ttyWorkerHeartbeatKey(input.workerId),
+            ttyWorkerHealthKey(input.workerId),
+          ],
+          [JSON.stringify(heartbeat), JSON.stringify(health), String(input.sequence), now.toISOString()],
+        ),
+      )
       if (result.code !== 1) {
-        if (result.value === 'unknown_worker' || result.value === 'inactive_worker' || result.value === 'duplicate_heartbeat') return { recorded: false, reason: result.value }
+        if (
+          result.value === 'unknown_worker' ||
+          result.value === 'inactive_worker' ||
+          result.value === 'duplicate_heartbeat'
+        )
+          return { recorded: false, reason: result.value }
         return { recorded: false, reason: 'internal_error' }
       }
       const stored = parseCombined(result.value)
@@ -229,12 +303,23 @@ export class TTYWorkerHeartbeatService {
     if (health === null) return { offline: false, reason: 'unknown_worker' }
     if (health.state !== 'offline') return { offline: false, reason: 'not_stale' }
     try {
-      const result = parseScriptResult(await this.redis.eval(
-        MARK_OFFLINE_SCRIPT,
-        [ttyWorkerMetadataKey(workerId), ttyWorkerHeartbeatKey(workerId), ttyWorkerHealthKey(workerId)],
-        [String(now.getTime()), String(this.config.offlineAfterMs), JSON.stringify(health), now.toISOString()]
-      ))
-      if (result.code !== 1) return { offline: false, reason: result.value === 'inactive_worker' ? 'inactive_worker' : result.value === 'not_stale' ? 'not_stale' : 'internal_error' }
+      const result = parseScriptResult(
+        await this.redis.eval(
+          MARK_OFFLINE_SCRIPT,
+          [ttyWorkerMetadataKey(workerId), ttyWorkerHeartbeatKey(workerId), ttyWorkerHealthKey(workerId)],
+          [String(now.getTime()), String(this.config.offlineAfterMs), JSON.stringify(health), now.toISOString()],
+        ),
+      )
+      if (result.code !== 1)
+        return {
+          offline: false,
+          reason:
+            result.value === 'inactive_worker'
+              ? 'inactive_worker'
+              : result.value === 'not_stale'
+              ? 'not_stale'
+              : 'internal_error',
+        }
       await this.emitOffline(workerId, health)
       return { offline: true, health }
     } catch {
@@ -245,7 +330,12 @@ export class TTYWorkerHeartbeatService {
   private async emitHeartbeat(heartbeat: TTYWorkerHeartbeat): Promise<void> {
     if (!this.options.audit) return
     try {
-      await appendTTYWorkerAuditEvent(this.options.audit, { eventType: 'worker_heartbeat', timestamp: heartbeat.receivedAt, workerId: heartbeat.workerId, metadata: { sequence: heartbeat.sequence, latencyMs: heartbeat.latencyMs } })
+      await appendTTYWorkerAuditEvent(this.options.audit, {
+        eventType: 'worker_heartbeat',
+        timestamp: heartbeat.receivedAt,
+        workerId: heartbeat.workerId,
+        metadata: { sequence: heartbeat.sequence, latencyMs: heartbeat.latencyMs },
+      })
     } catch {
       // The heartbeat write is authoritative; audit emission is retriable.
     }
@@ -254,7 +344,12 @@ export class TTYWorkerHeartbeatService {
   private async emitOffline(workerId: TTYWorkerId, health: TTYWorkerHealth): Promise<void> {
     if (!this.options.audit) return
     try {
-      await appendTTYWorkerAuditEvent(this.options.audit, { eventType: 'worker_offline', timestamp: health.checkedAt, workerId, metadata: { missedIntervals: health.missedIntervals, healthScore: health.healthScore } })
+      await appendTTYWorkerAuditEvent(this.options.audit, {
+        eventType: 'worker_offline',
+        timestamp: health.checkedAt,
+        workerId,
+        metadata: { missedIntervals: health.missedIntervals, healthScore: health.healthScore },
+      })
     } catch {
       // The offline transition remains fail-closed even if audit is unavailable.
     }

@@ -22,10 +22,10 @@ export const TERMINAL_THEME: ITheme = Object.freeze({
   brightBlue: '#93c5fd',
   brightMagenta: '#d8b4fe',
   brightCyan: '#67e8f9',
-  brightWhite: '#fafafa'
+  brightWhite: '#fafafa',
 })
 
-export const TERMINAL_FONT_FAMILY = 'var(--font-jetbrains-mono), var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace'
+export const TERMINAL_FONT_FAMILY =
+  'var(--font-jetbrains-mono), var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace'
 export const TERMINAL_FONT_SIZE = 13
 export const TERMINAL_SCROLLBACK = 10_000
-

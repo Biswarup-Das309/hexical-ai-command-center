@@ -1,26 +1,20 @@
 /** Browser-safe, immutable events emitted by the live TTY stream. */
 
+import {
+  isTTYExecutionState,
+  isTerminalTTYExecutionState,
+  type TTYExecutionState,
+  type TTYTerminalExecutionState,
+} from './tty-execution-state'
 import type { TTYExecutionId, TTYSessionId } from './tty-types'
-import { isTTYExecutionState, isTerminalTTYExecutionState, type TTYExecutionState, type TTYTerminalExecutionState } from './tty-execution-state'
 
 declare const __ttyStreamEventIdBrand: unique symbol
 
 export type TTYStreamEventId = string & { readonly [__ttyStreamEventIdBrand]: true }
 
-export type TTYStreamEventType =
-  | 'stdout'
-  | 'stderr'
-  | 'state'
-  | 'metric'
-  | 'heartbeat'
-  | 'completion'
-  | 'error'
+export type TTYStreamEventType = 'stdout' | 'stderr' | 'state' | 'metric' | 'heartbeat' | 'completion' | 'error'
 
-export type TTYStreamErrorCode =
-  | 'STREAM_GAP'
-  | 'STREAM_UNAVAILABLE'
-  | 'SLOW_CLIENT'
-  | 'INTERNAL_ERROR'
+export type TTYStreamErrorCode = 'STREAM_GAP' | 'STREAM_UNAVAILABLE' | 'SLOW_CLIENT' | 'INTERNAL_ERROR'
 
 export interface TTYStreamEventBase<TType extends TTYStreamEventType, TPayload> {
   readonly eventId: TTYStreamEventId
@@ -86,14 +80,32 @@ export type TTYStreamEventInput = {
   | { readonly type: 'error'; readonly payload: TTYStreamErrorPayload }
 )
 
-const STREAM_EVENT_TYPES: readonly TTYStreamEventType[] = ['stdout', 'stderr', 'state', 'metric', 'heartbeat', 'completion', 'error']
-const STREAM_ERROR_CODES: readonly TTYStreamErrorCode[] = ['STREAM_GAP', 'STREAM_UNAVAILABLE', 'SLOW_CLIENT', 'INTERNAL_ERROR']
+const STREAM_EVENT_TYPES: readonly TTYStreamEventType[] = [
+  'stdout',
+  'stderr',
+  'state',
+  'metric',
+  'heartbeat',
+  'completion',
+  'error',
+]
+const STREAM_ERROR_CODES: readonly TTYStreamErrorCode[] = [
+  'STREAM_GAP',
+  'STREAM_UNAVAILABLE',
+  'SLOW_CLIENT',
+  'INTERNAL_ERROR',
+]
 const MAX_ID_LENGTH = 200
 const MAX_TEXT_LENGTH = 64 * 1024
 const MAX_ERROR_MESSAGE_LENGTH = 512
 
 function isSafeIdentifier(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_LENGTH && !/[\u0000-\u001f\u007f]/.test(value)
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= MAX_ID_LENGTH &&
+    !/[\u0000-\u001f\u007f]/.test(value)
+  )
 }
 
 function isIsoTimestamp(value: unknown): value is string {
@@ -110,7 +122,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const allowed = new Set(keys)
-  return Object.keys(value).every(key => allowed.has(key))
+  return Object.keys(value).every((key) => allowed.has(key))
 }
 
 function freezePayload<T extends object>(payload: T): Readonly<T> {
@@ -120,13 +132,13 @@ function freezePayload<T extends object>(payload: T): Readonly<T> {
 function freezeEvent<T extends TTYStreamEventInput>(input: T): TTYStreamEvent {
   const payload = freezePayload(input.payload)
   return Object.freeze({
-    eventId: input.eventId ?? crypto.randomUUID() as TTYStreamEventId,
+    eventId: input.eventId ?? (crypto.randomUUID() as TTYStreamEventId),
     executionId: input.executionId,
     sessionId: input.sessionId,
     sequence: input.sequence,
     timestamp: input.timestamp ?? new Date().toISOString(),
     type: input.type,
-    payload
+    payload,
   }) as TTYStreamEvent
 }
 
@@ -139,7 +151,12 @@ export function validateTTYStreamEvent(value: unknown): value is TTYStreamEventI
   if (!isPlainRecord(value)) return false
   if (value.eventId !== undefined && !isSafeIdentifier(value.eventId)) return false
   if (!isSafeIdentifier(value.executionId) || !isSafeIdentifier(value.sessionId)) return false
-  if (!Number.isSafeInteger(value.sequence) || (value.sequence as number) <= 0 || (value.timestamp !== undefined && !isIsoTimestamp(value.timestamp))) return false
+  if (
+    !Number.isSafeInteger(value.sequence) ||
+    (value.sequence as number) <= 0 ||
+    (value.timestamp !== undefined && !isIsoTimestamp(value.timestamp))
+  )
+    return false
   if (typeof value.type !== 'string' || !STREAM_EVENT_TYPES.includes(value.type as TTYStreamEventType)) return false
   if (!isPlainRecord(value.payload)) return false
   const payload = value.payload
@@ -147,7 +164,13 @@ export function validateTTYStreamEvent(value: unknown): value is TTYStreamEventI
   switch (value.type) {
     case 'stdout':
     case 'stderr':
-      return hasOnlyKeys(payload, ['text', 'byteLength']) && typeof payload.text === 'string' && payload.text.length <= MAX_TEXT_LENGTH && isFiniteNumber(payload.byteLength) && payload.byteLength >= 0
+      return (
+        hasOnlyKeys(payload, ['text', 'byteLength']) &&
+        typeof payload.text === 'string' &&
+        payload.text.length <= MAX_TEXT_LENGTH &&
+        isFiniteNumber(payload.byteLength) &&
+        payload.byteLength >= 0
+      )
     case 'state':
       return hasOnlyKeys(payload, ['state']) && typeof payload.state === 'string' && isTTYExecutionState(payload.state)
     case 'metric':
@@ -155,9 +178,24 @@ export function validateTTYStreamEvent(value: unknown): value is TTYStreamEventI
     case 'heartbeat':
       return hasOnlyKeys(payload, ['serverTime']) && isIsoTimestamp(payload.serverTime)
     case 'completion':
-      return hasOnlyKeys(payload, ['state', 'exitCode', 'signal', 'failureCode']) && typeof payload.state === 'string' && isTTYExecutionState(payload.state) && isTerminalTTYExecutionState(payload.state) && (payload.exitCode === null || Number.isSafeInteger(payload.exitCode)) && (payload.signal === null || isSafeIdentifier(payload.signal)) && (payload.failureCode === null || isSafeIdentifier(payload.failureCode))
+      return (
+        hasOnlyKeys(payload, ['state', 'exitCode', 'signal', 'failureCode']) &&
+        typeof payload.state === 'string' &&
+        isTTYExecutionState(payload.state) &&
+        isTerminalTTYExecutionState(payload.state) &&
+        (payload.exitCode === null || Number.isSafeInteger(payload.exitCode)) &&
+        (payload.signal === null || isSafeIdentifier(payload.signal)) &&
+        (payload.failureCode === null || isSafeIdentifier(payload.failureCode))
+      )
     case 'error':
-      return hasOnlyKeys(payload, ['code', 'message', 'recoverable']) && typeof payload.code === 'string' && STREAM_ERROR_CODES.includes(payload.code as TTYStreamErrorCode) && typeof payload.message === 'string' && payload.message.length <= MAX_ERROR_MESSAGE_LENGTH && typeof payload.recoverable === 'boolean'
+      return (
+        hasOnlyKeys(payload, ['code', 'message', 'recoverable']) &&
+        typeof payload.code === 'string' &&
+        STREAM_ERROR_CODES.includes(payload.code as TTYStreamErrorCode) &&
+        typeof payload.message === 'string' &&
+        payload.message.length <= MAX_ERROR_MESSAGE_LENGTH &&
+        typeof payload.recoverable === 'boolean'
+      )
   }
   return false
 }
@@ -170,7 +208,12 @@ export function serializeTTYStreamEvent(event: TTYStreamEvent): string {
 export function parseTTYStreamEvent(serialized: string): TTYStreamEvent | null {
   try {
     const value: unknown = JSON.parse(serialized)
-    return isPlainRecord(value) && isSafeIdentifier(value.eventId) && isIsoTimestamp(value.timestamp) && validateTTYStreamEvent(value) ? freezeEvent(value) : null
+    return isPlainRecord(value) &&
+      isSafeIdentifier(value.eventId) &&
+      isIsoTimestamp(value.timestamp) &&
+      validateTTYStreamEvent(value)
+      ? freezeEvent(value)
+      : null
   } catch {
     return null
   }

@@ -30,7 +30,14 @@ interface ActivationMetricsState {
 }
 
 function initialState(): ActivationMetricsState {
-  return { latenciesMs: [], timeoutCount: 0, pendingCount: 0, lateSettledAcceptedCount: 0, lateSettledRejectedCount: 0, lateSettledErrorCount: 0 }
+  return {
+    latenciesMs: [],
+    timeoutCount: 0,
+    pendingCount: 0,
+    lateSettledAcceptedCount: 0,
+    lateSettledRejectedCount: 0,
+    lateSettledErrorCount: 0,
+  }
 }
 
 let state: ActivationMetricsState = initialState()
@@ -83,7 +90,7 @@ export function snapshotActivationMetrics(): ActivationMetricsSnapshot {
     pendingCount: state.pendingCount,
     lateSettledAcceptedCount: state.lateSettledAcceptedCount,
     lateSettledRejectedCount: state.lateSettledRejectedCount,
-    lateSettledErrorCount: state.lateSettledErrorCount
+    lateSettledErrorCount: state.lateSettledErrorCount,
   }
 }
 

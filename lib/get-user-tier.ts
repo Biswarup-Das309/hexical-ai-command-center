@@ -1,9 +1,8 @@
 import 'server-only'
 
 import { createClient } from '@supabase/supabase-js'
-
-import type { Tier } from '@/lib/hexical/types'
 import { getCanonicalEntitlement } from '@/lib/canonical-entitlement'
+import type { Tier } from '@/lib/hexical/types'
 
 /**
  * Resolves the same profile record used by /api/entitlement. Clerk supplies

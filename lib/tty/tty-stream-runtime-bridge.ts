@@ -1,7 +1,6 @@
 /** Adapter that observes the frozen durable output-stream API. */
 
 import type { Redis } from '@upstash/redis'
-
 import { TTYOutputStreamManager, type TTYOutputEvent, type TTYOutputEventInput } from './tty-output-stream'
 import { TTYStreamBroker } from './tty-stream-broker'
 
@@ -13,7 +12,11 @@ import { TTYStreamBroker } from './tty-stream-broker'
 export class TTYStreamingOutputStreamManager extends TTYOutputStreamManager {
   private readonly brokerTails = new Map<string, Promise<unknown>>()
 
-  constructor(redis: Redis, private readonly broker: TTYStreamBroker, options: { readonly maxPendingEvents?: number } = {}) {
+  constructor(
+    redis: Redis,
+    private readonly broker: TTYStreamBroker,
+    options: { readonly maxPendingEvents?: number } = {},
+  ) {
     super(redis, options)
   }
 
@@ -26,7 +29,10 @@ export class TTYStreamingOutputStreamManager extends TTYOutputStreamManager {
   private async publishInDurableOrder(event: TTYOutputEvent): Promise<void> {
     const key = String(event.executionId)
     const previous = this.brokerTails.get(key) ?? Promise.resolve()
-    const current = previous.then(() => this.broker.publishOutputEvent(event), () => this.broker.publishOutputEvent(event))
+    const current = previous.then(
+      () => this.broker.publishOutputEvent(event),
+      () => this.broker.publishOutputEvent(event),
+    )
     this.brokerTails.set(key, current)
     try {
       await current

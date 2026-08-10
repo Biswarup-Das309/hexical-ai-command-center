@@ -23,39 +23,35 @@
  * the gap where "authorized" was just a string the requester typed.
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Redis } from '@upstash/redis';
+import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Redis } from '@upstash/redis'
 import {
   AUTHORIZATION_EXPIRY_WARNING_HOURS,
   AUTHORIZATION_GATED_PROFILES,
   type AuthorizationDecision,
   type Profile,
-} from './types';
-import { hostMatchesPattern, normalizeHost, sha256 } from './util';
+} from './types'
+import { hostMatchesPattern, normalizeHost, sha256 } from './util'
 
 interface ScopeRow {
-  id: string;
-  target_pattern: string;
-  status: 'pending' | 'verified' | 'revoked';
-  expires_at: string | null;
+  id: string
+  target_pattern: string
+  status: 'pending' | 'verified' | 'revoked'
+  expires_at: string | null
 }
 
-const SCOPE_CACHE_TTL_SECS = 60;
+const SCOPE_CACHE_TTL_SECS = 60
 
 export function isAuthorizationGated(profile: Profile): boolean {
-  return AUTHORIZATION_GATED_PROFILES.includes(profile);
+  return AUTHORIZATION_GATED_PROFILES.includes(profile)
 }
 
-async function fetchVerifiedScopes(
-  supabase: SupabaseClient,
-  redis: Redis,
-  userId: string,
-): Promise<ScopeRow[]> {
-  const cacheKey = `authz:scopes:${userId}`;
-  const cached = await redis.get<string>(cacheKey);
+async function fetchVerifiedScopes(supabase: SupabaseClient, redis: Redis, userId: string): Promise<ScopeRow[]> {
+  const cacheKey = `authz:scopes:${userId}`
+  const cached = await redis.get<string>(cacheKey)
   if (cached) {
     try {
-      return JSON.parse(cached) as ScopeRow[];
+      return JSON.parse(cached) as ScopeRow[]
     } catch {
       // fall through to a fresh read
     }
@@ -66,27 +62,27 @@ async function fetchVerifiedScopes(
     .select('id, target_pattern, status, expires_at')
     .eq('user_id', userId)
     .eq('status', 'verified')
-    .gt('expires_at', new Date().toISOString());
+    .gt('expires_at', new Date().toISOString())
 
-  const rows = (error || !data ? [] : data) as ScopeRow[];
-  void redis.set(cacheKey, JSON.stringify(rows), { ex: SCOPE_CACHE_TTL_SECS });
-  return rows;
+  const rows = (error || !data ? [] : data) as ScopeRow[]
+  void redis.set(cacheKey, JSON.stringify(rows), { ex: SCOPE_CACHE_TTL_SECS })
+  return rows
 }
 
 async function logAuthorizationAudit(
   supabase: SupabaseClient,
   entry: {
-    user_id: string;
-    scope_id: string | null;
-    target_submitted: string;
-    profile: Profile;
-    decision: 'allowed' | 'denied';
-    reason: string;
+    user_id: string
+    scope_id: string | null
+    target_submitted: string
+    profile: Profile
+    decision: 'allowed' | 'denied'
+    reason: string
   },
 ): Promise<void> {
-  const { error } = await supabase.from('hexical_authorization_audit').insert(entry);
+  const { error } = await supabase.from('hexical_authorization_audit').insert(entry)
   if (error) {
-    console.warn('[AUTHZ_AUDIT_LOG_SKIPPED]', error.message);
+    console.warn('[AUTHZ_AUDIT_LOG_SKIPPED]', error.message)
   }
 }
 
@@ -97,23 +93,23 @@ async function logAuthorizationAudit(
  * target, unmatched target, expired scope, or a lookup error.
  */
 export async function verifyAuthorization(args: {
-  supabase: SupabaseClient;
-  redis: Redis;
-  userId: string;
-  profile: Profile;
-  targetScope: string | undefined;
-  extractedTargets: readonly string[] | undefined;
-  authorizationRef: string | undefined;
+  supabase: SupabaseClient
+  redis: Redis
+  userId: string
+  profile: Profile
+  targetScope: string | undefined
+  extractedTargets: readonly string[] | undefined
+  authorizationRef: string | undefined
 }): Promise<AuthorizationDecision> {
-  const { supabase, redis, userId, profile, targetScope, extractedTargets, authorizationRef } = args;
+  const { supabase, redis, userId, profile, targetScope, extractedTargets, authorizationRef } = args
 
   if (!isAuthorizationGated(profile)) {
-    return { allowed: true, scopeId: null, reason: 'not-gated', expiresInHours: null };
+    return { allowed: true, scopeId: null, reason: 'not-gated', expiresInHours: null }
   }
 
   const targetsRaw = [targetScope, ...(extractedTargets ?? [])].filter(
     (value): value is string => typeof value === 'string' && value.length > 0,
-  );
+  )
 
   if (targetsRaw.length === 0) {
     await logAuthorizationAudit(supabase, {
@@ -123,17 +119,17 @@ export async function verifyAuthorization(args: {
       profile,
       decision: 'denied',
       reason: 'missing-target-scope',
-    });
+    })
     return {
       allowed: false,
       scopeId: null,
       reason: 'targetScope is required for exploit/swarm profiles and must fall under a verified authorization scope.',
       expiresInHours: null,
-    };
+    }
   }
 
-  const hosts = targetsRaw.map(t => ({ raw: t, host: normalizeHost(t) }));
-  if (hosts.some(h => h.host === null)) {
+  const hosts = targetsRaw.map((t) => ({ raw: t, host: normalizeHost(t) }))
+  if (hosts.some((h) => h.host === null)) {
     await logAuthorizationAudit(supabase, {
       user_id: userId,
       scope_id: null,
@@ -141,13 +137,18 @@ export async function verifyAuthorization(args: {
       profile,
       decision: 'denied',
       reason: 'unparseable-target',
-    });
-    return { allowed: false, scopeId: null, reason: 'Could not parse one or more submitted targets.', expiresInHours: null };
+    })
+    return {
+      allowed: false,
+      scopeId: null,
+      reason: 'Could not parse one or more submitted targets.',
+      expiresInHours: null,
+    }
   }
 
-  let scopes = await fetchVerifiedScopes(supabase, redis, userId);
+  let scopes = await fetchVerifiedScopes(supabase, redis, userId)
   if (authorizationRef) {
-    scopes = scopes.filter(scope => scope.id === authorizationRef);
+    scopes = scopes.filter((scope) => scope.id === authorizationRef)
   }
 
   if (scopes.length === 0) {
@@ -158,28 +159,29 @@ export async function verifyAuthorization(args: {
       profile,
       decision: 'denied',
       reason: 'no-verified-scope',
-    });
+    })
     return {
       allowed: false,
       scopeId: null,
-      reason: 'No verified authorization scope found for this account. Submit a scope for review before requesting exploit/swarm analysis.',
+      reason:
+        'No verified authorization scope found for this account. Submit a scope for review before requesting exploit/swarm analysis.',
       expiresInHours: null,
-    };
+    }
   }
 
-  let matchedScope: ScopeRow | null = null;
+  let matchedScope: ScopeRow | null = null
   for (const { host } of hosts) {
-    const match = scopes.find(scope => hostMatchesPattern(host as string, scope.target_pattern));
+    const match = scopes.find((scope) => hostMatchesPattern(host as string, scope.target_pattern))
     if (!match) {
-      matchedScope = null;
-      break;
+      matchedScope = null
+      break
     }
-    matchedScope = match;
+    matchedScope = match
   }
 
   const allTargetsCovered = hosts.every(({ host }) =>
-    scopes.some(scope => hostMatchesPattern(host as string, scope.target_pattern)),
-  );
+    scopes.some((scope) => hostMatchesPattern(host as string, scope.target_pattern)),
+  )
 
   if (!allTargetsCovered) {
     await logAuthorizationAudit(supabase, {
@@ -189,22 +191,22 @@ export async function verifyAuthorization(args: {
       profile,
       decision: 'denied',
       reason: 'target-out-of-scope',
-    });
+    })
     return {
       allowed: false,
       scopeId: null,
       reason: 'One or more submitted targets fall outside your verified authorization scope(s).',
       expiresInHours: null,
-    };
+    }
   }
 
   const soonestExpiring = scopes
-    .filter(s => s.expires_at)
-    .sort((a, b) => new Date(a.expires_at as string).getTime() - new Date(b.expires_at as string).getTime())[0];
+    .filter((s) => s.expires_at)
+    .sort((a, b) => new Date(a.expires_at as string).getTime() - new Date(b.expires_at as string).getTime())[0]
 
   const expiresInHours = soonestExpiring?.expires_at
     ? Math.max(0, Math.round((new Date(soonestExpiring.expires_at).getTime() - Date.now()) / 3_600_000))
-    : null;
+    : null
 
   await logAuthorizationAudit(supabase, {
     user_id: userId,
@@ -213,18 +215,18 @@ export async function verifyAuthorization(args: {
     profile,
     decision: 'allowed',
     reason: 'matched-verified-scope',
-  });
+  })
 
   return {
     allowed: true,
     scopeId: matchedScope?.id ?? soonestExpiring?.id ?? null,
     reason: 'matched-verified-scope',
     expiresInHours,
-  };
+  }
 }
 
 export function authorizationExpiryIsUrgent(expiresInHours: number | null): boolean {
-  return expiresInHours !== null && expiresInHours <= AUTHORIZATION_EXPIRY_WARNING_HOURS;
+  return expiresInHours !== null && expiresInHours <= AUTHORIZATION_EXPIRY_WARNING_HOURS
 }
 
 /** Self-serve request path: a user can create a `pending` scope request, but
@@ -247,11 +249,11 @@ export async function requestAuthorizationScope(
       status: 'pending',
     })
     .select('id')
-    .maybeSingle();
+    .maybeSingle()
 
   if (error || !data) {
-    console.warn('[AUTHZ_SCOPE_REQUEST_FAILED]', error?.message);
-    return null;
+    console.warn('[AUTHZ_SCOPE_REQUEST_FAILED]', error?.message)
+    return null
   }
-  return data as { id: string };
+  return data as { id: string }
 }

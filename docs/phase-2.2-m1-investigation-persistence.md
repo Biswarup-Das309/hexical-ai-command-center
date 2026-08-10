@@ -6,18 +6,18 @@ Phase 2.2 makes an investigation the durable product object while keeping the Ph
 
 `InvestigationStore` persists the following record in the existing durable Redis deployment:
 
-| Field | Meaning |
-| --- | --- |
-| `investigationId` | UUID public identifier |
-| `ownerUserId` | server-only tenant owner |
-| `title` | bounded display title |
-| `description` | bounded investigation context |
-| `status` | `active`, `archived`, or `deleted` |
-| `createdAt` / `updatedAt` | ISO lifecycle timestamps |
-| `archivedAt` | archive timestamp or `null` |
-| `executionCount` | persisted counter for attached executions |
-| `evidenceCount` | persisted bookmark counter |
-| `findingCount` | reserved finding counter for the next evidence milestone |
+| Field                     | Meaning                                                  |
+| ------------------------- | -------------------------------------------------------- |
+| `investigationId`         | UUID public identifier                                   |
+| `ownerUserId`             | server-only tenant owner                                 |
+| `title`                   | bounded display title                                    |
+| `description`             | bounded investigation context                            |
+| `status`                  | `active`, `archived`, or `deleted`                       |
+| `createdAt` / `updatedAt` | ISO lifecycle timestamps                                 |
+| `archivedAt`              | archive timestamp or `null`                              |
+| `executionCount`          | persisted counter for attached executions                |
+| `evidenceCount`           | persisted bookmark counter                               |
+| `findingCount`            | reserved finding counter for the next evidence milestone |
 
 The owner index and execution index are sorted sets. The timeline is an append-only Redis Stream with bounded page reads. Bookmarks have a separate sorted-set index so refresh does not need to scan the full timeline. Internal Redis keys, lease tokens, worker IDs, and runtime metadata never cross the API boundary.
 

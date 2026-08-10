@@ -10,19 +10,24 @@ export interface TerminalContainerProps {
   readonly className?: string
 }
 
-export const TerminalContainer = forwardRef<HTMLDivElement, TerminalContainerProps>(function TerminalContainer({
-  title = 'LIVE EXECUTION',
-  status,
-  toolbar,
-  children,
-  className = ''
-}, ref) {
+export const TerminalContainer = forwardRef<HTMLDivElement, TerminalContainerProps>(function TerminalContainer(
+  { title = 'LIVE EXECUTION', status, toolbar, children, className = '' },
+  ref,
+) {
   return (
-    <section className={`hud-frame glass flex min-h-0 flex-col overflow-hidden rounded-lg ${className}`} aria-label={title}>
+    <section
+      className={`hud-frame glass flex min-h-0 flex-col overflow-hidden rounded-lg ${className}`}
+      aria-label={title}
+    >
       <header className="flex min-h-10 items-center justify-between gap-3 border-b border-white/10 bg-black/20 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="size-2 shrink-0 rounded-full bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.75)]" aria-hidden="true" />
-          <span className="truncate font-mono text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-300">{title}</span>
+          <span
+            className="size-2 shrink-0 rounded-full bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.75)]"
+            aria-hidden="true"
+          />
+          <span className="truncate font-mono text-[10px] font-semibold uppercase tracking-[0.24em] text-zinc-300">
+            {title}
+          </span>
           {status}
         </div>
         {toolbar && <div className="flex shrink-0 items-center gap-1">{toolbar}</div>}
@@ -32,4 +37,3 @@ export const TerminalContainer = forwardRef<HTMLDivElement, TerminalContainerPro
     </section>
   )
 })
-

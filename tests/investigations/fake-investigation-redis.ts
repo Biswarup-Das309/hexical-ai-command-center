@@ -76,8 +76,15 @@ export class FakeInvestigationRedis {
     return removed
   }
 
-  async zrange<T extends unknown[]>(key: string, _min: number, _max: number, options: { readonly rev?: boolean; readonly offset: number; readonly count: number }): Promise<T> {
-    const members = [...(this.sorted.get(key) ?? new Map<string, number>())].sort((left, right) => options?.rev ? right[1] - left[1] : left[1] - right[1]).map(([member]) => member)
+  async zrange<T extends unknown[]>(
+    key: string,
+    _min: number,
+    _max: number,
+    options: { readonly rev?: boolean; readonly offset: number; readonly count: number },
+  ): Promise<T> {
+    const members = [...(this.sorted.get(key) ?? new Map<string, number>())]
+      .sort((left, right) => (options?.rev ? right[1] - left[1] : left[1] - right[1]))
+      .map(([member]) => member)
     const offset = options.offset
     const count = options.count
     return members.slice(offset, offset + count) as T
@@ -95,8 +102,10 @@ export class FakeInvestigationRedis {
     const exclusive = start.startsWith('(')
     const startId = (exclusive ? start.slice(1) : start).split('-')[0]
     const minimum = startId === '-' ? 0 : Number(startId)
-    const entries = (this.streams.get(key) ?? []).filter(entry => exclusive ? Number(entry.id.split('-')[0]) > minimum : Number(entry.id.split('-')[0]) >= minimum)
-    return entries.slice(0, count ?? entries.length).map(entry => [entry.id, Object.entries(entry.fields).flat()])
+    const entries = (this.streams.get(key) ?? []).filter((entry) =>
+      exclusive ? Number(entry.id.split('-')[0]) > minimum : Number(entry.id.split('-')[0]) >= minimum,
+    )
+    return entries.slice(0, count ?? entries.length).map((entry) => [entry.id, Object.entries(entry.fields).flat()])
   }
 
   async eval(script: string, keys: readonly string[], args: readonly string[]): Promise<unknown> {
@@ -105,7 +114,9 @@ export class FakeInvestigationRedis {
       if (!raw) return null
       try {
         const parsed: unknown = JSON.parse(raw)
-        return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null
+        return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : null
       } catch {
         return null
       }
@@ -137,7 +148,8 @@ export class FakeInvestigationRedis {
     if (script.includes('hexical:investigation:attach-session')) {
       const current = readRecord(keys[0]!)
       if (!current || current.ownerUserId !== args[0] || current.status === 'deleted') return [0, 'missing']
-      if (typeof current.ttySessionId === 'string' && current.ttySessionId.length > 0) return [2, JSON.stringify(current)]
+      if (typeof current.ttySessionId === 'string' && current.ttySessionId.length > 0)
+        return [2, JSON.stringify(current)]
       const bound = this.values.get(keys[1]!) ?? args[1]
       this.values.set(keys[1]!, bound)
       current.ttySessionId = bound
@@ -149,7 +161,8 @@ export class FakeInvestigationRedis {
     if (script.includes('hexical:investigation:clear-session')) {
       const current = readRecord(keys[0]!)
       if (!current || current.ownerUserId !== args[0] || current.status === 'deleted') return [0, 'missing']
-      if (typeof current.ttySessionId !== 'string' || current.ttySessionId.length === 0) return [1, JSON.stringify(current)]
+      if (typeof current.ttySessionId !== 'string' || current.ttySessionId.length === 0)
+        return [1, JSON.stringify(current)]
       if (current.ttySessionId !== args[1]) return [2, JSON.stringify(current)]
       current.ttySessionId = null
       current.updatedAt = args[2]

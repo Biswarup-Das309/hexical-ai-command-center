@@ -1,5 +1,4 @@
 import type { Redis } from '@upstash/redis'
-
 import type { TTYExecutionId, TTYSessionId } from './tty-types'
 import { ttyWorkerAuditStreamKey } from './tty-worker-keys'
 import { parseTTYWorkerId, type TTYLeaseId, type TTYWorkerId, type TTYWorkerMetadataValue } from './tty-worker-types'
@@ -21,7 +20,7 @@ export const TTY_WORKER_AUDIT_EVENT_TYPES = [
   'execution_failed',
   'execution_cancelled',
   'execution_timed_out',
-  'execution_recovered'
+  'execution_recovered',
 ] as const
 
 export type TTYWorkerAuditEventType = (typeof TTY_WORKER_AUDIT_EVENT_TYPES)[number]
@@ -79,7 +78,7 @@ function toFields(event: TTYWorkerAuditEvent): Record<string, string> {
     executionId: event.executionId ?? '',
     leaseId: event.leaseId ?? '',
     eventType: event.eventType,
-    metadata: JSON.stringify(event.metadata)
+    metadata: JSON.stringify(event.metadata),
   }
 }
 
@@ -113,7 +112,13 @@ function fromStreamEntry(value: unknown): TTYWorkerAuditEvent | null {
     const parsed: unknown = JSON.parse(fields.metadata ?? '{}')
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
     const values = Object.values(parsed)
-    if (!values.every((item): item is TTYWorkerMetadataValue => item === null || typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean')) return null
+    if (
+      !values.every(
+        (item): item is TTYWorkerMetadataValue =>
+          item === null || typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean',
+      )
+    )
+      return null
     metadata = parsed as TTYWorkerAuditMetadata
   } catch {
     return null
@@ -124,11 +129,11 @@ function fromStreamEntry(value: unknown): TTYWorkerAuditEvent | null {
     eventId: fields.eventId,
     timestamp: fields.timestamp,
     workerId,
-    sessionId: fields.sessionId ? fields.sessionId as TTYSessionId : null,
-    executionId: fields.executionId ? fields.executionId as TTYExecutionId : null,
-    leaseId: fields.leaseId ? fields.leaseId as TTYLeaseId : null,
+    sessionId: fields.sessionId ? (fields.sessionId as TTYSessionId) : null,
+    executionId: fields.executionId ? (fields.executionId as TTYExecutionId) : null,
+    leaseId: fields.leaseId ? (fields.leaseId as TTYLeaseId) : null,
     eventType: fields.eventType as TTYWorkerAuditEventType,
-    metadata
+    metadata,
   }
 }
 
@@ -141,7 +146,7 @@ export function createTTYWorkerAuditEvent(input: TTYWorkerAuditEventInput): TTYW
     executionId: input.executionId ?? null,
     leaseId: input.leaseId ?? null,
     eventType: input.eventType,
-    metadata: input.metadata ?? {}
+    metadata: input.metadata ?? {},
   }
   if (!validateEvent(event)) throw new Error('Invalid TTY worker audit event.')
   return event
@@ -168,12 +173,13 @@ export class TTYWorkerAudit implements TTYWorkerAuditSink {
     const end = options.end ?? '+'
     const count = options.count === undefined ? undefined : Math.max(1, Math.floor(options.count))
     try {
-      const rawEntries = count === undefined
-        ? await this.redis.xrange(ttyWorkerAuditStreamKey(), start, end)
-        : await this.redis.xrange(ttyWorkerAuditStreamKey(), start, end, count)
+      const rawEntries =
+        count === undefined
+          ? await this.redis.xrange(ttyWorkerAuditStreamKey(), start, end)
+          : await this.redis.xrange(ttyWorkerAuditStreamKey(), start, end, count)
       const entries = rawEntries as unknown as unknown[]
       const parsed = entries
-        .map(entry => fromStreamEntry(entry))
+        .map((entry) => fromStreamEntry(entry))
         .filter((event): event is TTYWorkerAuditEvent => event !== null)
       return parsed
     } catch {

@@ -35,25 +35,25 @@ const DEFAULT_ACTIVATION_RESPONSE_BUDGET_MS = 3000
 export async function raceActivationBudget(
   startExecution: () => Promise<{ readonly accepted: boolean; readonly reason?: string }>,
   budgetMs: number = DEFAULT_ACTIVATION_RESPONSE_BUDGET_MS,
-  logger: ActivationBudgetLogger = {}
+  logger: ActivationBudgetLogger = {},
 ): Promise<ActivationBudgetResult> {
   logger.onRequested?.()
   const pending = startExecution()
 
   const budgetResult = await Promise.race([
-    pending.then(result => ({ kind: 'settled' as const, result })),
-    new Promise<{ kind: 'timeout' }>(resolve => setTimeout(() => resolve({ kind: 'timeout' }), budgetMs))
+    pending.then((result) => ({ kind: 'settled' as const, result })),
+    new Promise<{ kind: 'timeout' }>((resolve) => setTimeout(() => resolve({ kind: 'timeout' }), budgetMs)),
   ])
 
   if (budgetResult.kind === 'timeout') {
     recordActivationPending()
     logger.onPending?.(budgetMs)
     void pending
-      .then(result => {
+      .then((result) => {
         recordActivationLateSettlement(result.accepted ? 'accepted' : 'rejected')
         logger.onSettledLate?.(result)
       })
-      .catch(error => {
+      .catch((error) => {
         recordActivationLateSettlement('error')
         logger.onErroredLate?.(error instanceof Error ? error.message : String(error))
       })
@@ -67,11 +67,11 @@ export async function raceActivationBudget(
     recordActivationPending()
     logger.onPending?.(budgetMs)
     void pending
-      .then(result => {
+      .then((result) => {
         recordActivationLateSettlement(result.accepted ? 'accepted' : 'rejected')
         logger.onSettledLate?.(result)
       })
-      .catch(error => {
+      .catch((error) => {
         recordActivationLateSettlement('error')
         logger.onErroredLate?.(error instanceof Error ? error.message : String(error))
       })

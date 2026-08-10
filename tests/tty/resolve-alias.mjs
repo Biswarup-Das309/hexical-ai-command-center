@@ -15,7 +15,7 @@ export function resolve(specifier, context, nextResolve) {
   const basePath = isAlias
     ? resolvePath(process.cwd(), specifier.slice(2))
     : resolvePath(dirname(fileURLToPath(context.parentURL)), specifier)
-  const targetPath = extensions.map(extension => `${basePath}${extension}`).find(existsSync)
+  const targetPath = extensions.map((extension) => `${basePath}${extension}`).find(existsSync)
 
   if (!targetPath) {
     return nextResolve(specifier, context)

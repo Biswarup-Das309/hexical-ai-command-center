@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server'
-
 import { snapshotActivationMetrics } from '@/lib/tty/tty-activation-metrics'
 
 export const runtime = 'nodejs'
@@ -8,7 +7,7 @@ export const dynamic = 'force-dynamic'
 function responseHeaders() {
   return {
     'Cache-Control': 'no-store, no-cache',
-    'X-Content-Type-Options': 'nosniff'
+    'X-Content-Type-Options': 'nosniff',
   }
 }
 
@@ -24,6 +23,6 @@ function responseHeaders() {
 export async function GET() {
   return NextResponse.json(
     { checkedAt: new Date().toISOString(), activation: snapshotActivationMetrics() },
-    { status: 200, headers: responseHeaders() }
+    { status: 200, headers: responseHeaders() },
   )
 }

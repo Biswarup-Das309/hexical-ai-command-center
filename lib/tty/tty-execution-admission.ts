@@ -1,5 +1,4 @@
 import type { Redis } from '@upstash/redis'
-
 import {
   createTTYExecutionId,
   type InternalTTYSession,
@@ -7,7 +6,7 @@ import {
   type TTYExecutionId,
   type TTYExecutionKind,
   type TTYExecutionStatus,
-  type TTYSessionId
+  type TTYSessionId,
 } from './tty-types'
 import type { TTYWorkerAuthContext, TTYWorkerCapability } from './tty-worker-types'
 
@@ -38,7 +37,13 @@ export interface TTYBrowserJob {
 }
 
 export function toBrowserSafeJob(job: TTYQueuedJob): TTYBrowserJob {
-  const { ownerUserId: _ownerUserId, authorizationScopeId: _authorizationScopeId, argv: _argv, resource: _resource, ...safe } = job
+  const {
+    ownerUserId: _ownerUserId,
+    authorizationScopeId: _authorizationScopeId,
+    argv: _argv,
+    resource: _resource,
+    ...safe
+  } = job
   return safe
 }
 
@@ -51,7 +56,8 @@ export function parseTTYRawInputToArgv(rawInput: RawTerminalInput): readonly str
   const value = rawInput.trim()
   if (value.length === 0 || value.includes('\u0000')) return []
   const argv = value.split(/\s+/)
-  if (argv.some(argument => argument.length === 0 || argument.length > 16_384 || argument.includes('\u0000'))) return []
+  if (argv.some((argument) => argument.length === 0 || argument.length > 16_384 || argument.includes('\u0000')))
+    return []
   return Object.freeze(argv)
 }
 
@@ -78,7 +84,7 @@ export interface TTYAdmissionDependencies {
 export function hasAuthenticatedTTYLeaseCapability(
   context: TTYWorkerAuthContext | null,
   capability: Extract<TTYWorkerCapability, 'claim_lease' | 'renew_lease'>,
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
 ): boolean {
   if (context === null || !Number.isFinite(nowMs)) return false
   const expiresAtMs = Date.parse(context.expiresAt)
@@ -88,7 +94,17 @@ export function hasAuthenticatedTTYLeaseCapability(
 
 export type TTYAdmissionResult =
   | { readonly admitted: true; readonly job: TTYQueuedJob; readonly duplicate: boolean }
-  | { readonly admitted: false; readonly reason: 'session_terminated' | 'concurrency_limit_exceeded' | 'rate_limited' | 'queue_full' | 'internal_error' | 'authorization_required' | 'input_rejected' }
+  | {
+      readonly admitted: false
+      readonly reason:
+        | 'session_terminated'
+        | 'concurrency_limit_exceeded'
+        | 'rate_limited'
+        | 'queue_full'
+        | 'internal_error'
+        | 'authorization_required'
+        | 'input_rejected'
+    }
 
 const JOB_TTL_SECONDS = 24 * 60 * 60
 const IDEMPOTENCY_TTL_SECONDS = 10 * 60
@@ -132,7 +148,10 @@ function sessionKey(sessionId: TTYSessionId, suffix: string): string {
 }
 
 export class TTYExecutionAdmission {
-  constructor(private readonly redis: Redis, private readonly dependencies: TTYAdmissionDependencies) {}
+  constructor(
+    private readonly redis: Redis,
+    private readonly dependencies: TTYAdmissionDependencies,
+  ) {}
 
   async admit(args: {
     readonly session: InternalTTYSession
@@ -142,7 +161,11 @@ export class TTYExecutionAdmission {
   }): Promise<TTYAdmissionResult> {
     const argv = parseTTYRawInputToArgv(args.rawInput)
     if (argv.length === 0) return { admitted: false, reason: 'input_rejected' }
-    const authorization = await this.dependencies.authorize({ userId: args.session.ownerUserId, rawInput: args.rawInput, kind: args.kind })
+    const authorization = await this.dependencies.authorize({
+      userId: args.session.ownerUserId,
+      rawInput: args.rawInput,
+      kind: args.kind,
+    })
     if (!authorization.allowed) return { admitted: false, reason: 'authorization_required' }
 
     const now = (this.dependencies.now ?? (() => new Date()))()
@@ -159,12 +182,12 @@ export class TTYExecutionAdmission {
       argv,
       resource: {
         maxExecutionDurationMs: args.session.limits.maxExecutionDurationMs,
-        maxOutputBytes: args.session.limits.maxOutputBytesPerExecution
-      }
+        maxOutputBytes: args.session.limits.maxOutputBytesPerExecution,
+      },
     }
     const serialized = JSON.stringify({ job, fingerprint: args.rawInput })
     const idempotency = idempotencyKey(args.session.sessionId, args.session.ownerUserId, args.idempotencyKey)
-    const result = await this.redis.eval(
+    const result = (await this.redis.eval(
       RESERVE_JOB_SCRIPT,
       [
         idempotency,
@@ -176,21 +199,37 @@ export class TTYExecutionAdmission {
         sessionKey(args.session.sessionId, 'core'),
         sessionKey(args.session.sessionId, 'status'),
         sessionKey(args.session.sessionId, 'jobs'),
-        sessionKey(args.session.sessionId, 'idempotencies')
+        sessionKey(args.session.sessionId, 'idempotencies'),
       ],
-      [executionId, String(JOB_TTL_SECONDS), String(now.getTime()), String(args.session.limits.maxQueueDepth), String(args.session.limits.maxConcurrentExecutionsPerSession), String(args.session.limits.maxExecutionsPerMinute), JSON.stringify(job), serialized, String(IDEMPOTENCY_TTL_SECONDS)]
-    ) as [number, string]
+      [
+        executionId,
+        String(JOB_TTL_SECONDS),
+        String(now.getTime()),
+        String(args.session.limits.maxQueueDepth),
+        String(args.session.limits.maxConcurrentExecutionsPerSession),
+        String(args.session.limits.maxExecutionsPerMinute),
+        JSON.stringify(job),
+        serialized,
+        String(IDEMPOTENCY_TTL_SECONDS),
+      ],
+    )) as [number, string]
 
     if (result[0] === 2) {
       const stored = JSON.parse(result[1]) as { job: TTYQueuedJob; fingerprint: string }
       if (stored.fingerprint !== args.rawInput) return { admitted: false, reason: 'input_rejected' }
       const existing = stored.job
-      if (existing.ownerUserId !== args.session.ownerUserId || existing.sessionId !== args.session.sessionId) return { admitted: false, reason: 'input_rejected' }
+      if (existing.ownerUserId !== args.session.ownerUserId || existing.sessionId !== args.session.sessionId)
+        return { admitted: false, reason: 'input_rejected' }
       return { admitted: true, job: existing, duplicate: true }
     }
     if (result[0] === 0) {
       const reason = result[1]
-      if (reason === 'session_terminated' || reason === 'concurrency_limit_exceeded' || reason === 'rate_limited' || reason === 'queue_full') {
+      if (
+        reason === 'session_terminated' ||
+        reason === 'concurrency_limit_exceeded' ||
+        reason === 'rate_limited' ||
+        reason === 'queue_full'
+      ) {
         return { admitted: false, reason }
       }
       return { admitted: false, reason: 'internal_error' }

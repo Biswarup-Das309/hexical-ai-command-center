@@ -1,18 +1,16 @@
-import test from 'node:test'
 import assert from 'node:assert/strict'
-
+import test from 'node:test'
 import type { Redis } from '@upstash/redis'
-
+import { WorkerRedisMock } from './worker-redis-mock'
+import type { TTYLeasedJob } from '../../lib/tty/tty-execution-lease'
 import { TTYWorkerAudit, createTTYWorkerAuditEvent } from '../../lib/tty/tty-worker-audit'
 import { TTYWorkerAuthenticator, issueTTYWorkerToken, verifyWorkerToken } from '../../lib/tty/tty-worker-auth'
 import { TTYWorkerHeartbeatService } from '../../lib/tty/tty-worker-heartbeat'
-import { TTYWorkerLeaseObserver, computeLeaseAge, detectStaleLease } from '../../lib/tty/tty-worker-observer'
+import { ttyWorkerActiveLeasesKey } from '../../lib/tty/tty-worker-keys'
 import { createTTYWorkerMiddleware } from '../../lib/tty/tty-worker-middleware'
+import { TTYWorkerLeaseObserver, computeLeaseAge, detectStaleLease } from '../../lib/tty/tty-worker-observer'
 import { TTYWorkerRegistry } from '../../lib/tty/tty-worker-registry'
 import { createTTYLeaseId, createTTYWorkerId, type TTYWorkerId } from '../../lib/tty/tty-worker-types'
-import { ttyWorkerActiveLeasesKey } from '../../lib/tty/tty-worker-keys'
-import type { TTYLeasedJob } from '../../lib/tty/tty-execution-lease'
-import { WorkerRedisMock } from './worker-redis-mock'
 
 const redisAsType = (redis: WorkerRedisMock): Redis => redis as unknown as Redis
 const workerId = createTTYWorkerId('worker-a')
@@ -22,19 +20,16 @@ const registration = {
   identity: 'host-a/tty-runtime',
   version: '1.2.3',
   capabilities: ['claim_lease', 'renew_lease', 'execute'] as const,
-  metadata: { region: 'test', runtime: 'node' }
+  metadata: { region: 'test', runtime: 'node' },
 }
 
 test('worker registry enforces uniqueness, immutable registration, validation, and state transitions', async () => {
   const redis = new WorkerRedisMock()
   let nowMs = 1_700_000_000_000
   const registry = new TTYWorkerRegistry(redisAsType(redis), { dependencies: { now: () => new Date(nowMs) } })
-  const results = await Promise.all([
-    registry.registerWorker(registration),
-    registry.registerWorker(registration)
-  ])
-  assert.equal(results.filter(result => result.registered).length, 1)
-  const registered = results.find(result => result.registered)
+  const results = await Promise.all([registry.registerWorker(registration), registry.registerWorker(registration)])
+  assert.equal(results.filter((result) => result.registered).length, 1)
+  const registered = results.find((result) => result.registered)
   assert.ok(registered?.registered)
   const registeredAt = registered.worker.registeredAt
   assert.equal((await registry.registerWorker({ ...registration, version: 'bad' })).registered, false)
@@ -59,7 +54,11 @@ test('worker authentication verifies integrity, expiry, registration, status, an
   let nowMs = 1_700_000_000_000
   const registry = new TTYWorkerRegistry(redisAsType(redis), { dependencies: { now: () => new Date(nowMs) } })
   assert.equal((await registry.registerWorker(registration)).registered, true)
-  const token = issueTTYWorkerToken(workerId, 'execute', secret, { now: () => nowMs, ttlMs: 10_000, tokenId: 'token-1' })
+  const token = issueTTYWorkerToken(workerId, 'execute', secret, {
+    now: () => nowMs,
+    ttlMs: 10_000,
+    tokenId: 'token-1',
+  })
   const valid = verifyWorkerToken(token, secret, () => nowMs)
   assert.equal(valid.valid, true)
   assert.equal(verifyWorkerToken(`${token}tampered`, secret, () => nowMs).valid, false)
@@ -70,18 +69,28 @@ test('worker authentication verifies integrity, expiry, registration, status, an
   assert.deepEqual(await authenticator.authenticateWorker(token), { authenticated: false, reason: 'expired_token' })
 
   nowMs = 1_700_000_000_000
-  const freshToken = issueTTYWorkerToken(workerId, 'claim_lease', secret, { now: () => nowMs, ttlMs: 10_000, tokenId: 'token-2' })
+  const freshToken = issueTTYWorkerToken(workerId, 'claim_lease', secret, {
+    now: () => nowMs,
+    ttlMs: 10_000,
+    tokenId: 'token-2',
+  })
   await registry.deactivateWorker(workerId)
-  assert.deepEqual(await authenticator.authenticateWorker(freshToken), { authenticated: false, reason: 'inactive_worker' })
+  assert.deepEqual(await authenticator.authenticateWorker(freshToken), {
+    authenticated: false,
+    reason: 'inactive_worker',
+  })
   const unknown = createTTYWorkerId('worker-unknown')
   const unknownToken = issueTTYWorkerToken(unknown, 'execute', secret, { now: () => nowMs, ttlMs: 10_000 })
   await registry.reactivateWorker(workerId)
-  assert.deepEqual(await authenticator.authenticateWorker(unknownToken), { authenticated: false, reason: 'unknown_worker' })
+  assert.deepEqual(await authenticator.authenticateWorker(unknownToken), {
+    authenticated: false,
+    reason: 'unknown_worker',
+  })
 })
 
 test('worker middleware rejects anonymous requests and forwards verified context', async () => {
   const redis = new WorkerRedisMock()
-  let nowMs = 1_700_000_000_000
+  const nowMs = 1_700_000_000_000
   const registry = new TTYWorkerRegistry(redisAsType(redis), { dependencies: { now: () => new Date(nowMs) } })
   await registry.registerWorker(registration)
   const authenticator = new TTYWorkerAuthenticator(registry, secret, { now: () => new Date(nowMs) })
@@ -90,7 +99,10 @@ test('worker middleware rejects anonymous requests and forwards verified context
   assert.equal(missing.authorized, false)
   if (!missing.authorized) assert.equal(missing.response.status, 401)
   const token = issueTTYWorkerToken(workerId, 'execute', secret, { now: () => nowMs, ttlMs: 10_000 })
-  const authorized = await middleware.authenticate(new Request('http://localhost', { headers: { authorization: `Bearer ${token}` } }), 'claim_lease')
+  const authorized = await middleware.authenticate(
+    new Request('http://localhost', { headers: { authorization: `Bearer ${token}` } }),
+    'claim_lease',
+  )
   assert.equal(authorized.authorized, true)
 })
 
@@ -102,7 +114,10 @@ test('heartbeat recording is monotonic, health is deterministic, offline transit
   const heartbeat = new TTYWorkerHeartbeatService(redisAsType(redis), registry, { now: () => new Date(nowMs) })
   const first = await heartbeat.recordHeartbeat({ workerId, sequence: 1, sentAt: new Date(nowMs - 500).toISOString() })
   assert.equal(first.recorded, true)
-  assert.deepEqual(await heartbeat.recordHeartbeat({ workerId, sequence: 1, sentAt: new Date(nowMs - 500).toISOString() }), { recorded: false, reason: 'duplicate_heartbeat' })
+  assert.deepEqual(
+    await heartbeat.recordHeartbeat({ workerId, sequence: 1, sentAt: new Date(nowMs - 500).toISOString() }),
+    { recorded: false, reason: 'duplicate_heartbeat' },
+  )
   nowMs += 31_000
   const stale = await heartbeat.computeWorkerHealth(workerId, new Date(nowMs))
   assert.equal(stale?.state, 'offline')
@@ -116,16 +131,26 @@ test('heartbeat recording is monotonic, health is deterministic, offline transit
 test('audit stream is append-only and replay preserves Redis ordering', async () => {
   const redis = new WorkerRedisMock()
   const audit = new TTYWorkerAudit(redisAsType(redis))
-  const first = createTTYWorkerAuditEvent({ eventType: 'worker_registered', workerId, timestamp: new Date(1_700_000_000_000).toISOString() })
+  const first = createTTYWorkerAuditEvent({
+    eventType: 'worker_registered',
+    workerId,
+    timestamp: new Date(1_700_000_000_000).toISOString(),
+  })
   await Promise.all([
     audit.appendEvent(first),
     audit.record({ eventType: 'worker_authenticated', workerId, timestamp: new Date(1_700_000_000_001).toISOString() }),
-    audit.record({ eventType: 'worker_heartbeat', workerId, timestamp: new Date(1_700_000_000_002).toISOString() })
+    audit.record({ eventType: 'worker_heartbeat', workerId, timestamp: new Date(1_700_000_000_002).toISOString() }),
   ])
   const replay = await audit.replay()
   assert.equal(replay.length, 3)
   assert.equal(replay[0].eventId, first.eventId)
-  assert.equal(replay.every(event => Object.hasOwn(event, 'sessionId') && Object.hasOwn(event, 'executionId') && Object.hasOwn(event, 'leaseId')), true)
+  assert.equal(
+    replay.every(
+      (event) =>
+        Object.hasOwn(event, 'sessionId') && Object.hasOwn(event, 'executionId') && Object.hasOwn(event, 'leaseId'),
+    ),
+    true,
+  )
 })
 
 test('lease observer attributes, measures, reconciles, and detects stale leases', async () => {
@@ -144,7 +169,15 @@ test('lease observer attributes, measures, reconciles, and detects stale leases'
     authorizationScopeId: null,
     resource: { maxExecutionDurationMs: 30_000, maxOutputBytes: 1_024 },
     attempt: 1,
-    lease: { workerId, token: 'lease-token', leaseId: createTTYLeaseId('lease-token'), claimedAtMs: 1_000, renewedAtMs: 2_000, expiresAtMs: 50_000, maxExpiresAtMs: 60_000 }
+    lease: {
+      workerId,
+      token: 'lease-token',
+      leaseId: createTTYLeaseId('lease-token'),
+      claimedAtMs: 1_000,
+      renewedAtMs: 2_000,
+      expiresAtMs: 50_000,
+      maxExpiresAtMs: 60_000,
+    },
   }
   await redis.set(`tty:job:${executionId}`, JSON.stringify(job))
   await observer.observeLeaseClaimed(job)

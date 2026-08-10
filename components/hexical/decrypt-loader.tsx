@@ -60,7 +60,7 @@ export function DecryptLoader() {
           const wave = Math.sin(t * 0.35 + i * 0.6) * 0.5 + 0.5 // 0..1
           const jitter = Math.random() * 0.25
           return Math.round(20 + (wave * 0.75 + jitter * 0.25) * 80) // 20–100%
-        })
+        }),
       )
     }, TICK_MS)
 
@@ -86,9 +86,7 @@ export function DecryptLoader() {
       </div>
 
       <div className="min-w-0 flex-1" aria-hidden="true">
-        <p className="font-mono text-[11px] tracking-widest text-primary/70 truncate">
-          {line}
-        </p>
+        <p className="font-mono text-[11px] tracking-widest text-primary/70 truncate">{line}</p>
         <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
           Decrypting signal
           <span className="ml-0.5 animate-pulse">_</span>

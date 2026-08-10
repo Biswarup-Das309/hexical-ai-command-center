@@ -10,5 +10,5 @@ export const PRICING = {
   pro: {
     pricePaise: 499900,
     tokens: 200_000_000,
-  }
-} as const;
+  },
+} as const

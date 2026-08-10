@@ -195,16 +195,16 @@ Primary implementation files:
 
 ## Race-condition audit
 
-| Race exercised | Durable guard | Result |
-|---|---|---|
-| Two session creations for one owner | Atomic active-session Redis script | One active session; both callers converge on the same ID |
-| Session expiry during admission/claim | One retry at the investigation boundary plus atomic terminated-session cleanup | Replacement or durable queued state; no false duplicate submission |
-| Duplicate execution admission/activation | Idempotency reservation plus execution state/CAS checks | One job and one activation; duplicate calls replay the existing result |
-| Terminal execution versus update/recovery | Terminal-aware state transition guard | Terminal state remains immutable |
-| Worker restart during streaming | Lease observation, orphan runtime cleanup, recovery-only requeue | Recovery is idempotent; orphan process/runtime cleanup is retried |
-| Concurrent graph synchronization and index loss | Idempotent upsert plus index repair and processed-sequence dedupe | No duplicate graph entities/edges; indexes self-heal |
-| Browser reconnect during replay | Serialized broker subscription, cursor validation, gap detection | Ordered suffix replay or deterministic `STREAM_GAP`/`STREAM_UNAVAILABLE` |
-| Parent rerender and stale callbacks | Stable callback ref and investigation-scoped session promise | No spurious reconnect or cross-investigation session reuse |
+| Race exercised                                  | Durable guard                                                                  | Result                                                                   |
+| ----------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| Two session creations for one owner             | Atomic active-session Redis script                                             | One active session; both callers converge on the same ID                 |
+| Session expiry during admission/claim           | One retry at the investigation boundary plus atomic terminated-session cleanup | Replacement or durable queued state; no false duplicate submission       |
+| Duplicate execution admission/activation        | Idempotency reservation plus execution state/CAS checks                        | One job and one activation; duplicate calls replay the existing result   |
+| Terminal execution versus update/recovery       | Terminal-aware state transition guard                                          | Terminal state remains immutable                                         |
+| Worker restart during streaming                 | Lease observation, orphan runtime cleanup, recovery-only requeue               | Recovery is idempotent; orphan process/runtime cleanup is retried        |
+| Concurrent graph synchronization and index loss | Idempotent upsert plus index repair and processed-sequence dedupe              | No duplicate graph entities/edges; indexes self-heal                     |
+| Browser reconnect during replay                 | Serialized broker subscription, cursor validation, gap detection               | Ordered suffix replay or deterministic `STREAM_GAP`/`STREAM_UNAVAILABLE` |
+| Parent rerender and stale callbacks             | Stable callback ref and investigation-scoped session promise                   | No spurious reconnect or cross-investigation session reuse               |
 
 The local suite includes 100 repeated real-process execution runs, 100
 concurrent worker-registration/recovery cases, 100 concurrent stream viewers,

@@ -1,13 +1,12 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-
 import type {
   InvestigationBookmark,
   InvestigationExecution,
   InvestigationNote,
   InvestigationRecord,
-  InvestigationTimelineEvent
+  InvestigationTimelineEvent,
 } from '@/lib/investigations/investigation-types'
 
 type PublicInvestigation = Omit<InvestigationRecord, 'ownerUserId'>
@@ -48,7 +47,11 @@ export interface UseInvestigationWorkspaceResult {
   readonly editNote: (noteId: string, body: string) => Promise<void>
   readonly deleteNote: (noteId: string) => Promise<void>
   readonly addBookmark: (bookmark: Omit<InvestigationBookmark, 'bookmarkId' | 'createdAt'>) => Promise<void>
-  readonly attachExecution: (input: { readonly sessionId: string; readonly input: string; readonly idempotencyKey: string }) => Promise<string | null>
+  readonly attachExecution: (input: {
+    readonly sessionId: string
+    readonly input: string
+    readonly idempotencyKey: string
+  }) => Promise<string | null>
 }
 
 export interface InvestigationSessionFailure {
@@ -78,24 +81,41 @@ function rememberId(key: string, id: string | null): void {
 }
 
 class InvestigationRequestError extends Error {
-  constructor(message: string, readonly code: string) {
+  constructor(
+    message: string,
+    readonly code: string,
+  ) {
     super(message)
     this.name = 'InvestigationRequestError'
   }
 }
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { ...init, cache: 'no-store', headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) } })
+  const response = await fetch(url, {
+    ...init,
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+  })
   const body: unknown = await response.json().catch(() => null)
   if (!response.ok) {
-    const message = typeof body === 'object' && body !== null && 'message' in body && typeof body.message === 'string' ? body.message : 'The investigation request failed.'
-    const code = typeof body === 'object' && body !== null && 'code' in body && typeof body.code === 'string' ? body.code : 'REQUEST_FAILED'
+    const message =
+      typeof body === 'object' && body !== null && 'message' in body && typeof body.message === 'string'
+        ? body.message
+        : 'The investigation request failed.'
+    const code =
+      typeof body === 'object' && body !== null && 'code' in body && typeof body.code === 'string'
+        ? body.code
+        : 'REQUEST_FAILED'
     throw new InvestigationRequestError(message, code)
   }
   return body as T
 }
 
-function mergeUnique<T extends { readonly eventId: string }>(current: readonly T[], next: readonly T[], maximum: number): readonly T[] {
+function mergeUnique<T extends { readonly eventId: string }>(
+  current: readonly T[],
+  next: readonly T[],
+  maximum: number,
+): readonly T[] {
   const seen = new Set<string>()
   const merged: T[] = []
   for (const item of [...current, ...next]) {
@@ -111,7 +131,8 @@ function notesFromTimeline(events: readonly InvestigationTimelineEvent[]): reado
   for (const event of events) {
     const noteId = String(event.payload.noteId ?? '')
     if (!noteId) continue
-    if (event.type === 'note_added') notes.set(noteId, { noteId, body: String(event.payload.body ?? ''), createdAt: event.occurredAt })
+    if (event.type === 'note_added')
+      notes.set(noteId, { noteId, body: String(event.payload.body ?? ''), createdAt: event.occurredAt })
     else if (event.type === 'note_edited') {
       const current = notes.get(noteId)
       if (current) notes.set(noteId, { ...current, body: String(event.payload.body ?? '') })
@@ -120,9 +141,13 @@ function notesFromTimeline(events: readonly InvestigationTimelineEvent[]): reado
   return [...notes.values()].slice(-10_000)
 }
 
-export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOptions = {}): UseInvestigationWorkspaceResult {
+export function useInvestigationWorkspace(
+  options: UseInvestigationWorkspaceOptions = {},
+): UseInvestigationWorkspaceResult {
   const storageKey = options.storageKey ?? DEFAULT_STORAGE_KEY
-  const [investigationId, setInvestigationId] = useState<string | null>(() => options.investigationId ?? storedId(storageKey))
+  const [investigationId, setInvestigationId] = useState<string | null>(
+    () => options.investigationId ?? storedId(storageKey),
+  )
   const [data, setData] = useState<InvestigationWorkspaceData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -138,58 +163,70 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
     return body
   }, [])
 
-  const load = useCallback(async (id: string | null, query = ''): Promise<InvestigationWorkspaceData | null> => {
-    if (!id) {
-      loadRequestRef.current += 1
-      setData(null)
-      setError(null)
-      setLoading(false)
-      return null
-    }
-    const requestId = ++loadRequestRef.current
-    setLoading(true)
-    try {
-      const body = await fetchInvestigation(id, query)
-      if (requestId !== loadRequestRef.current) return null
-      setData(body)
-      setError(null)
-      rememberId(storageKey, id)
-      return body
-    } catch (cause) {
-      if (requestId === loadRequestRef.current) {
-        if (cause instanceof InvestigationRequestError && (cause.code === 'NOT_FOUND' || cause.code === 'UNAUTHENTICATED')) {
-          setData(null)
-          setSessionFailure(null)
-          if (options.investigationId === undefined) {
-            setInvestigationId(null)
-            rememberId(storageKey, null)
-          }
-        }
-        setError(cause instanceof Error ? cause.message : 'The investigation could not be loaded.')
+  const load = useCallback(
+    async (id: string | null, query = ''): Promise<InvestigationWorkspaceData | null> => {
+      if (!id) {
+        loadRequestRef.current += 1
+        setData(null)
+        setError(null)
+        setLoading(false)
+        return null
       }
-      return null
-    } finally {
-      if (requestId === loadRequestRef.current) setLoading(false)
-    }
-  }, [fetchInvestigation, options.investigationId, storageKey])
+      const requestId = ++loadRequestRef.current
+      setLoading(true)
+      try {
+        const body = await fetchInvestigation(id, query)
+        if (requestId !== loadRequestRef.current) return null
+        setData(body)
+        setError(null)
+        rememberId(storageKey, id)
+        return body
+      } catch (cause) {
+        if (requestId === loadRequestRef.current) {
+          if (
+            cause instanceof InvestigationRequestError &&
+            (cause.code === 'NOT_FOUND' || cause.code === 'UNAUTHENTICATED')
+          ) {
+            setData(null)
+            setSessionFailure(null)
+            if (options.investigationId === undefined) {
+              setInvestigationId(null)
+              rememberId(storageKey, null)
+            }
+          }
+          setError(cause instanceof Error ? cause.message : 'The investigation could not be loaded.')
+        }
+        return null
+      } finally {
+        if (requestId === loadRequestRef.current) setLoading(false)
+      }
+    },
+    [fetchInvestigation, options.investigationId, storageKey],
+  )
 
-  const create = useCallback(async (input: { readonly title?: string; readonly description?: string } = {}) => {
-    if (createInFlightRef.current) return null
-    createInFlightRef.current = true
-    setLoading(true)
-    try {
-      const body = await requestJson<{ ok: true; investigation: PublicInvestigation }>('/api/investigations', { method: 'POST', body: JSON.stringify({ title: input.title ?? 'New investigation', description: input.description ?? '' }) })
-      setInvestigationId(body.investigation.investigationId)
-      rememberId(storageKey, body.investigation.investigationId)
-      return body.investigation.investigationId
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The investigation could not be created.')
-      return null
-    } finally {
-      createInFlightRef.current = false
-      setLoading(false)
-    }
-  }, [storageKey])
+  const create = useCallback(
+    async (input: { readonly title?: string; readonly description?: string } = {}) => {
+      if (createInFlightRef.current) return null
+      createInFlightRef.current = true
+      setLoading(true)
+      try {
+        const body = await requestJson<{ ok: true; investigation: PublicInvestigation }>('/api/investigations', {
+          method: 'POST',
+          body: JSON.stringify({ title: input.title ?? 'New investigation', description: input.description ?? '' }),
+        })
+        setInvestigationId(body.investigation.investigationId)
+        rememberId(storageKey, body.investigation.investigationId)
+        return body.investigation.investigationId
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'The investigation could not be created.')
+        return null
+      } finally {
+        createInFlightRef.current = false
+        setLoading(false)
+      }
+    },
+    [storageKey],
+  )
 
   useEffect(() => {
     if (options.investigationId !== undefined) {
@@ -198,7 +235,8 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
     }
   }, [options.investigationId, storageKey])
 
-  const resolvedInvestigationId = options.investigationId !== undefined ? options.investigationId ?? null : investigationId
+  const resolvedInvestigationId =
+    options.investigationId !== undefined ? options.investigationId ?? null : investigationId
 
   useEffect(() => {
     if (resolvedInvestigationId) {
@@ -208,14 +246,15 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
         setSessionFailure(null)
       }
       void load(resolvedInvestigationId)
-    }
-    else if (options.autoCreate) void create()
+    } else if (options.autoCreate) void create()
     else void load(null)
   }, [create, investigationId, load, options.autoCreate, resolvedInvestigationId])
 
   useEffect(() => {
     if (typeof window === 'undefined' || !resolvedInvestigationId) return
-    const reconnect = () => { if (document.visibilityState !== 'hidden') void load(resolvedInvestigationId) }
+    const reconnect = () => {
+      if (document.visibilityState !== 'hidden') void load(resolvedInvestigationId)
+    }
     window.addEventListener('online', reconnect)
     document.addEventListener('visibilitychange', reconnect)
     return () => {
@@ -224,23 +263,35 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
     }
   }, [load, resolvedInvestigationId])
 
-  const refresh = useCallback(async () => { await load(resolvedInvestigationId) }, [load, resolvedInvestigationId])
+  const refresh = useCallback(async () => {
+    await load(resolvedInvestigationId)
+  }, [load, resolvedInvestigationId])
 
   const loadMoreTimeline = useCallback(async () => {
     if (!resolvedInvestigationId || !data?.nextTimelineCursor) return
     const requestId = ++loadRequestRef.current
     setLoading(true)
     try {
-      const next = await fetchInvestigation(resolvedInvestigationId, `?timelineCursor=${encodeURIComponent(data.nextTimelineCursor)}`)
+      const next = await fetchInvestigation(
+        resolvedInvestigationId,
+        `?timelineCursor=${encodeURIComponent(data.nextTimelineCursor)}`,
+      )
       if (requestId !== loadRequestRef.current) return
-      setData(current => {
+      setData((current) => {
         if (!current) return current
         const timeline = mergeUnique(current.timeline, next.timeline, 10_000)
-        return { ...current, timeline, bookmarks: next.bookmarks, notes: notesFromTimeline(timeline), nextTimelineCursor: next.nextTimelineCursor }
+        return {
+          ...current,
+          timeline,
+          bookmarks: next.bookmarks,
+          notes: notesFromTimeline(timeline),
+          nextTimelineCursor: next.nextTimelineCursor,
+        }
       })
       setError(null)
     } catch (cause) {
-      if (requestId === loadRequestRef.current) setError(cause instanceof Error ? cause.message : 'The timeline could not be loaded.')
+      if (requestId === loadRequestRef.current)
+        setError(cause instanceof Error ? cause.message : 'The timeline could not be loaded.')
     } finally {
       if (requestId === loadRequestRef.current) setLoading(false)
     }
@@ -251,36 +302,65 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
     const requestId = ++loadRequestRef.current
     setLoading(true)
     try {
-      const next = await fetchInvestigation(resolvedInvestigationId, `?executionCursor=${encodeURIComponent(data.nextExecutionCursor)}`)
+      const next = await fetchInvestigation(
+        resolvedInvestigationId,
+        `?executionCursor=${encodeURIComponent(data.nextExecutionCursor)}`,
+      )
       if (requestId !== loadRequestRef.current) return
-      setData(current => current ? { ...current, executions: [...current.executions, ...next.executions].slice(0, 500), nextExecutionCursor: next.nextExecutionCursor } : current)
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              executions: [...current.executions, ...next.executions].slice(0, 500),
+              nextExecutionCursor: next.nextExecutionCursor,
+            }
+          : current,
+      )
       setError(null)
     } catch (cause) {
-      if (requestId === loadRequestRef.current) setError(cause instanceof Error ? cause.message : 'The executions could not be loaded.')
+      if (requestId === loadRequestRef.current)
+        setError(cause instanceof Error ? cause.message : 'The executions could not be loaded.')
     } finally {
       if (requestId === loadRequestRef.current) setLoading(false)
     }
   }, [data?.nextExecutionCursor, fetchInvestigation, resolvedInvestigationId])
 
-  const patch = useCallback(async (body: Record<string, unknown>) => {
-    if (!resolvedInvestigationId) return
-    ++loadRequestRef.current
-    setLoading(true)
-    try {
-      const response = await requestJson<{ ok: true; investigation: PublicInvestigation }>(`/api/investigations/${resolvedInvestigationId}`, { method: 'PATCH', body: JSON.stringify(body) })
-      setData(current => current ? { ...current, investigation: { ...current.investigation, ...response.investigation } } : current)
-      setError(null)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The investigation could not be updated.')
-      throw cause
-    } finally {
-      setLoading(false)
-    }
-  }, [resolvedInvestigationId])
+  const patch = useCallback(
+    async (body: Record<string, unknown>) => {
+      if (!resolvedInvestigationId) return
+      ++loadRequestRef.current
+      setLoading(true)
+      try {
+        const response = await requestJson<{ ok: true; investigation: PublicInvestigation }>(
+          `/api/investigations/${resolvedInvestigationId}`,
+          { method: 'PATCH', body: JSON.stringify(body) },
+        )
+        setData((current) =>
+          current ? { ...current, investigation: { ...current.investigation, ...response.investigation } } : current,
+        )
+        setError(null)
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'The investigation could not be updated.')
+        throw cause
+      } finally {
+        setLoading(false)
+      }
+    },
+    [resolvedInvestigationId],
+  )
 
-  const rename = useCallback(async (title: string, description?: string) => { await patch({ title, ...(description === undefined ? {} : { description }) }) }, [patch])
-  const archive = useCallback(async () => { await patch({ status: 'archived' }) }, [patch])
-  const restore = useCallback(async () => { await patch({ status: 'active' }) }, [patch])
+  const rename = useCallback(
+    async (title: string, description?: string) => {
+      await patch({ title, ...(description === undefined ? {} : { description }) })
+    },
+    [patch],
+  )
+  const archive = useCallback(async () => {
+    await patch({ status: 'archived' })
+  }, [patch])
+  const restore = useCallback(async () => {
+    await patch({ status: 'active' })
+  }, [patch])
 
   const remove = useCallback(async () => {
     if (!resolvedInvestigationId) return
@@ -302,20 +382,29 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
 
   const queueMutation = useCallback((operation: () => Promise<void>) => {
     const next = mutationQueueRef.current.catch(() => undefined).then(operation)
-    mutationQueueRef.current = next.then(() => undefined, () => undefined)
+    mutationQueueRef.current = next.then(
+      () => undefined,
+      () => undefined,
+    )
     return next
   }, [])
 
   const ensureSession = useCallback(async (): Promise<string | null> => {
     if (!resolvedInvestigationId) return null
-    if (sessionProvisionRef.current && sessionProvisionInvestigationRef.current === resolvedInvestigationId) return sessionProvisionRef.current
+    if (sessionProvisionRef.current && sessionProvisionInvestigationRef.current === resolvedInvestigationId)
+      return sessionProvisionRef.current
 
     let sessionId: string | null = null
     setSessionFailure(null)
     const provision = queueMutation(async () => {
-      const response = await requestJson<{ ok: true; investigation: PublicInvestigation; sessionId: string }>(`/api/investigations/${resolvedInvestigationId}/session`, { method: 'POST' })
+      const response = await requestJson<{ ok: true; investigation: PublicInvestigation; sessionId: string }>(
+        `/api/investigations/${resolvedInvestigationId}/session`,
+        { method: 'POST' },
+      )
       sessionId = response.sessionId
-      setData(current => current ? { ...current, investigation: { ...current.investigation, ...response.investigation } } : current)
+      setData((current) =>
+        current ? { ...current, investigation: { ...current.investigation, ...response.investigation } } : current,
+      )
       setError(null)
       setSessionFailure(null)
     }).then(() => sessionId)
@@ -324,9 +413,13 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
     try {
       return await provision
     } catch (cause) {
-      const failure: InvestigationSessionFailure = cause instanceof InvestigationRequestError
-        ? { code: cause.code, message: cause.message }
-        : { code: 'SESSION_UNAVAILABLE', message: cause instanceof Error ? cause.message : 'The execution session could not be attached.' }
+      const failure: InvestigationSessionFailure =
+        cause instanceof InvestigationRequestError
+          ? { code: cause.code, message: cause.message }
+          : {
+              code: 'SESSION_UNAVAILABLE',
+              message: cause instanceof Error ? cause.message : 'The execution session could not be attached.',
+            }
       setSessionFailure(failure)
       setError(failure.message)
       throw cause
@@ -342,8 +435,13 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
     if (!resolvedInvestigationId) return
     try {
       await queueMutation(async () => {
-        const response = await requestJson<{ ok: true; investigation: PublicInvestigation }>(`/api/investigations/${resolvedInvestigationId}/session`, { method: 'DELETE' })
-        setData(current => current ? { ...current, investigation: { ...current.investigation, ...response.investigation } } : current)
+        const response = await requestJson<{ ok: true; investigation: PublicInvestigation }>(
+          `/api/investigations/${resolvedInvestigationId}/session`,
+          { method: 'DELETE' },
+        )
+        setData((current) =>
+          current ? { ...current, investigation: { ...current.investigation, ...response.investigation } } : current,
+        )
         setError(null)
       })
     } catch (cause) {
@@ -352,61 +450,139 @@ export function useInvestigationWorkspace(options: UseInvestigationWorkspaceOpti
     }
   }, [queueMutation, resolvedInvestigationId])
 
-  const timelinePost = useCallback(async (body: Record<string, unknown>) => {
-    if (!resolvedInvestigationId) return
-    try {
-      await queueMutation(async () => {
-        await requestJson(`/api/investigations/${resolvedInvestigationId}/timeline`, { method: 'POST', body: JSON.stringify(body) })
-        await load(resolvedInvestigationId)
-      })
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The timeline event could not be persisted.')
-      throw cause
-    }
-  }, [load, queueMutation, resolvedInvestigationId])
+  const timelinePost = useCallback(
+    async (body: Record<string, unknown>) => {
+      if (!resolvedInvestigationId) return
+      try {
+        await queueMutation(async () => {
+          await requestJson(`/api/investigations/${resolvedInvestigationId}/timeline`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+          })
+          await load(resolvedInvestigationId)
+        })
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'The timeline event could not be persisted.')
+        throw cause
+      }
+    },
+    [load, queueMutation, resolvedInvestigationId],
+  )
 
-  const addNote = useCallback(async (body: string) => { await timelinePost({ type: 'note', body }) }, [timelinePost])
-  const editNote = useCallback(async (noteId: string, body: string) => {
-    if (!resolvedInvestigationId) return
-    try {
-      await queueMutation(async () => {
-        await requestJson(`/api/investigations/${resolvedInvestigationId}/timeline/notes/${noteId}`, { method: 'PATCH', body: JSON.stringify({ body }) })
-        await load(resolvedInvestigationId)
-      })
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The note could not be updated.')
-      throw cause
-    }
-  }, [load, queueMutation, resolvedInvestigationId])
-  const deleteNote = useCallback(async (noteId: string) => {
-    if (!resolvedInvestigationId) return
-    try {
-      await queueMutation(async () => {
-        await requestJson(`/api/investigations/${resolvedInvestigationId}/timeline/notes/${noteId}`, { method: 'DELETE' })
-        await load(resolvedInvestigationId)
-      })
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The note could not be deleted.')
-      throw cause
-    }
-  }, [load, queueMutation, resolvedInvestigationId])
-  const addBookmark = useCallback(async (bookmark: Omit<InvestigationBookmark, 'bookmarkId' | 'createdAt'>) => { await timelinePost({ type: 'bookmark', ...bookmark }) }, [timelinePost])
+  const addNote = useCallback(
+    async (body: string) => {
+      await timelinePost({ type: 'note', body })
+    },
+    [timelinePost],
+  )
+  const editNote = useCallback(
+    async (noteId: string, body: string) => {
+      if (!resolvedInvestigationId) return
+      try {
+        await queueMutation(async () => {
+          await requestJson(`/api/investigations/${resolvedInvestigationId}/timeline/notes/${noteId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ body }),
+          })
+          await load(resolvedInvestigationId)
+        })
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'The note could not be updated.')
+        throw cause
+      }
+    },
+    [load, queueMutation, resolvedInvestigationId],
+  )
+  const deleteNote = useCallback(
+    async (noteId: string) => {
+      if (!resolvedInvestigationId) return
+      try {
+        await queueMutation(async () => {
+          await requestJson(`/api/investigations/${resolvedInvestigationId}/timeline/notes/${noteId}`, {
+            method: 'DELETE',
+          })
+          await load(resolvedInvestigationId)
+        })
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'The note could not be deleted.')
+        throw cause
+      }
+    },
+    [load, queueMutation, resolvedInvestigationId],
+  )
+  const addBookmark = useCallback(
+    async (bookmark: Omit<InvestigationBookmark, 'bookmarkId' | 'createdAt'>) => {
+      await timelinePost({ type: 'bookmark', ...bookmark })
+    },
+    [timelinePost],
+  )
 
-  const attachExecution = useCallback(async (input: { readonly sessionId: string; readonly input: string; readonly idempotencyKey: string }) => {
-    if (!resolvedInvestigationId) return null
-    let executionId: string | null = null
-    try {
-      await queueMutation(async () => {
-        const body = await requestJson<{ ok: true; execution: InvestigationExecution }>(`/api/investigations/${resolvedInvestigationId}/executions`, { method: 'POST', body: JSON.stringify(input) })
-        executionId = body.execution.executionId
-        await load(resolvedInvestigationId)
-      })
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The execution could not be attached.')
-      throw cause
-    }
-    return executionId
-  }, [load, queueMutation, resolvedInvestigationId])
+  const attachExecution = useCallback(
+    async (input: { readonly sessionId: string; readonly input: string; readonly idempotencyKey: string }) => {
+      if (!resolvedInvestigationId) return null
+      let executionId: string | null = null
+      try {
+        await queueMutation(async () => {
+          const body = await requestJson<{ ok: true; execution: InvestigationExecution }>(
+            `/api/investigations/${resolvedInvestigationId}/executions`,
+            { method: 'POST', body: JSON.stringify(input) },
+          )
+          executionId = body.execution.executionId
+          await load(resolvedInvestigationId)
+        })
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'The execution could not be attached.')
+        throw cause
+      }
+      return executionId
+    },
+    [load, queueMutation, resolvedInvestigationId],
+  )
 
-  return useMemo(() => ({ investigationId: resolvedInvestigationId, data, loading, error, sessionFailure, create, refresh, loadMoreTimeline, loadMoreExecutions, rename, archive, restore, remove, ensureSession, terminateSession, addNote, editNote, deleteNote, addBookmark, attachExecution }), [addBookmark, addNote, archive, attachExecution, create, data, deleteNote, editNote, ensureSession, error, loadMoreExecutions, loadMoreTimeline, refresh, remove, rename, resolvedInvestigationId, restore, loading, sessionFailure, terminateSession])
+  return useMemo(
+    () => ({
+      investigationId: resolvedInvestigationId,
+      data,
+      loading,
+      error,
+      sessionFailure,
+      create,
+      refresh,
+      loadMoreTimeline,
+      loadMoreExecutions,
+      rename,
+      archive,
+      restore,
+      remove,
+      ensureSession,
+      terminateSession,
+      addNote,
+      editNote,
+      deleteNote,
+      addBookmark,
+      attachExecution,
+    }),
+    [
+      addBookmark,
+      addNote,
+      archive,
+      attachExecution,
+      create,
+      data,
+      deleteNote,
+      editNote,
+      ensureSession,
+      error,
+      loadMoreExecutions,
+      loadMoreTimeline,
+      refresh,
+      remove,
+      rename,
+      resolvedInvestigationId,
+      restore,
+      loading,
+      sessionFailure,
+      terminateSession,
+    ],
+  )
 }

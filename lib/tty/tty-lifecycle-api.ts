@@ -1,10 +1,7 @@
 import { z } from 'zod'
-
-import {
-  denialReasonToFailure,
-  evaluateSessionCreationPolicy,
-  type TTYSessionCreationPolicyResult
-} from './tty-policy'
+import type { Tier } from '@/lib/hexical/types'
+import { denialReasonToFailure, evaluateSessionCreationPolicy, type TTYSessionCreationPolicyResult } from './tty-policy'
+import { toBrowserSafeSession, type TTYSessionCreateInput } from './tty-session-store'
 import type {
   InternalTTYSession,
   TTYPrincipal,
@@ -12,10 +9,8 @@ import type {
   TTYSession,
   TTYSessionId,
   TTYTerminationReason,
-  TTYTerminationResult
+  TTYTerminationResult,
 } from './tty-types'
-import { toBrowserSafeSession, type TTYSessionCreateInput } from './tty-session-store'
-import type { Tier } from '@/lib/hexical/types'
 
 const MAX_BODY_BYTES = 8_192
 const EMPTY_BODY_SCHEMA = z.object({}).strict()
@@ -24,7 +19,7 @@ const SESSION_ID_SCHEMA = z.string().uuid()
 const NO_STORE_HEADERS = {
   'Cache-Control': 'no-store, no-cache, must-revalidate',
   Pragma: 'no-cache',
-  'Content-Type': 'application/json'
+  'Content-Type': 'application/json',
 } as const
 
 export interface TTYLifecycleStore {
@@ -34,7 +29,7 @@ export interface TTYLifecycleStore {
   terminateSession(
     sessionId: TTYSessionId,
     ownerUserId: string,
-    reason: TTYTerminationReason
+    reason: TTYTerminationReason,
   ): Promise<TTYTerminationResult>
   countActiveSessionsForUser(userId: string): Promise<number>
 }
@@ -73,9 +68,9 @@ function failure(reason: Parameters<typeof denialReasonToFailure>[0], status: nu
       ok: false,
       code: safeFailure.code,
       message: safeFailure.message,
-      ...(session ? { session } : {})
+      ...(session ? { session } : {}),
     },
-    status
+    status,
   )
 }
 
@@ -128,7 +123,7 @@ function creationFailure(result: TTYSessionCreationPolicyResult): Response | nul
 async function terminalTouchFailure(
   store: TTYLifecycleStore,
   sessionId: TTYSessionId,
-  ownerUserId: string
+  ownerUserId: string,
 ): Promise<Response> {
   const current = await store.getSession(sessionId, ownerUserId)
   if (current === null) return failure('session_not_found', 404)
@@ -150,7 +145,7 @@ export function createTTYLifecycleApi(dependencies: TTYLifecycleApiDependencies)
         const principal: TTYPrincipal = { userId, tier }
         const policyInput = {
           request: { requestedBy: principal },
-          resolveLimits: dependencies.resolveLimits
+          resolveLimits: dependencies.resolveLimits,
         }
         const capabilityCheck = evaluateSessionCreationPolicy(policyInput)
         const capabilityFailure = creationFailure(capabilityCheck)
@@ -224,14 +219,14 @@ export function createTTYLifecycleApi(dependencies: TTYLifecycleApiDependencies)
             ok: true,
             sessionId,
             terminatedAt: result.terminatedAt,
-            ...(session ? { session: toBrowserSafeSession(session) } : {})
+            ...(session ? { session: toBrowserSafeSession(session) } : {}),
           },
-          200
+          200,
         )
       } catch (error) {
         console.error('[tty-lifecycle] terminate failed', error)
         return internalError()
       }
-    }
+    },
   }
 }

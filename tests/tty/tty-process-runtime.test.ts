@@ -1,8 +1,7 @@
-import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
-
+import test from 'node:test'
 import { TTYProcessRuntime } from '../../lib/tty/tty-process-runtime'
 import type { TTYExecutionId, TTYSessionId } from '../../lib/tty/tty-types'
 import type { TTYWorkerId } from '../../lib/tty/tty-worker-types'
@@ -35,10 +34,19 @@ test('runtime spawns argv without a shell, isolates cwd, and does not inherit en
       sessionId,
       workerId,
       file: process.execPath,
-      args: ['-e', 'process.stdout.write(JSON.stringify({ cwd: process.cwd(), inherited: process.env[process.argv[1]], argv: process.argv.slice(2) }))', inheritedKey, 'literal;not-shell-code'],
-      env: {}
+      args: [
+        '-e',
+        'process.stdout.write(JSON.stringify({ cwd: process.cwd(), inherited: process.env[process.argv[1]], argv: process.argv.slice(2) }))',
+        inheritedKey,
+        'literal;not-shell-code',
+      ],
+      env: {},
     })
-    const [stdout, stderr, exit] = await Promise.all([readStream(handle.stdout), readStream(handle.stderr), handle.exit])
+    const [stdout, stderr, exit] = await Promise.all([
+      readStream(handle.stdout),
+      readStream(handle.stderr),
+      handle.exit,
+    ])
     const parsed = JSON.parse(stdout) as { cwd: string; inherited?: string; argv: string[] }
 
     assert.equal(exit.code, 0)
@@ -63,7 +71,7 @@ test('runtime preserves stdout and stderr as separate streams', async () => {
     sessionId,
     workerId,
     file: process.execPath,
-    args: ['-e', "process.stdout.write('out\\n'); process.stderr.write('err\\n')"]
+    args: ['-e', "process.stdout.write('out\\n'); process.stderr.write('err\\n')"],
   })
   const [stdout, stderr, exit] = await Promise.all([readStream(handle.stdout), readStream(handle.stderr), handle.exit])
 
@@ -80,7 +88,7 @@ test('runtime stop terminates the process group and cleanup removes its private 
     sessionId,
     workerId,
     file: process.execPath,
-    args: ['-e', 'setInterval(() => {}, 1000)']
+    args: ['-e', 'setInterval(() => {}, 1000)'],
   })
 
   await runtime.stop(handle)
@@ -94,7 +102,7 @@ test('runtime rejects NUL bytes and unknown handles before any signal or cleanup
   const runtime = new TTYProcessRuntime({ rootDir: testRoot('validation') })
   await assert.rejects(
     runtime.start({ executionId, sessionId, workerId, file: process.execPath, args: ['-e\u0000'] }),
-    /Invalid process argument/
+    /Invalid process argument/,
   )
   const fake = {
     handleId: 'not-owned',
@@ -105,7 +113,7 @@ test('runtime rejects NUL bytes and unknown handles before any signal or cleanup
     workerId,
     stdout: ReadableStream.prototype,
     stderr: ReadableStream.prototype,
-    exit: Promise.resolve({ code: null, signal: null })
+    exit: Promise.resolve({ code: null, signal: null }),
   } as never
   await assert.rejects(runtime.cleanup(fake), /Unknown TTY process handle/)
 })

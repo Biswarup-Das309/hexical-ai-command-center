@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
 import { useUser } from '@clerk/nextjs'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 type Tier = 'guest' | 'free' | 'go' | 'plus' | 'pro'
 
@@ -23,11 +23,7 @@ export function useGuestLimit() {
   const [timeRemaining, setTimeRemaining] = useState<string>('')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const currentTier: Tier = !isClerkLoaded
-    ? 'guest'
-    : !user
-      ? 'guest'
-      : (entitlement?.tier ?? 'free')
+  const currentTier: Tier = !isClerkLoaded ? 'guest' : !user ? 'guest' : entitlement?.tier ?? 'free'
 
   const isPaidTier = currentTier !== 'guest' && currentTier !== 'free'
 
@@ -132,10 +128,7 @@ export function useGuestLimit() {
         } else {
           setIsLocked(false)
           setTimeRemaining('')
-          localStorage.setItem(
-            'guest_usage',
-            JSON.stringify(validHistory.filter((ts) => Date.now() - ts < FIVE_HOURS))
-          )
+          localStorage.setItem('guest_usage', JSON.stringify(validHistory.filter((ts) => Date.now() - ts < FIVE_HOURS)))
         }
       } else {
         setIsLocked(false)

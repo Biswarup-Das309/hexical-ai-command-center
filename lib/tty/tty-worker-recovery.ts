@@ -1,14 +1,13 @@
 import { log } from '@/lib/hexical/telemetry'
-
 import type { TTYExecutionCoordinator } from './tty-execution-coordinator'
-import type { TTYExecutionId } from './tty-types'
 import { TTYRecoveryManager, type TTYRecoveryReconcileResult } from './tty-recovery'
-import { detectStaleLease, type TTYWorkerLeaseObserver } from './tty-worker-observer'
+import type { TTYExecutionId } from './tty-types'
 import { ttyWorkerActiveLeaseIndexKey } from './tty-worker-keys'
+import { detectStaleLease, type TTYWorkerLeaseObserver } from './tty-worker-observer'
 import { parseTTYWorkerId, type TTYWorkerId } from './tty-worker-types'
 
 export const TTY_WORKER_RECOVERY_DEFAULTS = Object.freeze({
-  intervalMs: 15_000
+  intervalMs: 15_000,
 })
 
 export type TTYWorkerRecoveryState = 'stopped' | 'starting' | 'running' | 'stopping' | 'failed'
@@ -90,7 +89,7 @@ interface ExpiredLeaseScanResult {
 const defaultLogger: TTYWorkerRecoveryLogger = {
   info: (event, fields) => log.info(event, { component: 'tty-worker-recovery', ...fields }),
   warn: (event, fields) => log.warn(event, { component: 'tty-worker-recovery', ...fields }),
-  error: (event, fields) => log.error(event, { component: 'tty-worker-recovery', ...fields })
+  error: (event, fields) => log.error(event, { component: 'tty-worker-recovery', ...fields }),
 }
 
 function validInterval(value: number): boolean {
@@ -146,7 +145,7 @@ export class TTYWorkerRecoveryService {
     malformedLeaseIndexMembers: 0,
     lastRunAt: null,
     lastRunDurationMs: null,
-    lastError: null
+    lastError: null,
   })
 
   constructor(private readonly dependencies: TTYWorkerRecoveryDependencies) {
@@ -154,7 +153,7 @@ export class TTYWorkerRecoveryService {
     if (!validInterval(this.intervalMs)) throw new Error('Invalid TTY worker recovery interval.')
     this.now = dependencies.now ?? (() => Date.now())
     this.setTimer = dependencies.setTimeout ?? ((handler, delayMs) => setTimeout(handler, delayMs))
-    this.clearTimer = dependencies.clearTimeout ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>))
+    this.clearTimer = dependencies.clearTimeout ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>))
     this.logger = dependencies.logger ?? defaultLogger
   }
 
@@ -238,7 +237,9 @@ export class TTYWorkerRecoveryService {
     let failures = 0
 
     try {
-      orphan = await this.dependencies.orphanRecovery.reconcile((executionId, sessionId) => this.dependencies.coordinator.recoverExecution(executionId, sessionId))
+      orphan = await this.dependencies.orphanRecovery.reconcile((executionId, sessionId) =>
+        this.dependencies.coordinator.recoverExecution(executionId, sessionId),
+      )
     } catch (error) {
       failures += 1
       this.logger.error('orphan_recovery_error', { errorCode: safeErrorCode(error) })
@@ -251,7 +252,7 @@ export class TTYWorkerRecoveryService {
       expiredLeasesFinalized: 0,
       expiredLeaseFailures: 0,
       expiredLeasesDeferred: 0,
-      malformedLeaseIndexMembers: 0
+      malformedLeaseIndexMembers: 0,
     }
     try {
       leaseScan = await this.recoverExpiredLeases()
@@ -278,7 +279,7 @@ export class TTYWorkerRecoveryService {
       malformedLeaseIndexMembers: this.metrics.malformedLeaseIndexMembers + leaseScan.malformedLeaseIndexMembers,
       lastRunAt: new Date(this.now()).toISOString(),
       lastRunDurationMs: durationMs,
-      lastError: failures > 0 ? 'recovery_partial_failure' : null
+      lastError: failures > 0 ? 'recovery_partial_failure' : null,
     })
     this.logger.info('recovery_completed', {
       durationMs,
@@ -289,13 +290,15 @@ export class TTYWorkerRecoveryService {
       expiredLeasesRecovered: leaseScan.expiredLeasesRecovered,
       expiredLeasesFinalized: leaseScan.expiredLeasesFinalized,
       expiredLeasesDeferred: leaseScan.expiredLeasesDeferred,
-      failures
+      failures,
     })
     return result
   }
 
   private async recoverExpiredLeases(): Promise<ExpiredLeaseScanResult> {
-    const members = [...new Set((await this.dependencies.redis.smembers(ttyWorkerActiveLeaseIndexKey())).map(String))].sort()
+    const members = [
+      ...new Set((await this.dependencies.redis.smembers(ttyWorkerActiveLeaseIndexKey())).map(String)),
+    ].sort()
     let expiredLeasesObserved = 0
     let expiredLeasesRecovered = 0
     let expiredLeasesFinalized = 0
@@ -315,7 +318,11 @@ export class TTYWorkerRecoveryService {
         observation = await this.dependencies.observer.getLeaseObservation(parsed.executionId)
       } catch (error) {
         expiredLeaseFailures += 1
-        this.logger.error('lease_observation_error', { executionId: parsed.executionId, workerId: parsed.workerId, errorCode: safeErrorCode(error) })
+        this.logger.error('lease_observation_error', {
+          executionId: parsed.executionId,
+          workerId: parsed.workerId,
+          errorCode: safeErrorCode(error),
+        })
         continue
       }
       if (observation === null || !detectStaleLease(observation, this.now())) continue
@@ -327,26 +334,46 @@ export class TTYWorkerRecoveryService {
           executionId: parsed.executionId,
           workerId: parsed.workerId,
           leaseId: observation.leaseId,
-          state: state?.state ?? 'missing'
+          state: state?.state ?? 'missing',
         })
         continue
       }
 
       try {
-        const recovered = await this.dependencies.coordinator.recoverExecution(parsed.executionId, observation.sessionId)
+        const recovered = await this.dependencies.coordinator.recoverExecution(
+          parsed.executionId,
+          observation.sessionId,
+        )
         if (recovered?.state === 'queued') {
           expiredLeasesRecovered += 1
-          this.logger.info('expired_lease_recovered', { executionId: parsed.executionId, workerId: parsed.workerId, leaseId: observation.leaseId })
+          this.logger.info('expired_lease_recovered', {
+            executionId: parsed.executionId,
+            workerId: parsed.workerId,
+            leaseId: observation.leaseId,
+          })
         } else if (recovered?.state === 'expired') {
           expiredLeasesFinalized += 1
-          this.logger.warn('expired_lease_finalized', { executionId: parsed.executionId, workerId: parsed.workerId, leaseId: observation.leaseId })
+          this.logger.warn('expired_lease_finalized', {
+            executionId: parsed.executionId,
+            workerId: parsed.workerId,
+            leaseId: observation.leaseId,
+          })
         } else {
           expiredLeaseFailures += 1
-          this.logger.error('expired_lease_recovery_failed', { executionId: parsed.executionId, workerId: parsed.workerId, leaseId: observation.leaseId })
+          this.logger.error('expired_lease_recovery_failed', {
+            executionId: parsed.executionId,
+            workerId: parsed.workerId,
+            leaseId: observation.leaseId,
+          })
         }
       } catch (error) {
         expiredLeaseFailures += 1
-        this.logger.error('expired_lease_recovery_error', { executionId: parsed.executionId, workerId: parsed.workerId, leaseId: observation.leaseId, errorCode: safeErrorCode(error) })
+        this.logger.error('expired_lease_recovery_error', {
+          executionId: parsed.executionId,
+          workerId: parsed.workerId,
+          leaseId: observation.leaseId,
+          errorCode: safeErrorCode(error),
+        })
       }
     }
 
@@ -357,7 +384,7 @@ export class TTYWorkerRecoveryService {
       expiredLeasesFinalized,
       expiredLeaseFailures,
       expiredLeasesDeferred,
-      malformedLeaseIndexMembers
+      malformedLeaseIndexMembers,
     }
   }
 

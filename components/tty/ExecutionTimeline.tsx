@@ -1,9 +1,8 @@
 'use client'
 
 import { Check, Circle, Loader2 } from 'lucide-react'
-
-import { buildTTYExecutionTimeline, timelineDurationLabel, TTY_TIMELINE_STATES } from '@/lib/tty/tty-execution-timeline'
 import type { TTYExecutionState } from '@/lib/tty/tty-execution-state'
+import { buildTTYExecutionTimeline, timelineDurationLabel, TTY_TIMELINE_STATES } from '@/lib/tty/tty-execution-timeline'
 import type { TTYStreamEvent } from '@/lib/tty/tty-stream-types'
 
 export interface ExecutionTimelineProps {
@@ -21,22 +20,33 @@ function stateColor(state: TTYExecutionState, active: boolean): string {
 
 export function ExecutionTimeline({ events, currentState, className = '' }: ExecutionTimelineProps) {
   const timeline = buildTTYExecutionTimeline(events)
-  const byState = new Map(timeline.map(entry => [entry.state, entry]))
+  const byState = new Map(timeline.map((entry) => [entry.state, entry]))
   return (
-    <section className={`min-h-0 rounded-lg border border-white/10 bg-black/20 p-3 ${className}`} aria-label="Execution timeline">
+    <section
+      className={`min-h-0 rounded-lg border border-white/10 bg-black/20 p-3 ${className}`}
+      aria-label="Execution timeline"
+    >
       <div className="mb-3 flex items-center justify-between">
         <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-400">Timeline</span>
-        {currentState && <span className="font-mono text-[10px] uppercase tracking-wider text-cyan-300">{currentState}</span>}
+        {currentState && (
+          <span className="font-mono text-[10px] uppercase tracking-wider text-cyan-300">{currentState}</span>
+        )}
       </div>
       <ol className="space-y-2">
-        {TTY_TIMELINE_STATES.map(state => {
+        {TTY_TIMELINE_STATES.map((state) => {
           const entry = byState.get(state)
           const isActive = entry?.active || currentState === state
           const color = stateColor(state, isActive)
           return (
             <li key={state} className="flex items-center gap-2 font-mono text-[10px]">
               <span className={`flex size-4 shrink-0 items-center justify-center rounded-full border ${color}`}>
-                {isActive ? <Loader2 className="size-2.5 animate-spin motion-reduce:animate-none" /> : entry ? <Check className="size-2.5" /> : <Circle className="size-1.5" />}
+                {isActive ? (
+                  <Loader2 className="size-2.5 animate-spin motion-reduce:animate-none" />
+                ) : entry ? (
+                  <Check className="size-2.5" />
+                ) : (
+                  <Circle className="size-1.5" />
+                )}
               </span>
               <span className={entry ? color.split(' ')[0] : 'text-zinc-600'}>{state}</span>
               {entry && <span className="ml-auto text-zinc-600">{timelineDurationLabel(entry.durationMs)}</span>}
@@ -47,4 +57,3 @@ export function ExecutionTimeline({ events, currentState, className = '' }: Exec
     </section>
   )
 }
-

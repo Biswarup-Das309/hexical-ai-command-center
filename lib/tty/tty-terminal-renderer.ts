@@ -23,7 +23,9 @@ function systemLine(event: TTYStreamEvent): string {
     case 'metric':
       return `\r\n\x1b[38;5;81m[${time}]\x1b[0m \x1b[36mMETRIC\x1b[0m ${event.payload.name}=${event.payload.value}\r\n`
     case 'completion':
-      return `\r\n\x1b[38;5;112m[${time}]\x1b[0m \x1b[1;32mCOMPLETION\x1b[0m ${event.payload.state}${event.payload.exitCode === null ? '' : ` exit=${event.payload.exitCode}`}\r\n`
+      return `\r\n\x1b[38;5;112m[${time}]\x1b[0m \x1b[1;32mCOMPLETION\x1b[0m ${event.payload.state}${
+        event.payload.exitCode === null ? '' : ` exit=${event.payload.exitCode}`
+      }\r\n`
     case 'error':
       return `\r\n\x1b[38;5;203m[${time}] ERROR\x1b[0m ${event.payload.message}\r\n`
     case 'heartbeat':
@@ -34,7 +36,11 @@ function systemLine(event: TTYStreamEvent): string {
   }
 }
 
-export function renderTTYStreamEvent(event: TTYStreamEvent, writer: TTYTerminalWriter, lastSequence: number): TTYRenderResult {
+export function renderTTYStreamEvent(
+  event: TTYStreamEvent,
+  writer: TTYTerminalWriter,
+  lastSequence: number,
+): TTYRenderResult {
   if (event.sequence <= lastSequence) return { rendered: false, duplicate: true, gap: false }
   const gap = lastSequence > 0 && event.sequence > lastSequence + 1
   writer.write(systemLine(event))
@@ -60,4 +66,3 @@ export class TTYTerminalRenderer {
     return this.lastSequence
   }
 }
-

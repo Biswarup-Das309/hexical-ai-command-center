@@ -1,12 +1,7 @@
 import type { TTYWorkerAuthenticator } from './tty-worker-auth'
 import type { TTYWorkerHeartbeatResult, TTYWorkerHeartbeatService } from './tty-worker-heartbeat'
 import type { TTYWorkerRegistry } from './tty-worker-registry'
-import type {
-  TTYWorkerAuthContext,
-  TTYWorkerCapability,
-  TTYWorkerId,
-  TTYWorkerRegistration
-} from './tty-worker-types'
+import type { TTYWorkerAuthContext, TTYWorkerCapability, TTYWorkerId, TTYWorkerRegistration } from './tty-worker-types'
 
 export const TTY_WORKER_DAEMON_HEARTBEAT_INTERVAL_MS = 5_000
 
@@ -56,9 +51,12 @@ export interface TTYWorkerDaemonDependencies {
 }
 
 const defaultLogger: TTYWorkerDaemonLogger = {
-  info: (event, fields) => console.info(JSON.stringify({ component: 'tty-worker-daemon', level: 'info', event, ...fields })),
-  warn: (event, fields) => console.warn(JSON.stringify({ component: 'tty-worker-daemon', level: 'warn', event, ...fields })),
-  error: (event, fields) => console.error(JSON.stringify({ component: 'tty-worker-daemon', level: 'error', event, ...fields }))
+  info: (event, fields) =>
+    console.info(JSON.stringify({ component: 'tty-worker-daemon', level: 'info', event, ...fields })),
+  warn: (event, fields) =>
+    console.warn(JSON.stringify({ component: 'tty-worker-daemon', level: 'warn', event, ...fields })),
+  error: (event, fields) =>
+    console.error(JSON.stringify({ component: 'tty-worker-daemon', level: 'error', event, ...fields })),
 }
 
 function defaultSignals(): TTYWorkerDaemonSignalSource {
@@ -107,7 +105,8 @@ export class TTYWorkerDaemon {
     this.intervalMs = dependencies.heartbeatIntervalMs ?? TTY_WORKER_DAEMON_HEARTBEAT_INTERVAL_MS
     if (!validHeartbeatInterval(this.intervalMs)) throw new Error('Invalid TTY worker daemon heartbeat interval.')
     this.setTimer = dependencies.setInterval ?? ((handler, timeoutMs) => setInterval(handler, timeoutMs))
-    this.clearTimer = dependencies.clearInterval ?? (handle => clearInterval(handle as ReturnType<typeof setInterval>))
+    this.clearTimer =
+      dependencies.clearInterval ?? ((handle) => clearInterval(handle as ReturnType<typeof setInterval>))
     this.signals = dependencies.signals ?? defaultSignals()
     this.logger = dependencies.logger ?? defaultLogger
   }
@@ -154,7 +153,7 @@ export class TTYWorkerDaemon {
       heartbeatSequence: this.heartbeatSequence,
       startedAt: this.startedAt,
       lastHeartbeatAt: this.lastHeartbeatAt,
-      lastError: this.lastError
+      lastError: this.lastError,
     })
   }
 
@@ -166,7 +165,10 @@ export class TTYWorkerDaemon {
       if (!registration.registered) throw new Error(`Worker registration failed: ${registration.reason}`)
       this.logger.info('worker_registered', { workerId: this.workerId })
 
-      const authentication = await this.dependencies.authenticator.authenticateWorker(this.dependencies.token, this.dependencies.requiredCapability)
+      const authentication = await this.dependencies.authenticator.authenticateWorker(
+        this.dependencies.token,
+        this.dependencies.requiredCapability,
+      )
       this.assertStartupActive()
       if (!authentication.authenticated) throw new Error(`Worker authentication failed: ${authentication.reason}`)
       this.authenticated = true
@@ -181,7 +183,9 @@ export class TTYWorkerDaemon {
         this.assertStartupActive()
       }
       this.attachSignalHandlers()
-      this.heartbeatTimer = this.setTimer(() => { void this.heartbeatTick() }, this.intervalMs)
+      this.heartbeatTimer = this.setTimer(() => {
+        void this.heartbeatTick()
+      }, this.intervalMs)
       this.startedAt = this.now().toISOString()
       this.state = 'running'
       this.logger.info('daemon_started', { workerId: this.workerId, startedAt: this.startedAt })
@@ -227,7 +231,7 @@ export class TTYWorkerDaemon {
     const result = await this.dependencies.heartbeat.recordHeartbeat({
       workerId: this.workerId,
       sequence,
-      sentAt: this.now().toISOString()
+      sentAt: this.now().toISOString(),
     })
     if (result.recorded) {
       this.heartbeatSequence = result.heartbeat.sequence
@@ -236,7 +240,7 @@ export class TTYWorkerDaemon {
       this.logger.info('heartbeat_recorded', {
         workerId: this.workerId,
         sequence: result.heartbeat.sequence,
-        latencyMs: result.heartbeat.latencyMs
+        latencyMs: result.heartbeat.latencyMs,
       })
     } else {
       this.lastError = `heartbeat_${result.reason}`
@@ -254,7 +258,10 @@ export class TTYWorkerDaemon {
     try {
       await this.dependencies.recovery.stop()
     } catch (error) {
-      this.logger.warn('recovery_shutdown_failed', { workerId: this.workerId, errorCode: error instanceof Error && error.name.length > 0 ? error.name : 'unknown_error' })
+      this.logger.warn('recovery_shutdown_failed', {
+        workerId: this.workerId,
+        errorCode: error instanceof Error && error.name.length > 0 ? error.name : 'unknown_error',
+      })
     }
   }
 
@@ -264,7 +271,9 @@ export class TTYWorkerDaemon {
 
   private attachSignalHandlers(): void {
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-      const handler = () => { void this.stop(signal) }
+      const handler = () => {
+        void this.stop(signal)
+      }
       this.signalHandlers.set(signal, handler)
       this.signals.on(signal, handler)
     }

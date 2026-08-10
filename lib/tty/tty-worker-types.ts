@@ -14,11 +14,7 @@ declare const ttyLeaseIdBrand: unique symbol
 export type TTYWorkerId = string & { readonly [ttyWorkerIdBrand]: true }
 export type TTYLeaseId = string & { readonly [ttyLeaseIdBrand]: true }
 
-export const TTY_WORKER_CAPABILITIES = [
-  'claim_lease',
-  'renew_lease',
-  'execute'
-] as const
+export const TTY_WORKER_CAPABILITIES = ['claim_lease', 'renew_lease', 'execute'] as const
 
 export type TTYWorkerCapability = (typeof TTY_WORKER_CAPABILITIES)[number]
 
@@ -104,7 +100,7 @@ export function isTTYWorkerCapability(value: string): value is TTYWorkerCapabili
 }
 
 export function normalizeTTYWorkerCapabilities(
-  capabilities: readonly TTYWorkerCapability[]
+  capabilities: readonly TTYWorkerCapability[],
 ): readonly TTYWorkerCapability[] {
   return [...new Set(capabilities)].sort() as TTYWorkerCapability[]
 }

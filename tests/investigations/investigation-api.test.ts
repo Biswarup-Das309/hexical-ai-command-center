@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-
-import { createInvestigationApi, createInvestigationExecutionApi, createInvestigationSessionApi } from '../../lib/investigations/investigation-api'
-import { InvestigationStore } from '../../lib/investigations/investigation-store'
 import { FakeInvestigationRedis } from './fake-investigation-redis'
+import {
+  createInvestigationApi,
+  createInvestigationExecutionApi,
+  createInvestigationSessionApi,
+} from '../../lib/investigations/investigation-api'
+import { InvestigationStore } from '../../lib/investigations/investigation-store'
 
 const OWNER = 'api-investigation-owner'
 const OTHER = 'api-other-owner'
@@ -13,29 +16,40 @@ const EXECUTION_ID = '00000000-0000-4000-8000-000000000912'
 function request(method: string, path: string, body?: unknown): Request {
   return new Request(`https://hexical.test${path}`, {
     method,
-    ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
   })
 }
 
 async function read(response: Response): Promise<Record<string, unknown>> {
   assert.equal(response.headers.get('cache-control'), 'no-store, no-cache, must-revalidate')
-  return await response.json() as Record<string, unknown>
+  return (await response.json()) as Record<string, unknown>
 }
 
 function fixture() {
   const store = new InvestigationStore(new FakeInvestigationRedis())
   let user: string | null = OWNER
   const api = createInvestigationApi({ authenticate: async () => user, getStore: () => store })
-  return { store, api, setUser(value: string | null) { user = value } }
+  return {
+    store,
+    api,
+    setUser(value: string | null) {
+      user = value
+    },
+  }
 }
 
 test('investigation API enforces authentication, owner authorization, no-store, and browser-safe responses', async () => {
   const fixtureData = fixture()
   fixtureData.setUser(null)
-  assert.equal((await fixtureData.api.create(request('POST', '/api/investigations', { title: 'Denied', description: '' }))).status, 401)
+  assert.equal(
+    (await fixtureData.api.create(request('POST', '/api/investigations', { title: 'Denied', description: '' }))).status,
+    401,
+  )
 
   fixtureData.setUser(OWNER)
-  const createdResponse = await fixtureData.api.create(request('POST', '/api/investigations', { title: 'Owner case', description: 'Description' }))
+  const createdResponse = await fixtureData.api.create(
+    request('POST', '/api/investigations', { title: 'Owner case', description: 'Description' }),
+  )
   assert.equal(createdResponse.status, 201)
   const createdBody = await read(createdResponse)
   const investigation = createdBody.investigation as Record<string, unknown>
@@ -43,20 +57,40 @@ test('investigation API enforces authentication, owner authorization, no-store, 
   assert.equal('ownerUserId' in investigation, false)
 
   fixtureData.setUser(OTHER)
-  assert.equal((await fixtureData.api.get(request('GET', `/api/investigations/${investigationId}`), investigationId)).status, 404)
+  assert.equal(
+    (await fixtureData.api.get(request('GET', `/api/investigations/${investigationId}`), investigationId)).status,
+    404,
+  )
   const otherList = await fixtureData.api.list(request('GET', '/api/investigations'))
   assert.deepEqual((await read(otherList)).investigations, [])
 
   fixtureData.setUser(OWNER)
-  assert.equal((await fixtureData.api.patch(request('PATCH', `/api/investigations/${investigationId}`, { status: 'archived' }), investigationId)).status, 200)
-  const invalid = await fixtureData.api.patch(request('PATCH', `/api/investigations/${investigationId}`, { ownerUserId: OTHER }), investigationId)
+  assert.equal(
+    (
+      await fixtureData.api.patch(
+        request('PATCH', `/api/investigations/${investigationId}`, { status: 'archived' }),
+        investigationId,
+      )
+    ).status,
+    200,
+  )
+  const invalid = await fixtureData.api.patch(
+    request('PATCH', `/api/investigations/${investigationId}`, { ownerUserId: OTHER }),
+    investigationId,
+  )
   assert.equal(invalid.status, 400)
   const detail = await fixtureData.api.get(request('GET', `/api/investigations/${investigationId}`), investigationId)
   assert.equal((await read(detail)).investigation instanceof Object, true)
 
-  const deleted = await fixtureData.api.delete(request('DELETE', `/api/investigations/${investigationId}`), investigationId)
+  const deleted = await fixtureData.api.delete(
+    request('DELETE', `/api/investigations/${investigationId}`),
+    investigationId,
+  )
   assert.equal(deleted.status, 200)
-  assert.equal((await fixtureData.api.get(request('GET', `/api/investigations/${investigationId}`), investigationId)).status, 404)
+  assert.equal(
+    (await fixtureData.api.get(request('GET', `/api/investigations/${investigationId}`), investigationId)).status,
+    404,
+  )
 })
 
 test('investigation list pagination and lifecycle mutations remain owner-scoped', async () => {
@@ -69,22 +103,32 @@ test('investigation list pagination and lifecycle mutations remain owner-scoped'
   }
 
   const firstPage = await read(await fixtureData.api.list(request('GET', '/api/investigations?limit=1')))
-  const secondPage = await read(await fixtureData.api.list(request('GET', `/api/investigations?limit=1&cursor=${String(firstPage.nextCursor)}`)))
+  const secondPage = await read(
+    await fixtureData.api.list(request('GET', `/api/investigations?limit=1&cursor=${String(firstPage.nextCursor)}`)),
+  )
   const firstInvestigations = firstPage.investigations as Array<Record<string, unknown>>
   const secondInvestigations = secondPage.investigations as Array<Record<string, unknown>>
   assert.equal(firstInvestigations.length, 1)
   assert.equal(secondInvestigations.length, 1)
   assert.notEqual(String(firstInvestigations[0]?.investigationId), String(secondInvestigations[0]?.investigationId))
 
-  const archived = await fixtureData.api.patch(request('PATCH', `/api/investigations/${ids[0]}`, { status: 'archived' }), ids[0]!)
+  const archived = await fixtureData.api.patch(
+    request('PATCH', `/api/investigations/${ids[0]}`, { status: 'archived' }),
+    ids[0]!,
+  )
   assert.equal(archived.status, 200)
-  const restored = await fixtureData.api.patch(request('PATCH', `/api/investigations/${ids[0]}`, { status: 'active' }), ids[0]!)
+  const restored = await fixtureData.api.patch(
+    request('PATCH', `/api/investigations/${ids[0]}`, { status: 'active' }),
+    ids[0]!,
+  )
   assert.equal(restored.status, 200)
   const deleted = await fixtureData.api.delete(request('DELETE', `/api/investigations/${ids[1]}`), ids[1]!)
   assert.equal(deleted.status, 200)
 
   const visible = await read(await fixtureData.api.list(request('GET', '/api/investigations?limit=50')))
-  const visibleIds = (visible.investigations as Array<Record<string, unknown>>).map(item => String(item.investigationId))
+  const visibleIds = (visible.investigations as Array<Record<string, unknown>>).map((item) =>
+    String(item.investigationId),
+  )
   assert.equal(visibleIds.includes(ids[0]!), true)
   assert.equal(visibleIds.includes(ids[1]!), false)
   assert.equal(visibleIds.includes(ids[2]!), true)
@@ -100,34 +144,86 @@ test('timeline API validates and persists notes and evidence bookmarks', async (
   const secondId = String((secondBody.investigation as Record<string, unknown>).investigationId)
   assert.match(id, /^[0-9a-f-]{36}$/)
 
-  const note = await fixtureData.api.timeline(request('POST', `/api/investigations/${secondId}/timeline`, { type: 'note', body: 'Validate source provenance.' }), secondId)
-  const bookmark = await fixtureData.api.timeline(request('POST', `/api/investigations/${secondId}/timeline`, { type: 'bookmark', executionId: EXECUTION_ID, sequence: 2, lineNumber: 4, kind: 'finding', label: 'Finding', excerpt: 'Evidence' }), secondId)
+  const note = await fixtureData.api.timeline(
+    request('POST', `/api/investigations/${secondId}/timeline`, { type: 'note', body: 'Validate source provenance.' }),
+    secondId,
+  )
+  const bookmark = await fixtureData.api.timeline(
+    request('POST', `/api/investigations/${secondId}/timeline`, {
+      type: 'bookmark',
+      executionId: EXECUTION_ID,
+      sequence: 2,
+      lineNumber: 4,
+      kind: 'finding',
+      label: 'Finding',
+      excerpt: 'Evidence',
+    }),
+    secondId,
+  )
   assert.equal(note.status, 201)
   assert.equal(bookmark.status, 201)
   const noteBody = await read(note)
   const noteEvent = noteBody.event as Record<string, unknown>
   const notePayload = noteEvent.payload as Record<string, unknown>
   const noteId = String(notePayload.noteId)
-  assert.equal((await fixtureData.api.patchNote(request('PATCH', `/api/investigations/${secondId}/timeline/notes/${noteId}`, { body: 'Updated provenance.' }), secondId, noteId)).status, 200)
-  assert.equal((await fixtureData.api.deleteNote(request('DELETE', `/api/investigations/${secondId}/timeline/notes/${noteId}`), secondId, noteId)).status, 200)
-  assert.equal((await fixtureData.api.timeline(request('POST', `/api/investigations/${secondId}/timeline`, { type: 'note', body: '' }), secondId)).status, 400)
+  assert.equal(
+    (
+      await fixtureData.api.patchNote(
+        request('PATCH', `/api/investigations/${secondId}/timeline/notes/${noteId}`, { body: 'Updated provenance.' }),
+        secondId,
+        noteId,
+      )
+    ).status,
+    200,
+  )
+  assert.equal(
+    (
+      await fixtureData.api.deleteNote(
+        request('DELETE', `/api/investigations/${secondId}/timeline/notes/${noteId}`),
+        secondId,
+        noteId,
+      )
+    ).status,
+    200,
+  )
+  assert.equal(
+    (
+      await fixtureData.api.timeline(
+        request('POST', `/api/investigations/${secondId}/timeline`, { type: 'note', body: '' }),
+        secondId,
+      )
+    ).status,
+    400,
+  )
 })
 
 test('a saved title persists through detail refresh and the sidebar list projection', async () => {
   const fixtureData = fixture()
-  const created = await fixtureData.api.create(request('POST', '/api/investigations', { title: 'ACME', description: '' }))
+  const created = await fixtureData.api.create(
+    request('POST', '/api/investigations', { title: 'ACME', description: '' }),
+  )
   const createdBody = await read(created)
   const investigationId = String((createdBody.investigation as Record<string, unknown>).investigationId)
 
-  const renamed = await fixtureData.api.patch(request('PATCH', `/api/investigations/${investigationId}`, { title: 'New investigation title' }), investigationId)
+  const renamed = await fixtureData.api.patch(
+    request('PATCH', `/api/investigations/${investigationId}`, { title: 'New investigation title' }),
+    investigationId,
+  )
   assert.equal(renamed.status, 200)
-  assert.equal(String(((await read(renamed)).investigation as Record<string, unknown>).title), 'New investigation title')
+  assert.equal(
+    String(((await read(renamed)).investigation as Record<string, unknown>).title),
+    'New investigation title',
+  )
 
-  const refreshed = await read(await fixtureData.api.get(request('GET', `/api/investigations/${investigationId}`), investigationId))
+  const refreshed = await read(
+    await fixtureData.api.get(request('GET', `/api/investigations/${investigationId}`), investigationId),
+  )
   assert.equal(String((refreshed.investigation as Record<string, unknown>).title), 'New investigation title')
 
   const sidebar = await read(await fixtureData.api.list(request('GET', '/api/investigations?limit=50')))
-  const sidebarTitle = (sidebar.investigations as Array<Record<string, unknown>>).find(item => String(item.investigationId) === investigationId)?.title
+  const sidebarTitle = (sidebar.investigations as Array<Record<string, unknown>>).find(
+    (item) => String(item.investigationId) === investigationId,
+  )?.title
   assert.equal(sidebarTitle, 'New investigation title')
 })
 
@@ -144,16 +240,42 @@ test('investigation execution attachment composes with the frozen admission boun
     getStore: () => store,
     admitExecution: async () => {
       admissions += 1
-      return new Response(JSON.stringify({ ok: true, duplicate: false, job: { executionId: EXECUTION_ID, sessionId: SESSION_ID, status: 'queued' } }), { status: 202 })
-    }
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          duplicate: false,
+          job: { executionId: EXECUTION_ID, sessionId: SESSION_ID, status: 'queued' },
+        }),
+        { status: 202 },
+      )
+    },
   })
 
-  const attached = await executionApi.attach(request('POST', `/api/investigations/${investigationId}/executions`, { sessionId: SESSION_ID, input: 'approved probe', idempotencyKey: 'investigation-idempotency-1' }), investigationId)
+  const attached = await executionApi.attach(
+    request('POST', `/api/investigations/${investigationId}/executions`, {
+      sessionId: SESSION_ID,
+      input: 'approved probe',
+      idempotencyKey: 'investigation-idempotency-1',
+    }),
+    investigationId,
+  )
   assert.equal(attached.status, 202)
   const attachedBody = await read(attached)
   assert.equal((attachedBody.execution as Record<string, unknown>).executionId, EXECUTION_ID)
   user = OTHER
-  assert.equal((await executionApi.attach(request('POST', `/api/investigations/${investigationId}/executions`, { sessionId: SESSION_ID, input: 'approved probe', idempotencyKey: 'investigation-idempotency-2' }), investigationId)).status, 404)
+  assert.equal(
+    (
+      await executionApi.attach(
+        request('POST', `/api/investigations/${investigationId}/executions`, {
+          sessionId: SESSION_ID,
+          input: 'approved probe',
+          idempotencyKey: 'investigation-idempotency-2',
+        }),
+        investigationId,
+      )
+    ).status,
+    404,
+  )
   assert.equal(admissions, 1)
 })
 
@@ -172,18 +294,38 @@ test('execution attachment rebinds a stale investigation session before admissio
     getStore: () => store,
     ensureSession: async () => {
       ensureCalls += 1
-      return new Response(JSON.stringify({ ok: true, session: { sessionId: replacementSessionId, status: 'active' }, sessionId: replacementSessionId }), { status: 200 })
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          session: { sessionId: replacementSessionId, status: 'active' },
+          sessionId: replacementSessionId,
+        }),
+        { status: 200 },
+      )
     },
     admitExecution: async (_request, sessionId) => {
       admittedSessionIds.push(sessionId)
       admissionCalls += 1
-      if (admissionCalls === 1) return new Response(JSON.stringify({ ok: false, code: 'SESSION_TERMINATED', message: 'The session ended.' }), { status: 409 })
-      return new Response(JSON.stringify({ ok: true, duplicate: false, job: { executionId: EXECUTION_ID, sessionId, status: 'queued' } }), { status: 202 })
+      if (admissionCalls === 1)
+        return new Response(JSON.stringify({ ok: false, code: 'SESSION_TERMINATED', message: 'The session ended.' }), {
+          status: 409,
+        })
+      return new Response(
+        JSON.stringify({ ok: true, duplicate: false, job: { executionId: EXECUTION_ID, sessionId, status: 'queued' } }),
+        { status: 202 },
+      )
     },
-    startExecution: async () => ({ accepted: true })
+    startExecution: async () => ({ accepted: true }),
   })
 
-  const response = await executionApi.attach(request('POST', `/api/investigations/${investigationId}/executions`, { sessionId: oldSessionId, input: 'echo hello', idempotencyKey: 'investigation-idempotency-4' }), investigationId)
+  const response = await executionApi.attach(
+    request('POST', `/api/investigations/${investigationId}/executions`, {
+      sessionId: oldSessionId,
+      input: 'echo hello',
+      idempotencyKey: 'investigation-idempotency-4',
+    }),
+    investigationId,
+  )
   assert.equal(response.status, 202)
   assert.equal(ensureCalls, 2)
   assert.equal(admissionCalls, 2)
@@ -205,17 +347,37 @@ test('execution attachment retries once when the session disappears after ensure
     getStore: () => store,
     ensureSession: async () => {
       ensures += 1
-      return new Response(JSON.stringify({ ok: true, session: { sessionId: replacementSessionId, status: 'active' }, sessionId: replacementSessionId }), { status: 200 })
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          session: { sessionId: replacementSessionId, status: 'active' },
+          sessionId: replacementSessionId,
+        }),
+        { status: 200 },
+      )
     },
     admitExecution: async (_request, sessionId) => {
       admissions += 1
-      if (admissions === 1) return new Response(JSON.stringify({ ok: false, code: 'SESSION_NOT_FOUND', message: 'The session expired.' }), { status: 404 })
-      return new Response(JSON.stringify({ ok: true, duplicate: false, job: { executionId: EXECUTION_ID, sessionId, status: 'queued' } }), { status: 202 })
+      if (admissions === 1)
+        return new Response(JSON.stringify({ ok: false, code: 'SESSION_NOT_FOUND', message: 'The session expired.' }), {
+          status: 404,
+        })
+      return new Response(
+        JSON.stringify({ ok: true, duplicate: false, job: { executionId: EXECUTION_ID, sessionId, status: 'queued' } }),
+        { status: 202 },
+      )
     },
-    startExecution: async () => ({ accepted: true })
+    startExecution: async () => ({ accepted: true }),
   })
 
-  const response = await executionApi.attach(request('POST', `/api/investigations/${investigationId}/executions`, { sessionId: SESSION_ID, input: 'echo hello', idempotencyKey: 'investigation-idempotency-5' }), investigationId)
+  const response = await executionApi.attach(
+    request('POST', `/api/investigations/${investigationId}/executions`, {
+      sessionId: SESSION_ID,
+      input: 'echo hello',
+      idempotencyKey: 'investigation-idempotency-5',
+    }),
+    investigationId,
+  )
   assert.equal(response.status, 202)
   assert.equal(ensures, 2)
   assert.equal(admissions, 2)
@@ -230,14 +392,32 @@ test('investigation persists its execution attachment before coordinator activat
   const executionApi = createInvestigationExecutionApi({
     authenticate: async () => OWNER,
     getStore: () => store,
-    admitExecution: async () => new Response(JSON.stringify({ ok: true, duplicate: false, job: { executionId: EXECUTION_ID, sessionId: SESSION_ID, status: 'queued' } }), { status: 202 }),
+    admitExecution: async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          duplicate: false,
+          job: { executionId: EXECUTION_ID, sessionId: SESSION_ID, status: 'queued' },
+        }),
+        { status: 202 },
+      ),
     startExecution: async () => {
-      persistedBeforeStart = (await store.get(OWNER, investigationId as never))?.executions.some(execution => execution.executionId === EXECUTION_ID) === true
+      persistedBeforeStart =
+        (await store.get(OWNER, investigationId as never))?.executions.some(
+          (execution) => execution.executionId === EXECUTION_ID,
+        ) === true
       return { accepted: false }
-    }
+    },
   })
 
-  const response = await executionApi.attach(request('POST', `/api/investigations/${investigationId}/executions`, { sessionId: SESSION_ID, input: 'echo hello', idempotencyKey: 'investigation-idempotency-3' }), investigationId)
+  const response = await executionApi.attach(
+    request('POST', `/api/investigations/${investigationId}/executions`, {
+      sessionId: SESSION_ID,
+      input: 'echo hello',
+      idempotencyKey: 'investigation-idempotency-3',
+    }),
+    investigationId,
+  )
   assert.equal(response.status, 202)
   assert.equal(persistedBeforeStart, true)
   const body = await read(response)
@@ -260,33 +440,53 @@ test('investigation session lifecycle is owner-scoped, durable, reusable, and te
     getStore: () => store,
     createTTYSession: async () => {
       sessionCreates += 1
-      return new Response(JSON.stringify({ ok: true, session: { sessionId: SESSION_ID, status: 'active' } }), { status: 201 })
+      return new Response(JSON.stringify({ ok: true, session: { sessionId: SESSION_ID, status: 'active' } }), {
+        status: 201,
+      })
     },
-    getTTYSession: async () => new Response(JSON.stringify({ ok: true, session: { sessionId: SESSION_ID, status: terminated ? 'terminated' : 'active' } }), { status: 200 }),
+    getTTYSession: async () =>
+      new Response(
+        JSON.stringify({ ok: true, session: { sessionId: SESSION_ID, status: terminated ? 'terminated' : 'active' } }),
+        { status: 200 },
+      ),
     terminateTTYSession: async () => {
       terminated = true
       return new Response(JSON.stringify({ ok: true, sessionId: SESSION_ID }), { status: 200 })
-    }
+    },
   })
 
-  const first = await sessionApi.ensure(request('POST', `/api/investigations/${investigationId}/session`), investigationId)
+  const first = await sessionApi.ensure(
+    request('POST', `/api/investigations/${investigationId}/session`),
+    investigationId,
+  )
   assert.equal(first.status, 201)
-  const second = await sessionApi.ensure(request('POST', `/api/investigations/${investigationId}/session`), investigationId)
+  const second = await sessionApi.ensure(
+    request('POST', `/api/investigations/${investigationId}/session`),
+    investigationId,
+  )
   assert.equal(second.status, 200)
   assert.equal(sessionCreates, 1)
   assert.equal((await store.get(OWNER, investigationId as never))?.investigation.ttySessionId, SESSION_ID)
 
   user = OTHER
-  assert.equal((await sessionApi.ensure(request('POST', `/api/investigations/${investigationId}/session`), investigationId)).status, 404)
+  assert.equal(
+    (await sessionApi.ensure(request('POST', `/api/investigations/${investigationId}/session`), investigationId))
+      .status,
+    404,
+  )
   user = OWNER
-  assert.equal((await sessionApi.terminate(request('DELETE', `/api/investigations/${investigationId}/session`), investigationId)).status, 200)
+  assert.equal(
+    (await sessionApi.terminate(request('DELETE', `/api/investigations/${investigationId}/session`), investigationId))
+      .status,
+    200,
+  )
   assert.equal(terminated, true)
   assert.equal((await store.get(OWNER, investigationId as never))?.investigation.ttySessionId, null)
 })
 
 test('investigation session ensure replaces a remotely terminated attached session without refresh', async () => {
   const store = new InvestigationStore(new FakeInvestigationRedis())
-  let user: string | null = OWNER
+  const user: string | null = OWNER
   const api = createInvestigationApi({ authenticate: async () => user, getStore: () => store })
   const created = await api.create(request('POST', '/api/investigations', { title: 'Automatic rebind' }))
   const investigationId = String(((await read(created)).investigation as Record<string, unknown>).investigationId)
@@ -297,14 +497,22 @@ test('investigation session ensure replaces a remotely terminated attached sessi
     getStore: () => store,
     createTTYSession: async () => {
       sessionCreates += 1
-      return new Response(JSON.stringify({ ok: true, session: { sessionId: replacementId, status: 'active' } }), { status: 201 })
+      return new Response(JSON.stringify({ ok: true, session: { sessionId: replacementId, status: 'active' } }), {
+        status: 201,
+      })
     },
-    getTTYSession: async () => new Response(JSON.stringify({ ok: true, session: { sessionId: SESSION_ID, status: 'terminated' } }), { status: 200 }),
-    terminateTTYSession: async () => new Response(JSON.stringify({ ok: true }), { status: 200 })
+    getTTYSession: async () =>
+      new Response(JSON.stringify({ ok: true, session: { sessionId: SESSION_ID, status: 'terminated' } }), {
+        status: 200,
+      }),
+    terminateTTYSession: async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
   })
 
   await store.attachSession(OWNER, investigationId as never, SESSION_ID)
-  const rebound = await sessionApi.ensure(request('POST', `/api/investigations/${investigationId}/session`), investigationId)
+  const rebound = await sessionApi.ensure(
+    request('POST', `/api/investigations/${investigationId}/session`),
+    investigationId,
+  )
   assert.equal(rebound.status, 201)
   assert.equal(sessionCreates, 1)
   assert.equal((await read(rebound)).sessionId, replacementId)

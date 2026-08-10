@@ -1,8 +1,7 @@
-import { NextResponse } from 'next/server'
 import { auth, currentUser } from '@clerk/nextjs/server'
-import Razorpay from 'razorpay'
 import { createClient } from '@supabase/supabase-js'
-
+import { NextResponse } from 'next/server'
+import Razorpay from 'razorpay'
 import { getCanonicalEntitlement } from '@/lib/canonical-entitlement'
 import { PRICING } from '@/lib/pricing.config'
 
@@ -25,9 +24,12 @@ export async function POST(req: Request): Promise<NextResponse> {
     }
 
     const body: unknown = await req.json()
-    const requestedTier = typeof body === 'object' && body !== null && 'tier' in body
-      ? String((body as { tier?: unknown }).tier).trim().toLowerCase()
-      : ''
+    const requestedTier =
+      typeof body === 'object' && body !== null && 'tier' in body
+        ? String((body as { tier?: unknown }).tier)
+            .trim()
+            .toLowerCase()
+        : ''
     if (!Object.prototype.hasOwnProperty.call(PRICING, requestedTier)) {
       return NextResponse.json({ error: 'Invalid tier.' }, { status: 400 })
     }

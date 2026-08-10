@@ -397,28 +397,13 @@ export interface TTYExecutionRequest {
   readonly correlationId?: string
 }
 
-export type TTYExecutionStatus =
-  | 'queued'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'timed_out'
-  | 'denied'
+export type TTYExecutionStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'denied'
 
-const TTY_TERMINAL_EXECUTION_STATUSES = [
-  'completed',
-  'failed',
-  'cancelled',
-  'timed_out',
-  'denied'
-] as const
+const TTY_TERMINAL_EXECUTION_STATUSES = ['completed', 'failed', 'cancelled', 'timed_out', 'denied'] as const
 
 export type TTYTerminalExecutionStatus = (typeof TTY_TERMINAL_EXECUTION_STATUSES)[number]
 
-export function isTerminalExecutionStatus(
-  status: TTYExecutionStatus
-): status is TTYTerminalExecutionStatus {
+export function isTerminalExecutionStatus(status: TTYExecutionStatus): status is TTYTerminalExecutionStatus {
   return (TTY_TERMINAL_EXECUTION_STATUSES as readonly string[]).includes(status)
 }
 

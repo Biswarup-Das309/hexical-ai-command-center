@@ -19,15 +19,15 @@ The durable output stream remains the execution record. The live stream is a del
 
 Every `TTYStreamEvent` is immutable and contains:
 
-| Field | Meaning |
-| --- | --- |
-| `eventId` | Opaque unique event identifier. |
-| `executionId` | Execution being observed. |
-| `sessionId` | Owning TTY session. |
-| `sequence` | Monotonic per-execution live cursor. |
-| `timestamp` | Server event timestamp. |
-| `type` | `stdout`, `stderr`, `state`, `metric`, `heartbeat`, `completion`, or `error`. |
-| `payload` | Closed, type-specific browser-safe data. |
+| Field         | Meaning                                                                       |
+| ------------- | ----------------------------------------------------------------------------- |
+| `eventId`     | Opaque unique event identifier.                                               |
+| `executionId` | Execution being observed.                                                     |
+| `sessionId`   | Owning TTY session.                                                           |
+| `sequence`    | Monotonic per-execution live cursor.                                          |
+| `timestamp`   | Server event timestamp.                                                       |
+| `type`        | `stdout`, `stderr`, `state`, `metric`, `heartbeat`, `completion`, or `error`. |
+| `payload`     | Closed, type-specific browser-safe data.                                      |
 
 Payload validation rejects unknown fields. Worker IDs, lease IDs/tokens, PIDs, paths, environments, Redis keys, raw exceptions, and command internals are not part of the public event type.
 
@@ -128,4 +128,3 @@ tests/tty/tty-sse-manager.test.ts
 tests/tty/tty-stream-runtime-bridge.test.ts
 tests/tty/tty-stream-e2e.test.ts
 ```
-

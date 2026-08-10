@@ -1,26 +1,38 @@
 import { z } from 'zod'
-
-import { classifyTerminalInput, denialReasonToFailure, validateRawTerminalInput } from './tty-policy'
+import type { Tier } from '@/lib/hexical/types'
 import { raceActivationBudget } from './tty-activation-budget'
 import { toBrowserSafeJob, type TTYExecutionAdmission, type TTYQueuedJob } from './tty-execution-admission'
+import { classifyTerminalInput, denialReasonToFailure, validateRawTerminalInput } from './tty-policy'
 import { hasTTYCapability, type InternalTTYSession, type TTYSessionId } from './tty-types'
-import type { Tier } from '@/lib/hexical/types'
 
-const REQUEST_SCHEMA = z.object({
-  input: z.string().min(1).max(4_000),
-  idempotencyKey: z.string().min(16).max(128).regex(/^[A-Za-z0-9._~-]+$/)
-}).strict()
+const REQUEST_SCHEMA = z
+  .object({
+    input: z.string().min(1).max(4_000),
+    idempotencyKey: z
+      .string()
+      .min(16)
+      .max(128)
+      .regex(/^[A-Za-z0-9._~-]+$/),
+  })
+  .strict()
 
 const SESSION_ID_SCHEMA = z.string().uuid()
 const MAX_BODY_BYTES = 8_192
-const NO_STORE_HEADERS = { 'Cache-Control': 'no-store, no-cache, must-revalidate', Pragma: 'no-cache', 'Content-Type': 'application/json' } as const
+const NO_STORE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate',
+  Pragma: 'no-cache',
+  'Content-Type': 'application/json',
+} as const
 
 export interface TTYExecutionAdmissionApiDependencies {
   readonly authenticate: () => Promise<string | null>
   readonly resolveTier: (userId: string) => Promise<Tier>
   readonly getSession: (sessionId: TTYSessionId, ownerUserId: string) => Promise<InternalTTYSession | null>
   readonly admission: TTYExecutionAdmission
-  readonly startExecution?: (executionId: TTYQueuedJob['executionId'], sessionId: TTYSessionId) => Promise<{ readonly accepted: boolean; readonly reason?: string }>
+  readonly startExecution?: (
+    executionId: TTYQueuedJob['executionId'],
+    sessionId: TTYSessionId,
+  ) => Promise<{ readonly accepted: boolean; readonly reason?: string }>
   /** How long admit() will wait for startExecution before degrading to a 202 activationPending response instead of blocking. Defaults to 3000ms. */
   readonly activationResponseBudgetMs?: number
   readonly log?: (event: string, fields: Record<string, unknown>) => void
@@ -41,10 +53,11 @@ export function createTTYExecutionAdmissionApi(dependencies: TTYExecutionAdmissi
       try {
         const userId = (await dependencies.authenticate())?.trim()
         if (!userId) return failure('unauthenticated', 401)
-        const sessionId = SESSION_ID_SCHEMA.safeParse(rawSessionId).success ? rawSessionId as TTYSessionId : null
+        const sessionId = SESSION_ID_SCHEMA.safeParse(rawSessionId).success ? (rawSessionId as TTYSessionId) : null
         if (!sessionId) return failure('input_rejected', 400)
         const declaredLength = request.headers.get('content-length')
-        if (declaredLength !== null && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > MAX_BODY_BYTES)) return failure('input_rejected', 400)
+        if (declaredLength !== null && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > MAX_BODY_BYTES))
+          return failure('input_rejected', 400)
         const rawBody = await request.text()
         if (new TextEncoder().encode(rawBody).byteLength > MAX_BODY_BYTES) return failure('input_rejected', 400)
         let body: unknown
@@ -67,9 +80,23 @@ export function createTTYExecutionAdmissionApi(dependencies: TTYExecutionAdmissi
 
         const kind = classifyTerminalInput(rawInput)
         if (kind === 'unsupported') return failure('unsupported_kind', 422)
-        const result = await dependencies.admission.admit({ session, rawInput, kind, idempotencyKey: parsed.data.idempotencyKey })
+        const result = await dependencies.admission.admit({
+          session,
+          rawInput,
+          kind,
+          idempotencyKey: parsed.data.idempotencyKey,
+        })
         if (!result.admitted) {
-          const status = result.reason === 'session_terminated' ? 409 : result.reason === 'authorization_required' ? 403 : result.reason === 'input_rejected' ? 400 : result.reason === 'internal_error' ? 500 : 429
+          const status =
+            result.reason === 'session_terminated'
+              ? 409
+              : result.reason === 'authorization_required'
+              ? 403
+              : result.reason === 'input_rejected'
+              ? 400
+              : result.reason === 'internal_error'
+              ? 500
+              : 429
           return failure(result.reason, status)
         }
         if (dependencies.startExecution) {
@@ -80,22 +107,60 @@ export function createTTYExecutionAdmissionApi(dependencies: TTYExecutionAdmissi
             () => dependencies.startExecution!(executionId, jobSessionId),
             dependencies.activationResponseBudgetMs,
             {
-              onRequested: () => log?.('tty.admission.execution_activation_requested', { executionId, sessionId: jobSessionId, userId }),
-              onPending: budgetMs => log?.('tty.admission.execution_activation_pending', { executionId, sessionId: jobSessionId, userId, budgetMs }),
-              onSettledLate: settled => log?.('tty.admission.execution_activation_settled_late', { executionId, sessionId: jobSessionId, userId, accepted: settled.accepted, reason: settled.reason }),
-              onErroredLate: message => log?.('tty.admission.execution_activation_errored_late', { executionId, sessionId: jobSessionId, userId, message }),
-              onRejected: reason => log?.('tty.admission.execution_activation_rejected', { executionId, sessionId: jobSessionId, userId, reason }),
-              onAccepted: () => log?.('tty.admission.execution_activation_accepted', { executionId, sessionId: jobSessionId, userId })
-            }
+              onRequested: () =>
+                log?.('tty.admission.execution_activation_requested', { executionId, sessionId: jobSessionId, userId }),
+              onPending: (budgetMs) =>
+                log?.('tty.admission.execution_activation_pending', {
+                  executionId,
+                  sessionId: jobSessionId,
+                  userId,
+                  budgetMs,
+                }),
+              onSettledLate: (settled) =>
+                log?.('tty.admission.execution_activation_settled_late', {
+                  executionId,
+                  sessionId: jobSessionId,
+                  userId,
+                  accepted: settled.accepted,
+                  reason: settled.reason,
+                }),
+              onErroredLate: (message) =>
+                log?.('tty.admission.execution_activation_errored_late', {
+                  executionId,
+                  sessionId: jobSessionId,
+                  userId,
+                  message,
+                }),
+              onRejected: (reason) =>
+                log?.('tty.admission.execution_activation_rejected', {
+                  executionId,
+                  sessionId: jobSessionId,
+                  userId,
+                  reason,
+                }),
+              onAccepted: () =>
+                log?.('tty.admission.execution_activation_accepted', { executionId, sessionId: jobSessionId, userId }),
+            },
           )
-          if (budgetResult.kind === 'pending') return response({ ok: true, job: toBrowserSafeJob(result.job), duplicate: result.duplicate, activationPending: true }, 202)
-          if (budgetResult.kind === 'rejected') return response({ ok: false, code: 'EXECUTION_NOT_STARTED', message: 'The execution could not be started.' }, 503)
+          if (budgetResult.kind === 'pending')
+            return response(
+              { ok: true, job: toBrowserSafeJob(result.job), duplicate: result.duplicate, activationPending: true },
+              202,
+            )
+          if (budgetResult.kind === 'rejected')
+            return response(
+              { ok: false, code: 'EXECUTION_NOT_STARTED', message: 'The execution could not be started.' },
+              503,
+            )
         }
-        return response({ ok: true, job: toBrowserSafeJob(result.job), duplicate: result.duplicate }, result.duplicate ? 200 : 202)
+        return response(
+          { ok: true, job: toBrowserSafeJob(result.job), duplicate: result.duplicate },
+          result.duplicate ? 200 : 202,
+        )
       } catch {
         return failure('internal_error', 500)
       }
-    }
+    },
   }
 }
 

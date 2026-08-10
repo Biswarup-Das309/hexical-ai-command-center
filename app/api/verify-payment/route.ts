@@ -1,10 +1,9 @@
-import { NextResponse } from 'next/server'
-import { auth } from '@clerk/nextjs/server'
-import Razorpay from 'razorpay'
 import crypto from 'crypto'
+import { auth } from '@clerk/nextjs/server'
 import { createClient } from '@supabase/supabase-js'
+import { NextResponse } from 'next/server'
+import Razorpay from 'razorpay'
 import { z } from 'zod'
-
 import { PRICING } from '@/lib/pricing.config'
 
 export const runtime = 'nodejs'
@@ -12,7 +11,10 @@ export const runtime = 'nodejs'
 const PaymentVerificationSchema = z.object({
   razorpay_payment_id: z.string().trim().min(8).max(128),
   razorpay_order_id: z.string().trim().min(8).max(128),
-  razorpay_signature: z.string().trim().regex(/^[a-f0-9]{64}$/i),
+  razorpay_signature: z
+    .string()
+    .trim()
+    .regex(/^[a-f0-9]{64}$/i),
   tier: z.enum(['go', 'plus', 'pro']),
 })
 
@@ -54,7 +56,9 @@ export async function POST(req: Request): Promise<NextResponse> {
     const orderNotes = order.notes as Record<string, unknown> | undefined
     const expectedAmount = PRICING[payment.tier].pricePaise
     const orderBelongsToUser = orderNotes?.clerkUserId === userId || orderNotes?.userId === userId
-    const orderTier = String(orderNotes?.requestedTier ?? orderNotes?.tier ?? '').trim().toLowerCase()
+    const orderTier = String(orderNotes?.requestedTier ?? orderNotes?.tier ?? '')
+      .trim()
+      .toLowerCase()
     const paymentCaptured = paymentDetails.status === 'captured'
     if (
       !orderBelongsToUser ||

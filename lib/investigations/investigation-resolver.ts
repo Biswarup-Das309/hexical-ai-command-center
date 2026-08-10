@@ -41,7 +41,7 @@ const DEFAULT_RETRIES = 2
 const DEFAULT_RETRY_DELAY_MS = 20
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 export async function resolveCanonicalInvestigation(
@@ -49,7 +49,7 @@ export async function resolveCanonicalInvestigation(
   ownerUserId: string,
   investigationId: InvestigationId,
   options: ResolveInvestigationOptions = {},
-  logger: InvestigationResolverLogger = {}
+  logger: InvestigationResolverLogger = {},
 ): Promise<InvestigationHydration | null> {
   const retries = options.retries ?? DEFAULT_RETRIES
   const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS
@@ -58,7 +58,7 @@ export async function resolveCanonicalInvestigation(
     timelineCursor: options.timelineCursor,
     timelineLimit: options.timelineLimit,
     executionCursor: options.executionCursor,
-    executionLimit: options.executionLimit
+    executionLimit: options.executionLimit,
   }
 
   let hydration = await store.get(ownerUserId, investigationId, getOptions)

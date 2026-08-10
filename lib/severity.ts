@@ -14,63 +14,60 @@
  * ============================================================================
  */
 
-import { ASTDiffNode } from "@/lib/hexical-types";
+import { ASTDiffNode } from '@/lib/hexical-types'
 
 /* -------------------------------------------------------------------------- */
 /*                                   TYPES                                    */
 /* -------------------------------------------------------------------------- */
 
-export type SeverityLevel = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+export type SeverityLevel = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO'
 
 export interface SeverityResult {
-  level: SeverityLevel;
-  score: number;
-  confidence: number;
-  reasons: string[];
-  badge: string;
-  color: string;
-  iconColor: string;
+  level: SeverityLevel
+  score: number
+  confidence: number
+  reasons: string[]
+  badge: string
+  color: string
+  iconColor: string
 }
 
 /* -------------------------------------------------------------------------- */
 /*                             VISUAL METADATA                                */
 /* -------------------------------------------------------------------------- */
 
-export const SEVERITY_META: Record<
-  SeverityLevel,
-  Omit<SeverityResult, "score" | "confidence" | "reasons">
-> = {
+export const SEVERITY_META: Record<SeverityLevel, Omit<SeverityResult, 'score' | 'confidence' | 'reasons'>> = {
   CRITICAL: {
-    level: "CRITICAL",
-    badge: "Critical Risk",
-    color: "bg-red-600/20 border-red-500/40 text-red-400",
-    iconColor: "text-red-500",
+    level: 'CRITICAL',
+    badge: 'Critical Risk',
+    color: 'bg-red-600/20 border-red-500/40 text-red-400',
+    iconColor: 'text-red-500',
   },
   HIGH: {
-    level: "HIGH",
-    badge: "High Risk",
-    color: "bg-orange-500/20 border-orange-500/40 text-orange-400",
-    iconColor: "text-orange-500",
+    level: 'HIGH',
+    badge: 'High Risk',
+    color: 'bg-orange-500/20 border-orange-500/40 text-orange-400',
+    iconColor: 'text-orange-500',
   },
   MEDIUM: {
-    level: "MEDIUM",
-    badge: "Medium Risk",
-    color: "bg-yellow-500/20 border-yellow-500/40 text-yellow-300",
-    iconColor: "text-yellow-400",
+    level: 'MEDIUM',
+    badge: 'Medium Risk',
+    color: 'bg-yellow-500/20 border-yellow-500/40 text-yellow-300',
+    iconColor: 'text-yellow-400',
   },
   LOW: {
-    level: "LOW",
-    badge: "Low Risk",
-    color: "bg-blue-500/20 border-blue-500/40 text-blue-300",
-    iconColor: "text-blue-400",
+    level: 'LOW',
+    badge: 'Low Risk',
+    color: 'bg-blue-500/20 border-blue-500/40 text-blue-300',
+    iconColor: 'text-blue-400',
   },
   INFO: {
-    level: "INFO",
-    badge: "Informational",
-    color: "bg-zinc-500/20 border-zinc-500/40 text-zinc-300",
-    iconColor: "text-zinc-400",
+    level: 'INFO',
+    badge: 'Informational',
+    color: 'bg-zinc-500/20 border-zinc-500/40 text-zinc-300',
+    iconColor: 'text-zinc-400',
   },
-};
+}
 
 /* -------------------------------------------------------------------------- */
 /*                              SCORE CONSTANTS                               */
@@ -97,63 +94,53 @@ export const SEVERITY_META: Record<
  * happen regardless of what string comes in.
  */
 const OPERATION_SCORE = new Map<string, number>([
-  ["INSERT", 20],
-  ["UPDATE", 35],
-  ["MOVE", 10],
-  ["DELETE", 45],
-]);
+  ['INSERT', 20],
+  ['UPDATE', 35],
+  ['MOVE', 10],
+  ['DELETE', 45],
+])
 
 const NODE_SCORE = new Map<string, number>([
-  ["Program", 40],
-  ["FunctionDeclaration", 25],
-  ["FunctionExpression", 25],
-  ["ArrowFunctionExpression", 20],
-  ["ClassDeclaration", 30],
-  ["IfStatement", 18],
-  ["SwitchStatement", 18],
-  ["WhileStatement", 15],
-  ["ForStatement", 15],
-  ["TryStatement", 22],
-  ["CatchClause", 20],
-  ["ImportDeclaration", 10],
-  ["ExportNamedDeclaration", 15],
-  ["VariableDeclaration", 5],
-  ["ReturnStatement", 8],
-  ["CallExpression", 12],
-  ["MemberExpression", 6],
-  ["BinaryExpression", 4],
-  ["Literal", 1],
-]);
+  ['Program', 40],
+  ['FunctionDeclaration', 25],
+  ['FunctionExpression', 25],
+  ['ArrowFunctionExpression', 20],
+  ['ClassDeclaration', 30],
+  ['IfStatement', 18],
+  ['SwitchStatement', 18],
+  ['WhileStatement', 15],
+  ['ForStatement', 15],
+  ['TryStatement', 22],
+  ['CatchClause', 20],
+  ['ImportDeclaration', 10],
+  ['ExportNamedDeclaration', 15],
+  ['VariableDeclaration', 5],
+  ['ReturnStatement', 8],
+  ['CallExpression', 12],
+  ['MemberExpression', 6],
+  ['BinaryExpression', 4],
+  ['Literal', 1],
+])
 
 /* -------------------------------------------------------------------------- */
 /*                             PATH RISK WEIGHTS                              */
 /* -------------------------------------------------------------------------- */
 
 const HIGH_RISK_PATH_KEYWORDS = [
-  "auth",
-  "security",
-  "login",
-  "jwt",
-  "token",
-  "permission",
-  "middleware",
-  "crypto",
-  "admin",
-];
+  'auth',
+  'security',
+  'login',
+  'jwt',
+  'token',
+  'permission',
+  'middleware',
+  'crypto',
+  'admin',
+]
 
-const CRITICAL_KEYWORDS = [
-  "password",
-  "jwt",
-  "token",
-  "secret",
-  "apikey",
-  "privatekey",
-  "rsa",
-  "aes",
-  "authorization",
-];
+const CRITICAL_KEYWORDS = ['password', 'jwt', 'token', 'secret', 'apikey', 'privatekey', 'rsa', 'aes', 'authorization']
 
-const MAX_PAYLOAD_SCAN_LENGTH = 20_000;
+const MAX_PAYLOAD_SCAN_LENGTH = 20_000
 
 /**
  * Splits a path into lowercase tokens, treating non-alphanumeric characters
@@ -170,11 +157,11 @@ const MAX_PAYLOAD_SCAN_LENGTH = 20_000;
 function tokenizePath(text: string): Set<string> {
   return new Set(
     text
-      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
       .split(/[^a-zA-Z0-9]+/)
       .filter(Boolean)
-      .map(t => t.toLowerCase())
-  );
+      .map((t) => t.toLowerCase()),
+  )
 }
 
 /**
@@ -193,7 +180,12 @@ function tokenizePath(text: string): Set<string> {
  * an exact word.
  */
 function tokenizeContent(text: string): Set<string> {
-  return new Set(text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+  return new Set(
+    text
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean),
+  )
 }
 
 /**
@@ -205,20 +197,20 @@ function tokenizeContent(text: string): Set<string> {
  * that node entirely (and, transitively, whatever batch it was part of).
  */
 function safeScanText(value: unknown): string {
-  const seen = new WeakSet<object>();
+  const seen = new WeakSet<object>()
   try {
     return (
       JSON.stringify(value, (_key, v) => {
-        if (typeof v === "bigint") return `${v.toString()}n`;
-        if (typeof v === "object" && v !== null) {
-          if (seen.has(v)) return "[Circular]";
-          seen.add(v);
+        if (typeof v === 'bigint') return `${v.toString()}n`
+        if (typeof v === 'object' && v !== null) {
+          if (seen.has(v)) return '[Circular]'
+          seen.add(v)
         }
-        return v;
-      }) ?? ""
-    );
+        return v
+      }) ?? ''
+    )
   } catch {
-    return "";
+    return ''
   }
 }
 
@@ -227,67 +219,59 @@ function safeScanText(value: unknown): string {
 /* -------------------------------------------------------------------------- */
 
 export function calculateSeverity(node: ASTDiffNode): SeverityResult {
-  if (!node || typeof node !== "object") {
-    throw new TypeError("calculateSeverity requires a valid AST diff node.");
+  if (!node || typeof node !== 'object') {
+    throw new TypeError('calculateSeverity requires a valid AST diff node.')
   }
 
-  let score = 0;
-  const reasons: string[] = [];
+  let score = 0
+  const reasons: string[] = []
 
-  score += OPERATION_SCORE.get(node.operation) ?? 0;
-  score += NODE_SCORE.get(node.nodeType) ?? 0;
+  score += OPERATION_SCORE.get(node.operation) ?? 0
+  score += NODE_SCORE.get(node.nodeType) ?? 0
 
-  const path = (node.path ?? "").toLowerCase();
-  const pathTokens = tokenizePath(path);
+  const path = (node.path ?? '').toLowerCase()
+  const pathTokens = tokenizePath(path)
 
   for (const keyword of HIGH_RISK_PATH_KEYWORDS) {
     if (pathTokens.has(keyword)) {
-      score += 25;
-      reasons.push(`Touches sensitive path (${keyword})`);
+      score += 25
+      reasons.push(`Touches sensitive path (${keyword})`)
     }
   }
 
-  const payload = (
-    safeScanText(node.beforeSnapshot ?? "") + safeScanText(node.afterSnapshot ?? "")
-  ).slice(0, MAX_PAYLOAD_SCAN_LENGTH);
+  const payload = (safeScanText(node.beforeSnapshot ?? '') + safeScanText(node.afterSnapshot ?? '')).slice(
+    0,
+    MAX_PAYLOAD_SCAN_LENGTH,
+  )
 
-  const contentTokens = tokenizeContent(payload);
+  const contentTokens = tokenizeContent(payload)
 
   for (const keyword of CRITICAL_KEYWORDS) {
     if (contentTokens.has(keyword)) {
-      score += 20;
-      reasons.push(`Contains "${keyword}"`);
+      score += 20
+      reasons.push(`Contains "${keyword}"`)
     }
   }
 
   switch (node.operation) {
-    case "DELETE":
-      reasons.push("Logic removal detected");
-      break;
-    case "UPDATE":
-      reasons.push("Existing logic modified");
-      break;
-    case "INSERT":
-      reasons.push("New execution path");
-      break;
-    case "MOVE":
+    case 'DELETE':
+      reasons.push('Logic removal detected')
+      break
+    case 'UPDATE':
+      reasons.push('Existing logic modified')
+      break
+    case 'INSERT':
+      reasons.push('New execution path')
+      break
+    case 'MOVE':
       // Previously had no case at all: MOVE contributed to `score` via
       // OPERATION_SCORE but never got a matching reason, so the UI would
       // show a MOVE-driven score bump with nothing explaining it.
-      reasons.push("Code relocated");
-      break;
+      reasons.push('Code relocated')
+      break
   }
 
-  const level =
-    score >= 90
-      ? "CRITICAL"
-      : score >= 65
-      ? "HIGH"
-      : score >= 40
-      ? "MEDIUM"
-      : score >= 20
-      ? "LOW"
-      : "INFO";
+  const level = score >= 90 ? 'CRITICAL' : score >= 65 ? 'HIGH' : score >= 40 ? 'MEDIUM' : score >= 20 ? 'LOW' : 'INFO'
 
   // NOTE: the original floor was 60, meaning a change with score 0 (no
   // signals at all) was still reported as "60% confident" — the same
@@ -297,16 +281,16 @@ export function calculateSeverity(node: ASTDiffNode): SeverityResult {
   // low/no-signal changes are visibly less confident than well-evidenced
   // ones. If the UI was deliberately designed around a 60% floor, adjust
   // MIN_CONFIDENCE back — this is a product call, not just a bug fix.
-  const MIN_CONFIDENCE = 20;
-  const MAX_CONFIDENCE = 99;
-  const confidence = Math.min(MAX_CONFIDENCE, Math.max(MIN_CONFIDENCE, Math.round(score * 0.9)));
+  const MIN_CONFIDENCE = 20
+  const MAX_CONFIDENCE = 99
+  const confidence = Math.min(MAX_CONFIDENCE, Math.max(MIN_CONFIDENCE, Math.round(score * 0.9)))
 
   return {
     ...SEVERITY_META[level],
     score,
     confidence,
     reasons,
-  };
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -320,7 +304,7 @@ function createSafeRecord<T extends Record<string, number>>(obj: T): T {
   // SeverityResult-shaped objects, not just ones this module produced
   // itself, so `.level` isn't fully guaranteed to be one of the 5 literals
   // at runtime.
-  return Object.assign(Object.create(null), obj);
+  return Object.assign(Object.create(null), obj)
 }
 
 const ORDER: Record<SeverityLevel, number> = createSafeRecord({
@@ -329,14 +313,14 @@ const ORDER: Record<SeverityLevel, number> = createSafeRecord({
   MEDIUM: 3,
   LOW: 2,
   INFO: 1,
-});
+})
 
 export function compareSeverity(a: SeverityResult, b: SeverityResult): number {
-  return (ORDER[b.level] ?? 0) - (ORDER[a.level] ?? 0);
+  return (ORDER[b.level] ?? 0) - (ORDER[a.level] ?? 0)
 }
 
 export function sortBySeverity<T extends { severity: SeverityResult }>(items: T[]): T[] {
-  return [...items].sort((a, b) => compareSeverity(a.severity, b.severity));
+  return [...items].sort((a, b) => compareSeverity(a.severity, b.severity))
 }
 
 /* -------------------------------------------------------------------------- */
@@ -344,33 +328,33 @@ export function sortBySeverity<T extends { severity: SeverityResult }>(items: T[
 /* -------------------------------------------------------------------------- */
 
 export function summarizeSeverity(results: SeverityResult[]) {
-  const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
-  let highest: SeverityResult | null = null;
+  const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 }
+  let highest: SeverityResult | null = null
 
   // Single pass computing every count, rather than five separate
   // `.filter().length` passes over the same array.
   for (const r of results) {
     switch (r.level) {
-      case "CRITICAL":
-        counts.critical++;
-        break;
-      case "HIGH":
-        counts.high++;
-        break;
-      case "MEDIUM":
-        counts.medium++;
-        break;
-      case "LOW":
-        counts.low++;
-        break;
-      case "INFO":
-        counts.info++;
-        break;
+      case 'CRITICAL':
+        counts.critical++
+        break
+      case 'HIGH':
+        counts.high++
+        break
+      case 'MEDIUM':
+        counts.medium++
+        break
+      case 'LOW':
+        counts.low++
+        break
+      case 'INFO':
+        counts.info++
+        break
     }
     if (!highest || compareSeverity(r, highest) < 0) {
-      highest = r;
+      highest = r
     }
   }
 
-  return { ...counts, highest };
+  return { ...counts, highest }
 }

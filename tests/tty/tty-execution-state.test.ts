@@ -1,13 +1,12 @@
-import test from 'node:test'
 import assert from 'node:assert/strict'
-
+import test from 'node:test'
 import {
   IllegalTTYExecutionTransitionError,
   canRecoverTTYExecutionState,
   canTransitionTTYExecutionState,
   createQueuedTTYExecutionState,
   isTerminalTTYExecutionState,
-  transitionTTYExecutionState
+  transitionTTYExecutionState,
 } from '../../lib/tty/tty-execution-state'
 import type { TTYExecutionId, TTYSessionId } from '../../lib/tty/tty-types'
 import type { TTYLeaseId, TTYWorkerId } from '../../lib/tty/tty-worker-types'
@@ -30,11 +29,11 @@ test('state machine accepts the normal queued-to-successful-streaming lifecycle 
   const streaming = transitionTTYExecutionState(running, 'streaming', '2026-08-08T10:00:00.600Z', {
     outputBytes: 12,
     stdoutBytes: 8,
-    stderrBytes: 4
+    stderrBytes: 4,
   })
   const succeeded = transitionTTYExecutionState(streaming, 'succeeded', finishedAt, {
     exitCode: 0,
-    completionReason: 'process_exit'
+    completionReason: 'process_exit',
   })
 
   assert.equal(succeeded.state, 'succeeded')
@@ -52,7 +51,7 @@ test('state machine accepts the normal queued-to-successful-streaming lifecycle 
 test('terminal states are idempotent but cannot transition to another terminal state', () => {
   const queued = createQueuedTTYExecutionState(executionId, sessionId, queuedAt)
   const failed = transitionTTYExecutionState(queued, 'expired', '2026-08-08T10:00:00.100Z', {
-    failureCode: 'LEASE_EXPIRED'
+    failureCode: 'LEASE_EXPIRED',
   })
   const replay = transitionTTYExecutionState(failed, 'expired', '2026-08-08T10:00:00.200Z')
 
@@ -62,7 +61,8 @@ test('terminal states are idempotent but cannot transition to another terminal s
   assert.equal(canTransitionTTYExecutionState('expired', 'succeeded'), false)
   assert.throws(
     () => transitionTTYExecutionState(failed, 'succeeded', '2026-08-08T10:00:00.300Z'),
-    (error: unknown) => error instanceof IllegalTTYExecutionTransitionError && error.from === 'expired' && error.to === 'succeeded'
+    (error: unknown) =>
+      error instanceof IllegalTTYExecutionTransitionError && error.from === 'expired' && error.to === 'succeeded',
   )
 })
 
@@ -71,15 +71,15 @@ test('state machine rejects skipping lease ownership and rejects mutation after 
   assert.equal(canTransitionTTYExecutionState('queued', 'running'), false)
   assert.throws(
     () => transitionTTYExecutionState(queued, 'running', '2026-08-08T10:00:00.100Z'),
-    IllegalTTYExecutionTransitionError
+    IllegalTTYExecutionTransitionError,
   )
 
   const cancelled = transitionTTYExecutionState(queued, 'cancelled', '2026-08-08T10:00:00.100Z', {
-    completionReason: 'user_cancellation'
+    completionReason: 'user_cancellation',
   })
   assert.throws(
     () => transitionTTYExecutionState(cancelled, 'running', '2026-08-08T10:00:00.200Z'),
-    IllegalTTYExecutionTransitionError
+    IllegalTTYExecutionTransitionError,
   )
 })
 
@@ -88,4 +88,3 @@ test('requeue is recovery-only and never part of ordinary execution transitions'
   assert.equal(canRecoverTTYExecutionState('running', 'queued'), true)
   assert.equal(canRecoverTTYExecutionState('succeeded', 'queued'), false)
 })
-

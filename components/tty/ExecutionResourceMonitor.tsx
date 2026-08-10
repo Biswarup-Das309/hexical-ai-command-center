@@ -8,7 +8,7 @@ export interface ExecutionResourceMonitorProps {
 }
 
 function display(metrics: Readonly<Record<string, number>>, keys: readonly string[], suffix = ''): string {
-  const value = keys.map(key => metrics[key]).find(candidate => candidate !== undefined)
+  const value = keys.map((key) => metrics[key]).find((candidate) => candidate !== undefined)
   return value === undefined || !Number.isFinite(value) ? '—' : `${Math.round(value * 10) / 10}${suffix}`
 }
 
@@ -16,22 +16,56 @@ export function ExecutionResourceMonitor({ metrics = {}, className = '' }: Execu
   const hasMetrics = Object.keys(metrics).length > 0
   const cards = [
     { label: 'CPU', value: display(metrics, ['cpu', 'cpu_pct'], '%'), icon: Cpu, tone: 'text-cyan-300' },
-    { label: 'Memory', value: display(metrics, ['memory_mb', 'memory'], ' MB'), icon: Database, tone: 'text-violet-300' },
-    { label: 'Network', value: display(metrics, ['network_kbps', 'network'], ' KB/s'), icon: Network, tone: 'text-emerald-300' },
-    { label: 'Filesystem', value: display(metrics, ['filesystem_ops', 'filesystem'], ' ops'), icon: Activity, tone: 'text-amber-300' },
-    { label: 'Latency p95', value: display(metrics, ['latency_p95_ms', 'latency'], ' ms'), icon: Wifi, tone: 'text-rose-300' },
+    {
+      label: 'Memory',
+      value: display(metrics, ['memory_mb', 'memory'], ' MB'),
+      icon: Database,
+      tone: 'text-violet-300',
+    },
+    {
+      label: 'Network',
+      value: display(metrics, ['network_kbps', 'network'], ' KB/s'),
+      icon: Network,
+      tone: 'text-emerald-300',
+    },
+    {
+      label: 'Filesystem',
+      value: display(metrics, ['filesystem_ops', 'filesystem'], ' ops'),
+      icon: Activity,
+      tone: 'text-amber-300',
+    },
+    {
+      label: 'Latency p95',
+      value: display(metrics, ['latency_p95_ms', 'latency'], ' ms'),
+      icon: Wifi,
+      tone: 'text-rose-300',
+    },
   ] as const
 
   return (
-    <section className={`rounded-lg border border-white/10 bg-black/20 p-3 ${className}`} aria-label="Execution resource monitor">
+    <section
+      className={`rounded-lg border border-white/10 bg-black/20 p-3 ${className}`}
+      aria-label="Execution resource monitor"
+    >
       <div className="mb-3 flex items-center justify-between">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-400">Resource monitor</span>
-        <span className={`font-mono text-[9px] uppercase tracking-wider ${hasMetrics ? 'text-emerald-300' : 'text-zinc-600'}`}>{hasMetrics ? 'telemetry live' : 'awaiting telemetry'}</span>
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-400">
+          Resource monitor
+        </span>
+        <span
+          className={`font-mono text-[9px] uppercase tracking-wider ${
+            hasMetrics ? 'text-emerald-300' : 'text-zinc-600'
+          }`}
+        >
+          {hasMetrics ? 'telemetry live' : 'awaiting telemetry'}
+        </span>
       </div>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-5 lg:grid-cols-1">
         {cards.map(({ label, value, icon: Icon, tone }) => (
           <div key={label} className="rounded border border-white/5 bg-white/[0.02] px-2 py-2">
-            <div className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-wider text-zinc-600"><Icon className={`size-3 ${tone}`} />{label}</div>
+            <div className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-wider text-zinc-600">
+              <Icon className={`size-3 ${tone}`} />
+              {label}
+            </div>
             <div className="mt-1 font-mono text-xs text-zinc-200">{value}</div>
           </div>
         ))}

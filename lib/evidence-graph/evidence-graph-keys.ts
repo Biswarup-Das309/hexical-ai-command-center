@@ -1,6 +1,6 @@
 import type { InvestigationId } from '@/lib/investigations/investigation-types'
-import type { EvidenceGraphEntityType, EvidenceGraphRelationship } from './evidence-graph-types'
 import { normalizeGraphKey, stableGraphHash } from './evidence-graph-identity'
+import type { EvidenceGraphEntityType, EvidenceGraphRelationship } from './evidence-graph-types'
 
 const PREFIX = 'hexical:evidence-graph'
 
@@ -16,7 +16,11 @@ export function graphEntityTypeIndexKey(investigationId: InvestigationId, type: 
   return `${PREFIX}:entities:${type}:${investigationId}`
 }
 
-export function graphEntityLookupKey(investigationId: InvestigationId, type: EvidenceGraphEntityType, canonicalKey: string): string {
+export function graphEntityLookupKey(
+  investigationId: InvestigationId,
+  type: EvidenceGraphEntityType,
+  canonicalKey: string,
+): string {
   return `${PREFIX}:entity-lookup:${investigationId}:${type}:${stableGraphHash(normalizeGraphKey(canonicalKey))}`
 }
 
@@ -36,7 +40,10 @@ export function graphEdgeTargetIndexKey(investigationId: InvestigationId, entity
   return `${PREFIX}:edges:target:${investigationId}:${entityId}`
 }
 
-export function graphEdgeRelationshipIndexKey(investigationId: InvestigationId, relationship: EvidenceGraphRelationship): string {
+export function graphEdgeRelationshipIndexKey(
+  investigationId: InvestigationId,
+  relationship: EvidenceGraphRelationship,
+): string {
   return `${PREFIX}:edges:relationship:${investigationId}:${relationship}`
 }
 

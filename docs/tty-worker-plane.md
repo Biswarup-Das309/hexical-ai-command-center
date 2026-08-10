@@ -31,16 +31,16 @@ An inactive worker cannot authenticate or record heartbeats. An offline worker m
 
 ## Redis schema
 
-| Key | Type | Purpose |
-| --- | --- | --- |
-| `tty:workers:registry` | Set | Registered worker IDs. |
-| `tty:worker:{workerId}:metadata` | JSON string | Identity, version, capabilities, immutable `registeredAt`, current status, and update timestamps. |
-| `tty:worker:{workerId}:heartbeat` | JSON string | Latest accepted heartbeat sequence, send/receive timestamps, and latency. |
-| `tty:worker:{workerId}:health` | JSON string | Derived online/offline state, missed intervals, score, and check time. |
-| `tty:worker:{workerId}:active-leases` | Set | Execution IDs currently attributed to that worker. Stale members are reconciled against job records. |
-| `tty:workers:active-lease-index` | Set | Global `workerId|executionId` reconciliation index. |
-| `tty:workers:audit` | Redis Stream | Append-only structured worker events. |
-| `tty:job:{executionId}` | JSON string | Existing execution job record, now containing authenticated worker lease identity and renewal timestamps. |
+| Key                                   | Type         | Purpose                                                                                                   |
+| ------------------------------------- | ------------ | --------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| `tty:workers:registry`                | Set          | Registered worker IDs.                                                                                    |
+| `tty:worker:{workerId}:metadata`      | JSON string  | Identity, version, capabilities, immutable `registeredAt`, current status, and update timestamps.         |
+| `tty:worker:{workerId}:heartbeat`     | JSON string  | Latest accepted heartbeat sequence, send/receive timestamps, and latency.                                 |
+| `tty:worker:{workerId}:health`        | JSON string  | Derived online/offline state, missed intervals, score, and check time.                                    |
+| `tty:worker:{workerId}:active-leases` | Set          | Execution IDs currently attributed to that worker. Stale members are reconciled against job records.      |
+| `tty:workers:active-lease-index`      | Set          | Global `workerId                                                                                          | executionId` reconciliation index. |
+| `tty:workers:audit`                   | Redis Stream | Append-only structured worker events.                                                                     |
+| `tty:job:{executionId}`               | JSON string  | Existing execution job record, now containing authenticated worker lease identity and renewal timestamps. |
 
 Registration, worker state changes, heartbeat acceptance, and lease transitions use Redis scripts or single Redis commands so competing instances cannot overwrite immutable identity or double-claim a job.
 
@@ -57,15 +57,15 @@ Registration, worker state changes, heartbeat acceptance, and lease transitions 
 
 ## Failure modes and recovery
 
-| Failure | Behavior | Recovery |
-| --- | --- | --- |
-| Duplicate registration | Atomic registry script returns `duplicate_worker`; existing metadata is unchanged. | Inspect the existing worker or choose a new ID. |
-| Invalid token or capability | Middleware returns a generic authentication failure. | Obtain a new token with the required capability. |
-| Missed heartbeats | Health score decreases deterministically; after `offlineAfterMs`, worker status becomes offline. | Send a newer heartbeat; status returns active. |
-| Worker crash during a lease | Lease remains fenced by expiry; no second worker can claim it before recovery. | A recovery worker calls `recover`; retry ceiling prevents infinite resurrection. |
-| Redis outage/partition | Reads return no trusted state and mutations fail closed. | Retry after Redis reconnects; no in-memory state is promoted to authority. |
-| Observer index drift | Job records remain authoritative. Listing a worker's leases prunes missing or mismatched members. | Reconciliation restores the active-lease index. |
-| Audit append failure | State mutation remains authoritative and callers can replay/retry audit emission. | Monitor append failures and repair from the state transition source. |
+| Failure                     | Behavior                                                                                          | Recovery                                                                         |
+| --------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Duplicate registration      | Atomic registry script returns `duplicate_worker`; existing metadata is unchanged.                | Inspect the existing worker or choose a new ID.                                  |
+| Invalid token or capability | Middleware returns a generic authentication failure.                                              | Obtain a new token with the required capability.                                 |
+| Missed heartbeats           | Health score decreases deterministically; after `offlineAfterMs`, worker status becomes offline.  | Send a newer heartbeat; status returns active.                                   |
+| Worker crash during a lease | Lease remains fenced by expiry; no second worker can claim it before recovery.                    | A recovery worker calls `recover`; retry ceiling prevents infinite resurrection. |
+| Redis outage/partition      | Reads return no trusted state and mutations fail closed.                                          | Retry after Redis reconnects; no in-memory state is promoted to authority.       |
+| Observer index drift        | Job records remain authoritative. Listing a worker's leases prunes missing or mismatched members. | Reconciliation restores the active-lease index.                                  |
+| Audit append failure        | State mutation remains authoritative and callers can replay/retry audit emission.                 | Monitor append failures and repair from the state transition source.             |
 
 ## Integration points
 

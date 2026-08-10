@@ -20,7 +20,12 @@ interface ConsoleSink {
   readonly error: (line: string) => void
 }
 
-function emit(sink: ConsoleSink, level: 'info' | 'warn' | 'error', event: string, fields: InvestigationLogFields): void {
+function emit(
+  sink: ConsoleSink,
+  level: 'info' | 'warn' | 'error',
+  event: string,
+  fields: InvestigationLogFields,
+): void {
   const line = JSON.stringify({ level, event, ts: new Date().toISOString(), ...fields })
   if (level === 'error') sink.error(line)
   else if (level === 'warn') sink.warn(line)
@@ -34,7 +39,7 @@ export function createInvestigationLogger(sink: ConsoleSink = console): Investig
   return {
     info: (event, fields) => emit(sink, 'info', event, fields),
     warn: (event, fields) => emit(sink, 'warn', event, fields),
-    error: (event, fields) => emit(sink, 'error', event, fields)
+    error: (event, fields) => emit(sink, 'error', event, fields),
   }
 }
 

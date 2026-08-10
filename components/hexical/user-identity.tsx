@@ -1,8 +1,8 @@
 'use client'
 
+import { LogOut, User } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { createSupabaseClient } from '@/lib/supabase'
-import { LogOut, User } from 'lucide-react'
 
 const supabase = createSupabaseClient()
 
@@ -24,7 +24,7 @@ export function UserIdentity() {
 
   // Logic: Use Name/Avatar if they exist, otherwise fallback to Email
   const name = user.user_metadata.full_name || user.email?.split('@')[0] || 'OPERATOR'
-  const avatar = user.user_metadata.avatar_url || user.user_metadata.picture 
+  const avatar = user.user_metadata.avatar_url || user.user_metadata.picture
 
   return (
     <div className="flex items-center gap-3 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 transition-all">
@@ -36,14 +36,12 @@ export function UserIdentity() {
           <User className="size-3 text-primary" />
         </div>
       )}
-      
-      <span className="font-mono text-[10px] uppercase tracking-widest text-primary">
-        {name}
-      </span>
-      
+
+      <span className="font-mono text-[10px] uppercase tracking-widest text-primary">{name}</span>
+
       {/* SIGN OUT BUTTON */}
-      <button 
-        onClick={handleLogout} 
+      <button
+        onClick={handleLogout}
         className="ml-2 rounded-full p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
         title="Sign Out"
       >

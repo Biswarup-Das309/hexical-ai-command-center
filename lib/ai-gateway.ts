@@ -1,11 +1,11 @@
 import 'server-only'
-import { generateText } from 'ai'
 import { createClient } from '@supabase/supabase-js'
 import { Redis } from '@upstash/redis'
+import { generateText } from 'ai'
 import { z } from 'zod'
-import { PLAN_LIMITS } from './plans'
 import { getLanguageModel } from './hexical/providers'
 import { log } from './hexical/telemetry'
+import { PLAN_LIMITS } from './plans'
 
 /**
  * Fail loudly at import time, not at request time. This is exactly the
@@ -27,10 +27,7 @@ for (const key of REQUIRED_ENV) {
   }
 }
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -52,7 +49,7 @@ const RequestSchema = z.object({
       z.object({
         role: z.enum(['user', 'assistant', 'system']),
         content: z.string().min(1).max(20000),
-      })
+      }),
     )
     .min(1)
     .max(50),
@@ -129,7 +126,7 @@ export async function aiGateway(
   userId: string,
   tier: Tier,
   rawBody: unknown,
-  clientIp: string
+  clientIp: string,
 ): Promise<GatewayResult> {
   const parsed = RequestSchema.safeParse(rawBody)
   if (!parsed.success) {
@@ -156,7 +153,7 @@ export async function aiGateway(
   periodStart.setUTCDate(1)
   periodStart.setUTCHours(0, 0, 0, 0)
   const usageCheck = await supabase
-    .from('hexical_usage_counters')
+    .from('user_usage_summary')
     .select('messages_used, tokens_used')
     .eq('user_id', userId)
     .eq('period_start', periodStart.toISOString().slice(0, 10))
@@ -223,7 +220,10 @@ export async function aiGateway(
       break
     } catch (err) {
       lastErr = err
-      log.warn('ai_gateway.provider_call_failed', { provider: candidate, message: err instanceof Error ? err.message : String(err) })
+      log.warn('ai_gateway.provider_call_failed', {
+        provider: candidate,
+        message: err instanceof Error ? err.message : String(err),
+      })
       if (isBillingFailure(err)) {
         await markModelOnCooldown(candidate)
       }
@@ -231,7 +231,9 @@ export async function aiGateway(
   }
 
   if (!callResult || !usedModel) {
-    log.error('ai_gateway.no_provider_result', { message: lastErr instanceof Error ? lastErr.message : String(lastErr) })
+    log.error('ai_gateway.no_provider_result', {
+      message: lastErr instanceof Error ? lastErr.message : String(lastErr),
+    })
     await releaseReservation(reservationId)
     return {
       blocked: true,
@@ -287,26 +289,16 @@ async function releaseReservation(reservationId: string): Promise<void> {
   if (error) log.error('ai_gateway.release_reservation_failed', { message: error.message, code: error.code })
 }
 
-async function checkRateLimit(
-  userId: string,
-  tier: Tier,
-  ip: string
-): Promise<{ allowed: boolean }> {
+async function checkRateLimit(userId: string, tier: Tier, ip: string): Promise<{ allowed: boolean }> {
   const cfg = RATE_LIMITS[tier]
   const bucket = Math.floor(Date.now() / (cfg.windowSecs * 1000))
 
   const userKey = `rl:user:${userId}:${bucket}`
   const ipKey = `rl:ip:${ip}:${bucket}`
 
-  const [userCount, ipCount] = await Promise.all([
-    redis.incr(userKey),
-    redis.incr(ipKey),
-  ])
+  const [userCount, ipCount] = await Promise.all([redis.incr(userKey), redis.incr(ipKey)])
 
-  await Promise.all([
-    redis.expire(userKey, cfg.windowSecs * 2),
-    redis.expire(ipKey, cfg.windowSecs * 2),
-  ])
+  await Promise.all([redis.expire(userKey, cfg.windowSecs * 2), redis.expire(ipKey, cfg.windowSecs * 2)])
 
   return {
     allowed: userCount <= cfg.maxReq && ipCount <= cfg.maxReq * 5,
@@ -327,17 +319,11 @@ function getModelCandidates(tier: Tier, totalInputChars: number): Model[] {
     case 'free':
       return ['groq']
     case 'go':
-      return totalInputChars > 8000
-        ? ['openai', 'groq', 'deepseek']
-        : ['groq', 'openai', 'deepseek']
+      return totalInputChars > 8000 ? ['openai', 'groq', 'deepseek'] : ['groq', 'openai', 'deepseek']
     case 'plus':
-      return totalInputChars > 15000
-        ? ['anthropic', 'openai', 'deepseek']
-        : ['openai', 'anthropic', 'deepseek']
+      return totalInputChars > 15000 ? ['anthropic', 'openai', 'deepseek'] : ['openai', 'anthropic', 'deepseek']
     case 'pro':
-      return totalInputChars > 15000
-        ? ['anthropic', 'openai', 'groq']
-        : ['openai', 'anthropic', 'groq']
+      return totalInputChars > 15000 ? ['anthropic', 'openai', 'groq'] : ['openai', 'anthropic', 'groq']
     default: {
       const _exhaustive: never = tier
       throw new Error(`[ai-gateway] Unhandled tier: ${_exhaustive}`)
@@ -390,10 +376,7 @@ function estimateReservationCostUsd(messages: ChatMessage[], candidates: Model[]
   const roughInputTokens = Math.ceil(chars / 4)
   const roughOutputTokens = 800
 
-  const worstCaseUsdPerMillion = candidates.reduce(
-    (max, m) => Math.max(max, MODEL_COST_PER_MILLION_TOKENS_USD[m]),
-    0
-  )
+  const worstCaseUsdPerMillion = candidates.reduce((max, m) => Math.max(max, MODEL_COST_PER_MILLION_TOKENS_USD[m]), 0)
 
   return ((roughInputTokens + roughOutputTokens) / 1_000_000) * worstCaseUsdPerMillion
 }

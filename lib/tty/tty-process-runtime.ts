@@ -13,7 +13,6 @@ import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import type { Readable } from 'node:stream'
-
 import type { TTYExecutionId, TTYSessionId } from './tty-types'
 import type { TTYWorkerId } from './tty-worker-types'
 
@@ -77,7 +76,12 @@ interface InternalProcessHandle extends TTYProcessHandle {
 }
 
 function assertSafeString(value: string, label: string): void {
-  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_ARGUMENT_LENGTH || value.includes('\u0000')) {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > MAX_ARGUMENT_LENGTH ||
+    value.includes('\u0000')
+  ) {
     throw new Error(`Invalid ${label}.`)
   }
 }
@@ -103,7 +107,12 @@ function isWithinRoot(rootDir: string, candidate: string): boolean {
   const root = resolve(rootDir)
   const target = resolve(candidate)
   const pathFromRoot = relative(root, target)
-  return pathFromRoot.length > 0 && pathFromRoot !== '..' && !pathFromRoot.startsWith(`..${requirePathSeparator()}`) && !isAbsolute(pathFromRoot)
+  return (
+    pathFromRoot.length > 0 &&
+    pathFromRoot !== '..' &&
+    !pathFromRoot.startsWith(`..${requirePathSeparator()}`) &&
+    !isAbsolute(pathFromRoot)
+  )
 }
 
 function requirePathSeparator(): string {
@@ -126,7 +135,9 @@ export class TTYProcessRuntime {
   private readonly handles = new Map<string, InternalProcessHandle>()
 
   constructor(options: TTYProcessRuntimeOptions = {}) {
-    this.rootDir = resolve(options.rootDir ?? join(/* turbopackIgnore: true */ tmpdir(), `${DEFAULT_ROOT_NAME}${process.pid}`))
+    this.rootDir = resolve(
+      options.rootDir ?? join(/* turbopackIgnore: true */ tmpdir(), `${DEFAULT_ROOT_NAME}${process.pid}`),
+    )
     this.baseEnv = Object.freeze({ ...(options.baseEnv ?? {}) })
     this.killGraceMs = Math.max(50, Math.floor(options.killGraceMs ?? 1_000))
   }
@@ -145,7 +156,7 @@ export class TTYProcessRuntime {
       env,
       shell: false,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'],
     }
     const child: ChildProcess = spawn(spec.file, [...spec.args], spawnOptions)
 
@@ -158,7 +169,7 @@ export class TTYProcessRuntime {
     const startedAt = new Date().toISOString()
     let errorMessage: string | undefined
     let resolveExit!: (exit: TTYProcessExit) => void
-    const exit = new Promise<TTYProcessExit>(resolvePromise => {
+    const exit = new Promise<TTYProcessExit>((resolvePromise) => {
       resolveExit = resolvePromise
     })
     let settled = false
@@ -168,7 +179,7 @@ export class TTYProcessRuntime {
       resolveExit(result)
     }
 
-    child.once('error', error => {
+    child.once('error', (error) => {
       errorMessage = error instanceof Error ? error.message : 'Process spawn failed.'
       settle({ code: child.exitCode, signal: exitSignal(child.signalCode), error: errorMessage })
     })
@@ -191,7 +202,7 @@ export class TTYProcessRuntime {
       stderr: child.stderr,
       exit,
       child,
-      cwd
+      cwd,
     }
     this.handles.set(handleId, handle)
     void exit.then(() => {
@@ -232,7 +243,7 @@ export class TTYProcessRuntime {
       executionId: internal.executionId,
       sessionId: internal.sessionId,
       workerId: internal.workerId,
-      startedAt: internal.startedAt
+      startedAt: internal.startedAt,
     }
   }
 
@@ -267,7 +278,7 @@ export class TTYProcessRuntime {
   private async waitForExit(handle: InternalProcessHandle): Promise<void> {
     if (!isProcessRunning(handle.child)) return
     let timer: ReturnType<typeof setTimeout> | undefined
-    await new Promise<void>(resolvePromise => {
+    await new Promise<void>((resolvePromise) => {
       const finish = () => {
         if (timer) clearTimeout(timer)
         resolvePromise()
@@ -295,11 +306,15 @@ export class TTYProcessRuntime {
         env: { SystemRoot: systemRoot, SystemDrive: systemRoot.slice(0, 2) } as unknown as NodeJS.ProcessEnv,
         shell: false,
         windowsHide: true,
-        stdio: 'ignore'
+        stdio: 'ignore',
       }
-      const taskkill: ChildProcess = spawn(join(/* turbopackIgnore: true */ systemRoot, 'System32', 'taskkill.exe'), ['/pid', String(pid), '/t', '/f'], taskkillOptions)
-      await new Promise<number | null>(resolvePromise => {
-        taskkill.once('close', code => resolvePromise(code))
+      const taskkill: ChildProcess = spawn(
+        join(/* turbopackIgnore: true */ systemRoot, 'System32', 'taskkill.exe'),
+        ['/pid', String(pid), '/t', '/f'],
+        taskkillOptions,
+      )
+      await new Promise<number | null>((resolvePromise) => {
+        taskkill.once('close', (code) => resolvePromise(code))
         taskkill.once('error', () => resolvePromise(null))
       })
       if (!this.isPidRunning(pid)) return
@@ -321,7 +336,8 @@ export class TTYProcessRuntime {
       try {
         process.kill(pid, signal)
       } catch (fallbackError) {
-        const fallbackCode = fallbackError && typeof fallbackError === 'object' && 'code' in fallbackError ? fallbackError.code : undefined
+        const fallbackCode =
+          fallbackError && typeof fallbackError === 'object' && 'code' in fallbackError ? fallbackError.code : undefined
         if (fallbackCode !== 'ESRCH') throw fallbackError
       }
     }
