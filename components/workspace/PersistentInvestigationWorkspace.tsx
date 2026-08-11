@@ -233,10 +233,8 @@ export function PersistentInvestigationWorkspace({
     setSelectedExecutionId(nextExecutionId)
   }
 
-  const clearStaleExecution = () => {
-    if (activeExecutionId) setStaleExecutionId(activeExecutionId)
-    setSelectedExecutionId(null)
-    setExecutionError('No active execution')
+  const preserveExecutionAfterStreamFailure = () => {
+    setExecutionError('Live output disconnected. The execution remains attached; use Replay to recover the output.')
   }
 
   const terminateSession = async () => {
@@ -386,7 +384,8 @@ export function PersistentInvestigationWorkspace({
           onExecute={execute}
           onCancel={cancelExecution}
           onRestart={lastSubmittedInput ? () => execute(lastSubmittedInput) : undefined}
-          onExecutionNotFound={clearStaleExecution}
+          onExecutionNotFound={preserveExecutionAfterStreamFailure}
+          externalError={executionError}
           initialBookmarks={bookmarks}
           onBookmarkAdded={(bookmark) =>
             workspace.addBookmark({

@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { isTTYExecutionState, isTerminalTTYExecutionState } from '@/lib/tty/tty-execution-state'
 import {
   appendTTYStreamEvents,
   buildTTYStreamUrl,
@@ -9,7 +10,7 @@ import {
   parseTTYStreamMessage,
   type TTYStreamClientConnectionState,
 } from '@/lib/tty/tty-stream-client'
-import type { TTYStreamEvent } from '@/lib/tty/tty-stream-types'
+import { createTTYStreamEvent, type TTYStreamEvent } from '@/lib/tty/tty-stream-types'
 
 export interface UseTTYExecutionStreamOptions {
   readonly executionId: string | null
@@ -34,6 +35,66 @@ export interface UseTTYExecutionStreamResult {
 
 const DEFAULT_MAX_EVENTS = 20_000
 const DEFAULT_FLUSH_INTERVAL_MS = 32
+
+interface DurableOutputResponse {
+  readonly ok: true
+  readonly execution: { readonly executionId: string; readonly sessionId: string }
+  readonly events: readonly {
+    readonly sequence: number
+    readonly timestamp: string
+    readonly type: 'stdout' | 'stderr' | 'state' | 'completion'
+    readonly text: string | null
+    readonly state: string | null
+  }[]
+}
+
+function durableEventToStreamEvent(
+  executionId: string,
+  sessionId: string,
+  value: DurableOutputResponse['events'][number],
+): TTYStreamEvent | null {
+  try {
+    if (value.type === 'stdout' || value.type === 'stderr') {
+      const text = value.text ?? ''
+      return createTTYStreamEvent({
+        executionId: executionId as never,
+        sessionId: sessionId as never,
+        sequence: value.sequence,
+        timestamp: value.timestamp,
+        type: value.type,
+        payload: { text, byteLength: new TextEncoder().encode(text).byteLength },
+      })
+    }
+    if (value.type === 'state' && value.state && isTTYExecutionState(value.state)) {
+      return createTTYStreamEvent({
+        executionId: executionId as never,
+        sessionId: sessionId as never,
+        sequence: value.sequence,
+        timestamp: value.timestamp,
+        type: 'state',
+        payload: { state: value.state },
+      })
+    }
+    if (
+      value.type === 'completion' &&
+      value.state &&
+      isTTYExecutionState(value.state) &&
+      isTerminalTTYExecutionState(value.state)
+    ) {
+      return createTTYStreamEvent({
+        executionId: executionId as never,
+        sessionId: sessionId as never,
+        sequence: value.sequence,
+        timestamp: value.timestamp,
+        type: 'completion',
+        payload: { state: value.state, exitCode: null, signal: null, failureCode: null },
+      })
+    }
+  } catch {
+    // Durable output is untrusted at the browser boundary; malformed events are ignored.
+  }
+  return null
+}
 
 export function useTTYExecutionStream({
   executionId,
@@ -100,17 +161,6 @@ export function useTTYExecutionStream({
     sourceRef.current = null
   }, [])
 
-  const handleExecutionNotFound = useCallback(() => {
-    completedRef.current = true
-    pendingRef.current = []
-    lastSequenceRef.current = 0
-    setEvents([])
-    setLastEventId(null)
-    setConnectionState('error')
-    setError('No active execution')
-    onExecutionNotFoundRef.current?.()
-  }, [])
-
   const scheduleConnect = useCallback(
     (delayMs: number) => {
       if (!mountedRef.current || !enabled || !executionId || completedRef.current) return
@@ -124,6 +174,54 @@ export function useTTYExecutionStream({
     },
     [enabled, executionId],
   )
+
+  const recoverDurableOutput = useCallback(async (): Promise<'completed' | 'pending' | 'unavailable'> => {
+    if (!executionId) return 'unavailable'
+    try {
+      const response = await fetch(`/api/tty/executions/${encodeURIComponent(executionId)}/output`, {
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+      })
+      const body: unknown = await response.json().catch(() => null)
+      if (!response.ok || typeof body !== 'object' || body === null) return 'unavailable'
+      const candidate = body as Partial<DurableOutputResponse>
+      if (!candidate.execution || !Array.isArray(candidate.events)) return 'unavailable'
+      const recovered = candidate.events
+        .map((event) => durableEventToStreamEvent(executionId, candidate.execution!.sessionId, event))
+        .filter((event): event is TTYStreamEvent => event !== null)
+      if (recovered.length > 0) {
+        const lastSequence = recovered.at(-1)?.sequence ?? 0
+        lastSequenceRef.current = Math.max(lastSequenceRef.current, lastSequence)
+        setLastEventId(lastSequenceRef.current || null)
+        setEvents((current) => appendTTYStreamEvents(current, recovered, maxEvents))
+      }
+      return recovered.some(isTTYStreamTerminal) ? 'completed' : 'pending'
+    } catch {
+      return 'unavailable'
+    }
+  }, [executionId, maxEvents])
+
+  const handleExecutionNotFound = useCallback(() => {
+    void recoverDurableOutput().then((recovery) => {
+      if (!mountedRef.current || !executionId) return
+      if (recovery === 'completed') {
+        completedRef.current = true
+        setConnectionState('completed')
+        setError('Live stream disconnected; recovered the saved execution output.')
+        return
+      }
+      if (recovery === 'pending') {
+        setConnectionState('reconnecting')
+        setError('Live stream is reconnecting. Saved execution events have been recovered.')
+        scheduleConnect(500)
+        return
+      }
+      completedRef.current = true
+      setConnectionState('error')
+      setError('The live stream and saved output are unavailable. The execution remains attached for recovery.')
+      onExecutionNotFoundRef.current?.()
+    })
+  }, [executionId, recoverDurableOutput, scheduleConnect])
 
   const connect = useCallback(() => {
     if (!mountedRef.current || !enabled || !executionId || completedRef.current || typeof EventSource === 'undefined')

@@ -33,6 +33,7 @@ export interface InvestigationWorkspaceProps {
   readonly onRestart?: () => Promise<void> | void
   readonly onExecute?: (input: string) => Promise<void> | void
   readonly onExecutionNotFound?: () => void
+  readonly externalError?: string | null
   readonly initialBookmarks?: readonly TTYEvidenceBookmark[]
   readonly onBookmarkAdded?: (bookmark: TTYEvidenceBookmark) => Promise<void> | void
 }
@@ -70,6 +71,7 @@ export function InvestigationWorkspace({
   onRestart,
   onExecute,
   onExecutionNotFound,
+  externalError,
   initialBookmarks,
   onBookmarkAdded,
 }: InvestigationWorkspaceProps) {
@@ -315,6 +317,14 @@ export function InvestigationWorkspace({
                 role="status"
               >
                 {stream.error}
+              </div>
+            )}
+            {externalError && (
+              <div
+                className="rounded border border-rose-400/20 bg-rose-400/5 px-2 py-1 font-mono text-[10px] text-rose-200"
+                role="alert"
+              >
+                {externalError}
               </div>
             )}
             {stream.error === 'No active execution' ? (
