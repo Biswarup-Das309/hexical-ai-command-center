@@ -123,3 +123,84 @@ test('real coordinator and process runtime execute an argv command with isolated
     }
   }
 })
+
+test('virtual echo persists output without spawning a host child process', async () => {
+  const redis = new WorkerRedisMock()
+  let spawnAttempts = 0
+  const job: TTYLeasedJob = {
+    executionId,
+    sessionId,
+    ownerUserId: session.ownerUserId,
+    kind: 'session_utility',
+    status: 'leased',
+    createdAt: session.createdAt,
+    admittedAt: session.createdAt,
+    authorizationScopeId: null,
+    argv: ['echo', 'HEXICAL_EXECUTE_SMOKE_TEST'],
+    resource: {
+      maxExecutionDurationMs: session.limits.maxExecutionDurationMs,
+      maxOutputBytes: session.limits.maxOutputBytesPerExecution,
+    },
+    attempt: 1,
+    lease: {
+      workerId,
+      token: 'e2e-echo-token',
+      leaseId: 'e2e-echo-lease' as never,
+      claimedAtMs: Date.now(),
+      renewedAtMs: Date.now(),
+      expiresAtMs: Date.now() + 60_000,
+      maxExpiresAtMs: Date.now() + 300_000,
+    },
+  }
+  const leases: TTYExecutionLeaseOperations = {
+    claim: async () => ({ claimed: true, job }),
+    renew: async () => ({ renewed: true, job }),
+    complete: async () => ({ completed: true, job }),
+    recover: async () => ({ recovered: true, job: { ...job, status: 'queued' } as never }),
+  }
+  const coordinator = new TTYExecutionCoordinator({
+    redis: redis as never,
+    workerId,
+    sessionStore: {
+      getSession: async () => session,
+      recordExecutionStarted: async () => undefined,
+      recordExecutionFinished: async () => undefined,
+    },
+    leaseManager: leases,
+    processRuntime: {
+      start: async () => {
+        spawnAttempts += 1
+        throw new Error('virtual session utilities must not spawn a child process')
+      },
+      stop: async () => undefined,
+      kill: async () => undefined,
+      cleanup: async () => undefined,
+      getMetadata: () => {
+        throw new Error('virtual session utilities have no process metadata')
+      },
+    } as never,
+    resourceGuard: new TTYResourceGuard({
+      maxConcurrentProcesses: 1,
+      maxStdoutBytesPerSecond: 64_000,
+      maxStderrBytesPerSecond: 64_000,
+    }),
+    outputStream: new TTYOutputStreamManager(redis as never),
+    leaseRenewIntervalMs: 1_000,
+  })
+
+  try {
+    const result = await coordinator.run(executionId, sessionId)
+    assert.equal(result.accepted, true)
+    if (!result.accepted) return
+    assert.equal(result.state.state, 'succeeded')
+    assert.equal(result.state.stdoutBytes > 0, true)
+    assert.equal(spawnAttempts, 0)
+    const output = await new TTYOutputStreamManager(redis as never).read(executionId)
+    assert.equal(
+      output.some((event) => event.type === 'stdout' && event.data.text === 'HEXICAL_EXECUTE_SMOKE_TEST\n'),
+      true,
+    )
+  } finally {
+    // The virtual path has no filesystem sandbox or child process to clean up.
+  }
+})

@@ -224,7 +224,7 @@ test('coordinator runs a leased job through streaming to success without persist
   assert.equal(runtime.cleaned.length, 1)
 })
 
-test('coordinator executes non-process session utilities through a trusted virtual runtime', async () => {
+test('coordinator persists session utility output without launching a host process', async () => {
   const runtime = new ControlledRuntime()
   const leases = new FakeLeases({ completed: true, job: undefined as never }, 'session_utility', [
     'history',
@@ -234,9 +234,11 @@ test('coordinator executes non-process session utilities through a trusted virtu
   const result = await coordinator.run(executionId, sessionId)
 
   assert.equal(result.accepted, true)
-  if (result.accepted) assert.equal(result.state.state, 'succeeded')
-  assert.equal(runtime.started[0]?.file, process.execPath)
-  assert.deepEqual(runtime.started[0]?.args.slice(0, 1), ['-e'])
+  if (!result.accepted) return
+  assert.equal(result.state.state, 'succeeded')
+  assert.equal(result.state.completionReason, 'virtual_session_utility_completed')
+  assert.equal(result.state.stdoutBytes > 0, true)
+  assert.equal(runtime.started.length, 0)
 })
 
 test('coordinator rejects path-qualified executables even when their basename is allowlisted', async () => {

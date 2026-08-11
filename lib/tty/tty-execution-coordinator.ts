@@ -211,22 +211,26 @@ const VIRTUAL_SESSION_UTILITIES: Readonly<Record<string, string>> = Object.freez
   exit: 'Use the session control to terminate this investigation session.\n',
 })
 
+/**
+ * Session utilities are deterministic worker-owned operations.  Do not spawn
+ * a shell or a Node child process for them: their output must be written
+ * directly to the durable execution stream so a host-specific stdio failure
+ * can never turn a successful command into an empty transcript.
+ */
+function virtualSessionOutput(argv: readonly [string, ...string[]]): string | null {
+  if (commandName(argv[0]) === 'echo') return `${argv.slice(1).join(' ')}\n`
+  return VIRTUAL_SESSION_UTILITIES[commandName(argv[0])] ?? null
+}
+
 function processSpec(argv: readonly [string, ...string[]]): {
   readonly file: string
   readonly args: readonly string[]
 } {
-  if (commandName(argv[0]) === 'echo') {
-    return {
-      file: process.execPath,
-      args: ['-e', `process.stdout.write(${JSON.stringify(`${argv.slice(1).join(' ')}\n`)})`],
-    }
-  }
-  const output = VIRTUAL_SESSION_UTILITIES[commandName(argv[0])]
-  if (output === undefined) return { file: externalExecutable(commandName(argv[0])), args: argv.slice(1) }
-  return {
-    file: process.execPath,
-    args: ['-e', `process.stdout.write(${JSON.stringify(output)})`],
-  }
+  return { file: externalExecutable(commandName(argv[0])), args: argv.slice(1) }
+}
+
+async function* outputChunks(text: string): AsyncIterable<Uint8Array> {
+  yield Buffer.from(text, 'utf8')
 }
 
 function isExecutionStateActive(state: string): boolean {
@@ -582,6 +586,33 @@ export class TTYExecutionCoordinator {
         state = await this.finalize(context, 'cancelled', { completionReason: context.cancelReason })
         return { accepted: true, state }
       }
+      const virtualOutput = virtualSessionOutput(argv)
+      if (virtualOutput !== null) {
+        state = await this.markExecutionRunning(context)
+        log.info('tty.execution.virtual_command_started', {
+          executionId: context.executionId,
+          sessionId: context.sessionId,
+          workerId: this.dependencies.workerId,
+          command: commandName(argv[0]),
+          ...this.correlationFields(context),
+        })
+        await this.pumpOutput(context, 'stdout', outputChunks(virtualOutput))
+        const terminal = this.terminalForExit(context, { code: 0, signal: null })
+        state = await this.finalize(context, terminal, {
+          exitCode: 0,
+          signal: null,
+          failureCode: context.failureCode,
+          outputBytes: context.outputBytes,
+          stdoutBytes: context.stdoutBytes,
+          stderrBytes: context.stderrBytes,
+          completionReason:
+            terminal === 'succeeded'
+              ? 'virtual_session_utility_completed'
+              : this.completionReasonFor(terminal, context),
+        })
+        return { accepted: true, state }
+      }
+
       const spec = processSpec(argv)
       context.handle = await this.dependencies.processRuntime.start({
         executionId: context.executionId,
@@ -604,11 +635,7 @@ export class TTYExecutionCoordinator {
         ...this.correlationFields(context),
       })
       await this.persistRuntimeMetadata(metadata)
-      state = await this.transition(context, 'running')
-      await this.safeAppendState(state)
-      await this.safeAppendMetrics(state, ['queue_wait_ms', 'startup_ms'])
-      await this.dependencies.sessionStore.recordExecutionStarted(context.sessionId, context.executionId)
-      context.startedRecorded = true
+      state = await this.markExecutionRunning(context)
       context.reservation.armTimeout(() => {
         context.cancelReason = 'system_timeout'
         context.failureCode = 'EXECUTION_TIMEOUT'
@@ -676,6 +703,15 @@ export class TTYExecutionCoordinator {
     if (context.cancelReason === 'user_cancellation' || context.cancelReason === 'worker_cancellation')
       return 'cancelled'
     return exit.error || (exit.code !== 0 && exit.code !== null) ? 'failed' : 'succeeded'
+  }
+
+  private async markExecutionRunning(context: ExecutionContext): Promise<TTYExecutionStateRecord> {
+    const state = await this.transition(context, 'running')
+    await this.safeAppendState(state)
+    await this.safeAppendMetrics(state, ['queue_wait_ms', 'startup_ms'])
+    await this.dependencies.sessionStore.recordExecutionStarted(context.sessionId, context.executionId)
+    context.startedRecorded = true
+    return state
   }
 
   private completionReasonFor(state: TTYTerminalExecutionState, context: ExecutionContext): string {
