@@ -51,17 +51,59 @@ class RedisPendingExecutionQueue implements PendingExecutionQueue {
   constructor(private readonly redis: Redis) {}
 
   async listPendingExecutionIds(limit: number): Promise<readonly string[]> {
-    const ids = await this.redis.smembers(ttyPendingExecutionIndexKey())
-    return [...new Set(ids.map((id) => String(id).trim()).filter(Boolean))].slice(0, Math.max(0, Math.floor(limit)))
+    const requestedLimit = Math.max(0, Math.floor(limit))
+    if (requestedLimit === 0) return []
+    const ids = [...new Set((await this.redis.smembers(ttyPendingExecutionIndexKey())).map((id) => String(id).trim()))]
+      .filter(Boolean)
+      // Reconcile a bounded window on every poll. This prevents an unbounded
+      // stale Redis set from turning the worker into a hot loop while still
+      // allowing a large queue to drain over subsequent polls.
+      .slice(0, Math.max(requestedLimit, 100))
+
+    const queued: string[] = []
+    const stale: string[] = []
+    await Promise.all(
+      ids.map(async (executionId) => {
+        const raw = await this.redis.get<unknown>(ttyExecutionJobKey(executionId as TTYExecutionId))
+        let parsed: unknown
+        try {
+          parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+        } catch {
+          parsed = null
+        }
+        const record = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
+        const job =
+          record && typeof record.job === 'object' && record.job !== null
+            ? (record.job as Record<string, unknown>)
+            : record
+        if (job && job.status === 'queued' && typeof job.sessionId === 'string' && job.sessionId.length > 0)
+          queued.push(executionId)
+        else stale.push(executionId)
+      }),
+    )
+    if (stale.length > 0) {
+      await this.redis.srem(ttyPendingExecutionIndexKey(), ...stale)
+      workerLogger('info', 'stale_pending_executions_pruned', { count: stale.length })
+    }
+    return queued.slice(0, requestedLimit)
   }
 }
 
 async function resolveSessionId(redis: Redis, executionId: TTYExecutionId): Promise<TTYSessionId | null> {
-  const raw = await redis.get<unknown>(ttyExecutionJobKey(executionId))
-  const parsed: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw
-  if (typeof parsed !== 'object' || parsed === null) return null
-  const sessionId = (parsed as Record<string, unknown>).sessionId
-  return typeof sessionId === 'string' && sessionId.length > 0 ? (sessionId as TTYSessionId) : null
+  try {
+    const raw = await redis.get<unknown>(ttyExecutionJobKey(executionId))
+    const parsed: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const record = parsed as Record<string, unknown>
+    // Jobs admitted before the queue-contract fix were stored as
+    // { job, fingerprint }. Accept that shape once so they can be claimed and
+    // normalized to the canonical top-level job record by the lease script.
+    const job = typeof record.job === 'object' && record.job !== null ? (record.job as Record<string, unknown>) : record
+    const sessionId = job.sessionId
+    return typeof sessionId === 'string' && sessionId.length > 0 ? (sessionId as TTYSessionId) : null
+  } catch {
+    return null
+  }
 }
 
 function workerContext(

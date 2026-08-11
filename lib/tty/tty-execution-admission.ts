@@ -127,6 +127,9 @@ redis.call('EXPIRE', KEYS[3], ARGV[2])
 redis.call('EXPIRE', KEYS[4], ARGV[2])
 redis.call('ZADD', KEYS[5], ARGV[3], ARGV[1])
 redis.call('EXPIRE', KEYS[5], ARGV[2])
+-- The worker lease plane reads the job record directly. Keep the durable job
+-- at the top level; the idempotency key is the only place that stores the
+-- { job, fingerprint } envelope used to validate duplicate requests.
 redis.call('SET', KEYS[2], ARGV[7], 'EX', ARGV[2])
 redis.call('SET', KEYS[1], ARGV[8], 'EX', ARGV[9])
 redis.call('SADD', KEYS[9], ARGV[1])

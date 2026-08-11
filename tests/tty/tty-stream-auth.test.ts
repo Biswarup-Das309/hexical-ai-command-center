@@ -98,3 +98,20 @@ test('authorizer fails closed for missing, inactive, and denied executions', asy
     reason: 'permission_denied',
   })
 })
+
+test('authorizer permits a queued execution before the worker creates its state record', async () => {
+  const executionId = createTTYExecutionId()
+  const sessionId = createTTYSessionId()
+  const authorizer = new TTYStreamAuthorizer({
+    getExecutionState: async () => null,
+    getQueuedExecutionSessionId: async (id) => (id === executionId ? sessionId : null),
+    getSession: async (id, userId) => (userId === 'owner' ? session(id, userId) : null),
+  })
+
+  assert.deepEqual(await authorizer.authorize({ userId: 'owner', executionId, requestedSessionId: sessionId }), {
+    authorized: true,
+    userId: 'owner',
+    executionId,
+    sessionId,
+  })
+})

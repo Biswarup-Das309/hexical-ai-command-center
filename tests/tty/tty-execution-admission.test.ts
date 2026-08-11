@@ -31,6 +31,7 @@ const baseSession: InternalTTYSession = {
 
 function mockRedis(options: { coreExists?: boolean } = {}) {
   const idempotencies = new Map<string, string>()
+  const jobs = new Map<string, string>()
   let queue = 0
   let active = 0
   let recent = 0
@@ -46,14 +47,17 @@ function mockRedis(options: { coreExists?: boolean } = {}) {
       active += 1
       recent += 1
       const wrapper = args[7]
+      jobs.set(keys[1]!, args[6]!)
       idempotencies.set(keys[0], wrapper)
       return [1, args[6]]
     },
+    jobs,
   } as never
 }
 
 test('mock contract: concurrent admission reserves once and duplicate retry replays safely', async () => {
-  const admission = new TTYExecutionAdmission(mockRedis(), {
+  const redis = mockRedis() as unknown as { readonly jobs: Map<string, string> }
+  const admission = new TTYExecutionAdmission(redis as never, {
     authorize: async () => ({ allowed: true, scopeId: null }),
   })
   const [first, second] = await Promise.all([
@@ -79,6 +83,12 @@ test('mock contract: concurrent admission reserves once and duplicate retry repl
   })
   assert.equal(retry.admitted, true)
   if (retry.admitted) assert.equal(retry.duplicate, true)
+
+  const storedJob = [...redis.jobs.values()][0]
+  assert.ok(storedJob)
+  const parsedJob = JSON.parse(storedJob) as Record<string, unknown>
+  assert.equal(typeof parsedJob.sessionId, 'string')
+  assert.equal('job' in parsedJob, false)
 })
 
 test('mock contract: resource denials do not create a second queued job', async () => {

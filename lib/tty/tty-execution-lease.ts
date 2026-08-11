@@ -142,6 +142,10 @@ const CLAIM_SCRIPT = `
 local raw = redis.call('GET', KEYS[1])
 if not raw then return {0, 'missing_job'} end
 local job = cjson.decode(raw)
+-- Older admissions persisted { job, fingerprint } at this key. Unwrap that
+-- shape during claim so existing queued work is recovered and rewritten in
+-- the canonical top-level job format below.
+if type(job.job) == 'table' then job = job.job end
 if job.status ~= 'queued' then return {0, 'not_queued'} end
 if job.sessionId ~= ARGV[8] then return {0, 'session_terminated'} end
 if redis.call('EXISTS', KEYS[4]) == 1 or redis.call('EXISTS', KEYS[2]) == 0 or redis.call('EXISTS', KEYS[3]) == 0 then

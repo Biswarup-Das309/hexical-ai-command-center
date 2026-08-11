@@ -22,6 +22,13 @@ export type TTYStreamAuthorizationResult =
 
 export interface TTYStreamAuthorizationDependencies {
   readonly getExecutionState: (executionId: TTYExecutionId) => Promise<TTYExecutionStateRecord | null>
+  /**
+   * Queued jobs may be visible for a short interval before the worker creates
+   * the coordinator-owned state record. Resolve the session from that durable
+   * queue record so the browser can subscribe during that interval instead of
+   * treating a valid queued execution as missing.
+   */
+  readonly getQueuedExecutionSessionId?: (executionId: TTYExecutionId) => Promise<TTYSessionId | null>
   readonly getSession: (sessionId: TTYSessionId, userId: string) => Promise<InternalTTYSession | null>
   readonly canSubscribe?: (input: {
     readonly userId: string
@@ -49,14 +56,21 @@ export class TTYStreamAuthorizer {
     } catch {
       return { authorized: false, reason: 'internal_error' }
     }
-    if (state === null || state.executionId !== request.executionId)
-      return { authorized: false, reason: 'execution_not_found' }
-    if (request.requestedSessionId !== undefined && request.requestedSessionId !== state.sessionId)
+    let sessionId = state?.executionId === request.executionId ? state.sessionId : null
+    if (sessionId === null && this.dependencies.getQueuedExecutionSessionId) {
+      try {
+        sessionId = await this.dependencies.getQueuedExecutionSessionId(request.executionId)
+      } catch {
+        return { authorized: false, reason: 'internal_error' }
+      }
+    }
+    if (sessionId === null) return { authorized: false, reason: 'execution_not_found' }
+    if (request.requestedSessionId !== undefined && request.requestedSessionId !== sessionId)
       return { authorized: false, reason: 'session_not_found' }
 
     let session: InternalTTYSession | null
     try {
-      session = await this.dependencies.getSession(state.sessionId, userId)
+      session = await this.dependencies.getSession(sessionId, userId)
     } catch {
       return { authorized: false, reason: 'internal_error' }
     }
@@ -70,7 +84,7 @@ export class TTYStreamAuthorizer {
           !(await this.dependencies.canSubscribe({
             userId,
             executionId: request.executionId,
-            sessionId: state.sessionId,
+            sessionId,
           }))
         )
           return { authorized: false, reason: 'permission_denied' }
@@ -79,6 +93,6 @@ export class TTYStreamAuthorizer {
       }
     }
 
-    return { authorized: true, userId, executionId: request.executionId, sessionId: state.sessionId }
+    return { authorized: true, userId, executionId: request.executionId, sessionId }
   }
 }
