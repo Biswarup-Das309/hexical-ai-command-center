@@ -239,6 +239,20 @@ test('coordinator executes non-process session utilities through a trusted virtu
   assert.deepEqual(runtime.started[0]?.args.slice(0, 1), ['-e'])
 })
 
+test('coordinator rejects path-qualified executables even when their basename is allowlisted', async () => {
+  const runtime = new ControlledRuntime()
+  const leases = new FakeLeases({ completed: true, job: undefined as never }, 'diagnostic', [
+    'C:\\trusted-looking\\debug',
+    '--unsafe-path',
+  ])
+  const coordinator = new TTYExecutionCoordinator(dependencies(runtime, leases))
+  const result = await coordinator.run(executionId, sessionId)
+
+  assert.equal(result.accepted, true)
+  if (result.accepted) assert.equal(result.state.state, 'failed')
+  assert.equal(runtime.started.length, 0)
+})
+
 test('coordinator cancellation stops the owned process and is idempotent', async () => {
   const runtime = new ControlledRuntime({ stdout: '', stderr: '' })
   const leases = new FakeLeases()

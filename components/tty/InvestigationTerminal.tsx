@@ -31,20 +31,25 @@ export const InvestigationTerminal = forwardRef<InvestigationTerminalHandle, Inv
     { initialText, autoFocus = true, events = [], onReady, onInput, onResize, ...containerProps },
     ref,
   ) {
+    const { status: containerStatus, ...terminalContainerProps } = containerProps
     const mountRef = useRef<HTMLDivElement>(null)
     const terminalRef = useRef<Terminal | null>(null)
     const rendererRef = useRef<TTYTerminalRenderer | null>(null)
     const fitAddonRef = useRef<{ fit(): void } | null>(null)
     const [ready, setReady] = useState(false)
+    const [terminalError, setTerminalError] = useState<string | null>(null)
 
     useImperativeHandle(
       ref,
       () => ({
-        terminal: terminalRef.current,
+        get terminal() {
+          return terminalRef.current
+        },
         write(data) {
           terminalRef.current?.write(data)
         },
         clear() {
+          rendererRef.current?.reset()
           terminalRef.current?.clear()
         },
         focus() {
@@ -60,7 +65,7 @@ export const InvestigationTerminal = forwardRef<InvestigationTerminalHandle, Inv
           return terminalRef.current?.getSelection() ?? ''
         },
       }),
-      [ready],
+      [],
     )
 
     useEffect(() => {
@@ -71,6 +76,7 @@ export const InvestigationTerminal = forwardRef<InvestigationTerminalHandle, Inv
 
       const mount = mountRef.current
       if (!mount) return
+      setTerminalError(null)
 
       void Promise.all([import('xterm'), import('@xterm/addon-fit')])
         .then(([xtermModule, fitModule]) => {
@@ -115,7 +121,10 @@ export const InvestigationTerminal = forwardRef<InvestigationTerminalHandle, Inv
           }
         })
         .catch(() => {
-          if (!disposed) setReady(false)
+          if (!disposed) {
+            setReady(false)
+            setTerminalError('The terminal renderer could not be loaded. Replay remains available.')
+          }
         })
 
       return () => {
@@ -133,15 +142,32 @@ export const InvestigationTerminal = forwardRef<InvestigationTerminalHandle, Inv
 
     useEffect(() => {
       if (!ready || !rendererRef.current) return
+      if (events.length === 0) {
+        rendererRef.current.reset()
+        return
+      }
       for (const event of events) rendererRef.current.render(event)
     }, [events, ready])
 
     return (
       <TerminalContainer
         ref={mountRef}
-        {...containerProps}
-        status={!ready && <span className="font-mono text-[9px] uppercase tracking-widest text-zinc-600">booting</span>}
-      />
+        {...terminalContainerProps}
+        status={
+          containerStatus ??
+          (terminalError ? (
+            <span className="font-mono text-[9px] uppercase tracking-widest text-rose-300">renderer offline</span>
+          ) : (
+            !ready && <span className="font-mono text-[9px] uppercase tracking-widest text-zinc-600">booting</span>
+          ))
+        }
+      >
+        {terminalError && (
+          <div className="border-t border-rose-400/20 bg-rose-400/[0.04] px-3 py-2 font-mono text-[10px] text-rose-300">
+            {terminalError}
+          </div>
+        )}
+      </TerminalContainer>
     )
   },
 )

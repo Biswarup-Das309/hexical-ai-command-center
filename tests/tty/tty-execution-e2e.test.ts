@@ -45,12 +45,12 @@ test('real coordinator and process runtime execute an argv command with isolated
   for (let iteration = 0; iteration < 100; iteration += 1) {
     const redis = new WorkerRedisMock()
     const rootDir = join(process.cwd(), `.tmp-tty-e2e-${process.pid}-${iteration}`)
-    const runtime = new TTYProcessRuntime({ rootDir })
+    const runtime = new TTYProcessRuntime({ rootDir, baseEnv: { PATH: process.env.PATH ?? '' } })
     const file = process.execPath
     const command = basename(file)
       .toLowerCase()
       .replace(/\.exe$/, '')
-    const argv = [file, '-e', "process.stdout.write('e2e-out'); process.stderr.write('e2e-err')"]
+    const argv = [command, '-e', "process.stdout.write('e2e-out'); process.stderr.write('e2e-err')"]
     const job: TTYLeasedJob = {
       executionId,
       sessionId,

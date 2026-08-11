@@ -89,9 +89,17 @@ return {1, ARGV[3]}
 `
 
 function parseScriptResult(value: unknown): StoredHeartbeatScriptResult {
-  if (!Array.isArray(value) || typeof value[0] !== 'number' || typeof value[1] !== 'string')
+  if (!Array.isArray(value) || value.length < 2 || typeof value[1] !== 'string')
     return { code: 0, value: 'internal_error' }
-  return { code: value[0], value: value[1] }
+  const rawCode = value[0]
+  const code =
+    typeof rawCode === 'number'
+      ? rawCode
+      : typeof rawCode === 'string' && /^-?\d+$/.test(rawCode.trim())
+      ? Number(rawCode)
+      : null
+  if (code === null || !Number.isSafeInteger(code)) return { code: 0, value: 'internal_error' }
+  return { code, value: value[1] }
 }
 
 function validConfig(config: TTYWorkerHeartbeatConfig): boolean {

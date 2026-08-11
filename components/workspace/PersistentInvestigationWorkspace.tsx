@@ -2,12 +2,12 @@
 
 import { Archive, FilePlus2, Play, Pencil, RefreshCw, Save, Square, StickyNote, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { TTYEvidenceCandidate } from '@/components/tty/EvidenceBookmarks'
 import { EvidenceGraphPanel } from '@/components/workspace/EvidenceGraphPanel'
 import { InvestigationTitleEditor } from '@/components/workspace/InvestigationTitleEditor'
 import { InvestigationWorkspace } from '@/components/workspace/InvestigationWorkspace'
 import { useInvestigationWorkspace } from '@/hooks/useInvestigationWorkspace'
 import type { InvestigationBookmark } from '@/lib/investigations/investigation-types'
+import type { TTYExecutionState } from '@/lib/tty/tty-execution-state'
 
 export interface PersistentInvestigationWorkspaceProps {
   readonly investigationId?: string | null
@@ -58,6 +58,7 @@ export function PersistentInvestigationWorkspace({
   const [executionInput, setExecutionInput] = useState('')
   const [executionError, setExecutionError] = useState<string | null>(null)
   const [submittingExecution, setSubmittingExecution] = useState(false)
+  const [lastSubmittedInput, setLastSubmittedInput] = useState<string | null>(null)
   const [staleExecutionId, setStaleExecutionId] = useState<string | null>(null)
   const draftInvestigationIdRef = useRef<string | null>(null)
 
@@ -91,6 +92,10 @@ export function PersistentInvestigationWorkspace({
       selectedExecutionId,
       workspace.data?.executions.find((execution) => execution.executionId !== staleExecutionId)?.executionId ?? null,
     ].find((id) => id !== null && id !== staleExecutionId) ?? null
+  const activeExecutionState = useMemo<TTYExecutionState | null>(() => {
+    const state = workspace.data?.executions.find((item) => item.executionId === activeExecutionId)?.state
+    return state && state !== 'unknown' ? (state as TTYExecutionState) : null
+  }, [activeExecutionId, workspace.data?.executions])
   const history = useMemo(
     () =>
       workspace.data?.executions.map((execution) => ({
@@ -107,23 +112,6 @@ export function PersistentInvestigationWorkspace({
       [],
     [activeExecutionId, workspace.data?.bookmarks],
   )
-  const candidates = useMemo<readonly TTYEvidenceCandidate[]>(
-    () =>
-      workspace.data?.timeline
-        .filter(
-          (event) => event.executionId === activeExecutionId && (event.type === 'stdout' || event.type === 'stderr'),
-        )
-        .slice(-8)
-        .map((event) => ({
-          sequence: event.sequence ?? 0,
-          lineNumber: null,
-          kind: event.type === 'stderr' ? 'error' : 'output',
-          label: event.type,
-          excerpt: String(event.payload.text ?? ''),
-        })) ?? [],
-    [activeExecutionId, workspace.data?.timeline],
-  )
-
   const activeSessionId = workspace.data ? workspace.data.investigation.ttySessionId : sessionId ?? null
   const sessionFailure = workspace.sessionFailure
 
@@ -230,6 +218,7 @@ export function PersistentInvestigationWorkspace({
       })
       if (!executionId) throw new Error('The execution could not be attached.')
       setSelectedExecutionId(executionId)
+      setLastSubmittedInput(input)
       setExecutionInput('')
     } catch (cause) {
       setExecutionError(cause instanceof Error ? cause.message : 'The execution could not be submitted.')
@@ -257,6 +246,11 @@ export function PersistentInvestigationWorkspace({
     } catch (cause) {
       setExecutionError(cause instanceof Error ? cause.message : 'The execution session could not be terminated.')
     }
+  }
+
+  const cancelExecution = async () => {
+    if (!activeExecutionId || !activeSessionId) return
+    await workspace.cancelExecution(activeExecutionId, activeSessionId)
   }
 
   if (!workspace.data) {
@@ -386,11 +380,12 @@ export function PersistentInvestigationWorkspace({
           executionId={activeExecutionId}
           sessionId={activeSessionId ?? undefined}
           command={investigation.title}
+          initialState={activeExecutionState}
           history={history}
           onSelectHistory={selectExecution}
           onExecute={execute}
-          onCancel={terminateSession}
-          onRestart={() => execute(investigation.title)}
+          onCancel={cancelExecution}
+          onRestart={lastSubmittedInput ? () => execute(lastSubmittedInput) : undefined}
           onExecutionNotFound={clearStaleExecution}
           initialBookmarks={bookmarks}
           onBookmarkAdded={(bookmark) =>

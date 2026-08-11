@@ -1,6 +1,6 @@
 'use client'
 
-import { Activity, Cpu, Database, Network, Wifi } from 'lucide-react'
+import { Clock3, Database, Gauge, HardDrive, Timer } from 'lucide-react'
 
 export interface ExecutionResourceMonitorProps {
   readonly metrics?: Readonly<Record<string, number>>
@@ -15,29 +15,29 @@ function display(metrics: Readonly<Record<string, number>>, keys: readonly strin
 export function ExecutionResourceMonitor({ metrics = {}, className = '' }: ExecutionResourceMonitorProps) {
   const hasMetrics = Object.keys(metrics).length > 0
   const cards = [
-    { label: 'CPU', value: display(metrics, ['cpu', 'cpu_pct'], '%'), icon: Cpu, tone: 'text-cyan-300' },
+    { label: 'Queue wait', value: display(metrics, ['queue_wait_ms'], ' ms'), icon: Clock3, tone: 'text-cyan-300' },
     {
-      label: 'Memory',
-      value: display(metrics, ['memory_mb', 'memory'], ' MB'),
-      icon: Database,
+      label: 'Startup',
+      value: display(metrics, ['startup_ms'], ' ms'),
+      icon: Timer,
       tone: 'text-violet-300',
     },
     {
-      label: 'Network',
-      value: display(metrics, ['network_kbps', 'network'], ' KB/s'),
-      icon: Network,
+      label: 'Duration',
+      value: display(metrics, ['duration_ms'], ' ms'),
+      icon: Gauge,
       tone: 'text-emerald-300',
     },
     {
-      label: 'Filesystem',
-      value: display(metrics, ['filesystem_ops', 'filesystem'], ' ops'),
-      icon: Activity,
+      label: 'Output',
+      value: display(metrics, ['output_bytes'], ' B'),
+      icon: HardDrive,
       tone: 'text-amber-300',
     },
     {
-      label: 'Latency p95',
-      value: display(metrics, ['latency_p95_ms', 'latency'], ' ms'),
-      icon: Wifi,
+      label: 'Streams',
+      value: `${display(metrics, ['stdout_bytes'], ' B')} / ${display(metrics, ['stderr_bytes'], ' B')}`,
+      icon: Database,
       tone: 'text-rose-300',
     },
   ] as const

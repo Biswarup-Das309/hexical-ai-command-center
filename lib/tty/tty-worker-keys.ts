@@ -73,6 +73,11 @@ export function ttyExecutionRuntimeKey(executionId: TTYExecutionId): string {
   return `tty:execution:${executionId}:runtime`
 }
 
+/** Short-lived owner cancellation request consumed by the worker context. */
+export function ttyExecutionCancellationKey(executionId: TTYExecutionId): string {
+  return `tty:execution:${executionId}:cancellation`
+}
+
 /** Set of executions with a non-terminal runtime state. */
 export function ttyExecutionActiveIndexKey(): string {
   return 'tty:executions:active'

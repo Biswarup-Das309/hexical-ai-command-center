@@ -28,7 +28,7 @@ export function ExecutionProcessTree({ executionId, state, className = '' }: Exe
         </div>
         <div className="ml-8 flex items-center gap-1 text-zinc-600">
           <TerminalSquare className="size-3" />
-          sandbox process <span className="ml-auto">fenced</span>
+          sandbox process <span className="ml-auto">isolated cwd</span>
         </div>
       </div>
     </section>

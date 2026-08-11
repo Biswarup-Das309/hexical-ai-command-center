@@ -1,11 +1,12 @@
 import { Redis } from '@upstash/redis'
 import { TTYExecutionCoordinator } from '../lib/tty/tty-execution-coordinator'
 import { TTYExecutionLeaseManager } from '../lib/tty/tty-execution-lease'
-import { TTYOutputStreamManager } from '../lib/tty/tty-output-stream'
 import { createDefaultTTYProcessRuntime } from '../lib/tty/tty-process-runtime'
 import { TTYRecoveryManager } from '../lib/tty/tty-recovery'
 import { TTYResourceGuard } from '../lib/tty/tty-resource-guard'
 import { createTTYSessionStore } from '../lib/tty/tty-session-store'
+import { TTYStreamBroker, type TTYStreamRedis } from '../lib/tty/tty-stream-broker'
+import { TTYStreamingOutputStreamManager } from '../lib/tty/tty-stream-runtime-bridge'
 import type { TTYExecutionId, TTYSessionId } from '../lib/tty/tty-types'
 import { TTYWorkerAudit } from '../lib/tty/tty-worker-audit'
 import { TTYWorkerAuthenticator, issueTTYWorkerToken, verifyWorkerToken } from '../lib/tty/tty-worker-auth'
@@ -98,6 +99,10 @@ async function main(): Promise<void> {
   const observer = new TTYWorkerLeaseObserver(redis, { audit })
   const sessionStore = createTTYSessionStore(redis)
   const processRuntime = createDefaultTTYProcessRuntime({ rootDir: process.env.TTY_RUNTIME_ROOT })
+  // The durable output stream is authoritative, but the browser subscribes to
+  // the separate live stream. The bridge writes both in order so an execution
+  // is observable while it runs and remains replayable after completion.
+  const streamBroker = new TTYStreamBroker(redis as unknown as TTYStreamRedis)
   const leaseManager = new TTYExecutionLeaseManager(redis, context, { observer })
   const coordinator = new TTYExecutionCoordinator({
     redis,
@@ -110,7 +115,7 @@ async function main(): Promise<void> {
       maxStdoutBytesPerSecond: positiveInteger('TTY_MAX_STDOUT_BYTES_PER_SECOND', 1_048_576),
       maxStderrBytesPerSecond: positiveInteger('TTY_MAX_STDERR_BYTES_PER_SECOND', 1_048_576),
     }),
-    outputStream: new TTYOutputStreamManager(redis),
+    outputStream: new TTYStreamingOutputStreamManager(redis, streamBroker),
     audit,
   })
   const recoveryManager = new TTYRecoveryManager(redis, processRuntime)

@@ -5,7 +5,6 @@ import nextTs from 'eslint-config-next/typescript'
 import prettier from 'eslint-config-prettier'
 import reactPerf from 'eslint-plugin-react-perf'
 import security from 'eslint-plugin-security'
-import sonarjs from 'eslint-plugin-sonarjs'
 import globals from 'globals'
 
 const sourceFiles = ['**/*.{js,mjs,cjs,ts,tsx}']
@@ -40,7 +39,6 @@ export default defineConfig([
     },
     plugins: {
       security,
-      sonarjs,
     },
     settings: {
       'import/resolver': {
@@ -97,9 +95,6 @@ export default defineConfig([
       'security/detect-child-process': 'warn',
       'security/detect-non-literal-fs-filename': 'warn',
       'security/detect-non-literal-regexp': 'warn',
-      'sonarjs/cognitive-complexity': ['warn', 25],
-      'sonarjs/no-duplicate-string': ['warn', { threshold: 5 }],
-      'sonarjs/no-identical-functions': 'warn',
       'react-perf/jsx-no-new-array-as-prop': ['warn', { nativeAllowList: 'all' }],
       'react-perf/jsx-no-new-function-as-prop': ['warn', { nativeAllowList: 'all' }],
       'react-perf/jsx-no-new-object-as-prop': ['warn', { nativeAllowList: 'all' }],

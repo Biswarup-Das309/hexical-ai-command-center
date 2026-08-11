@@ -1,6 +1,11 @@
 import type { Redis } from '@upstash/redis'
 import type { TTYWorkerAuditEvent, TTYWorkerAuditSink } from './tty-worker-audit'
-import { ttyWorkerMetadataKey, ttyWorkerRegistryKey } from './tty-worker-keys'
+import {
+  ttyWorkerHeartbeatKey,
+  ttyWorkerHealthKey,
+  ttyWorkerMetadataKey,
+  ttyWorkerRegistryKey,
+} from './tty-worker-keys'
 import {
   isTTYWorkerCapability,
   normalizeTTYWorkerCapabilities,
@@ -12,8 +17,33 @@ import {
   type TTYWorkerUpdate,
 } from './tty-worker-types'
 
-const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
 const MAX_METADATA_KEYS = 32
+const STALE_WORKER_RECLAIM_AFTER_MS = 30_000
+
+function asciiDigits(value: string): boolean {
+  return value.length > 0 && [...value].every((character) => character >= '0' && character <= '9')
+}
+
+function validVersion(value: string): boolean {
+  const separatorIndexes = [value.indexOf('-'), value.indexOf('+')].filter((index) => index >= 0)
+  const separatorIndex = separatorIndexes.length === 0 ? -1 : Math.min(...separatorIndexes)
+  const core = separatorIndex < 0 ? value : value.slice(0, separatorIndex)
+  const suffix = separatorIndex < 0 ? '' : value.slice(separatorIndex + 1)
+  const coreParts = core.split('.')
+  if (coreParts.length !== 3 || !coreParts.every(asciiDigits)) return false
+  if (separatorIndex < 0) return true
+  return (
+    suffix.length > 0 &&
+    [...suffix].every(
+      (character) =>
+        (character >= '0' && character <= '9') ||
+        (character >= 'A' && character <= 'Z') ||
+        (character >= 'a' && character <= 'z') ||
+        character === '.' ||
+        character === '-',
+    )
+  )
+}
 
 export type TTYWorkerRegistryFailure =
   | 'duplicate_worker'
@@ -45,7 +75,19 @@ interface RegistryStateScriptResult {
 
 const REGISTER_SCRIPT = `
 -- tty-worker-register
-if redis.call('EXISTS', KEYS[1]) == 1 then return {0, 'duplicate_worker'} end
+local existingRaw = redis.call('GET', KEYS[1])
+if existingRaw then
+  local existing = cjson.decode(existingRaw)
+  if existing.status == 'inactive' then return {0, 'duplicate_worker'} end
+  local heartbeatRaw = redis.call('GET', KEYS[3])
+  if heartbeatRaw then
+    local heartbeat = cjson.decode(heartbeatRaw)
+    if tonumber(ARGV[3]) - tonumber(heartbeat.receivedAtMs) <= tonumber(ARGV[4]) then
+      return {0, 'duplicate_worker'}
+    end
+  end
+  redis.call('DEL', KEYS[3], KEYS[4])
+end
 redis.call('SET', KEYS[1], ARGV[1])
 redis.call('SADD', KEYS[2], ARGV[2])
 return {1, ARGV[1]}
@@ -91,10 +133,18 @@ return {1, cjson.encode(worker)}
 `
 
 function parseScriptResult(value: unknown): RegistryStateScriptResult {
-  if (!Array.isArray(value) || typeof value[0] !== 'number' || value.length < 2) {
+  if (!Array.isArray(value) || value.length < 2) {
     return { code: 0, value: 'internal_error' }
   }
-  return { code: value[0], value: value[1] }
+  const rawCode = value[0]
+  const code =
+    typeof rawCode === 'number'
+      ? rawCode
+      : typeof rawCode === 'string' && /^-?\d+$/.test(rawCode.trim())
+      ? Number(rawCode)
+      : null
+  if (code === null || !Number.isSafeInteger(code)) return { code: 0, value: 'internal_error' }
+  return { code, value: value[1] }
 }
 
 function validMetadata(metadata: Readonly<Record<string, string>> | undefined): boolean {
@@ -116,7 +166,7 @@ function validateRegistration(registration: TTYWorkerRegistration): TTYWorkerReg
   if (workerId === null) return null
   const identity = registration.identity.trim()
   const version = registration.version.trim()
-  if (identity.length === 0 || identity.length > 256 || !VERSION_PATTERN.test(version)) return null
+  if (identity.length === 0 || identity.length > 256 || !validVersion(version)) return null
   if (!validCapabilities(registration.capabilities) || !validMetadata(registration.metadata)) return null
   return {
     workerId,
@@ -129,7 +179,7 @@ function validateRegistration(registration: TTYWorkerRegistration): TTYWorkerReg
 
 function validateUpdate(update: TTYWorkerUpdate): TTYWorkerUpdate | null {
   const version = update.version?.trim()
-  if (version !== undefined && !VERSION_PATTERN.test(version)) return null
+  if (version !== undefined && !validVersion(version)) return null
   if (update.capabilities !== undefined && !validCapabilities(update.capabilities)) return null
   if (!validMetadata(update.metadata)) return null
   if (update.version === undefined && update.capabilities === undefined && update.metadata === undefined) return null
@@ -229,8 +279,18 @@ export class TTYWorkerRegistry {
       const result = parseScriptResult(
         await this.redis.eval(
           REGISTER_SCRIPT,
-          [ttyWorkerMetadataKey(worker.workerId), ttyWorkerRegistryKey()],
-          [JSON.stringify(worker), worker.workerId],
+          [
+            ttyWorkerMetadataKey(worker.workerId),
+            ttyWorkerRegistryKey(),
+            ttyWorkerHeartbeatKey(worker.workerId),
+            ttyWorkerHealthKey(worker.workerId),
+          ],
+          [
+            JSON.stringify(worker),
+            worker.workerId,
+            String(this.now().getTime()),
+            String(STALE_WORKER_RECLAIM_AFTER_MS),
+          ],
         ),
       )
       if (result.code !== 1)

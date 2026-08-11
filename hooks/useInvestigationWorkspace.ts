@@ -43,6 +43,7 @@ export interface UseInvestigationWorkspaceResult {
   readonly remove: () => Promise<void>
   readonly ensureSession: () => Promise<string | null>
   readonly terminateSession: () => Promise<void>
+  readonly cancelExecution: (executionId: string, sessionId: string) => Promise<void>
   readonly addNote: (body: string) => Promise<void>
   readonly editNote: (noteId: string, body: string) => Promise<void>
   readonly deleteNote: (noteId: string) => Promise<void>
@@ -450,6 +451,22 @@ export function useInvestigationWorkspace(
     }
   }, [queueMutation, resolvedInvestigationId])
 
+  const cancelExecution = useCallback(
+    async (executionId: string, sessionId: string) => {
+      try {
+        await requestJson<{ ok: true; state: string; cancellationPending?: boolean }>(
+          `/api/tty/executions/${encodeURIComponent(executionId)}/cancel`,
+          { method: 'POST', body: JSON.stringify({ sessionId }) },
+        )
+        await load(resolvedInvestigationId)
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'The execution could not be cancelled.')
+        throw cause
+      }
+    },
+    [load, resolvedInvestigationId],
+  )
+
   const timelinePost = useCallback(
     async (body: Record<string, unknown>) => {
       if (!resolvedInvestigationId) return
@@ -556,6 +573,7 @@ export function useInvestigationWorkspace(
       remove,
       ensureSession,
       terminateSession,
+      cancelExecution,
       addNote,
       editNote,
       deleteNote,
@@ -583,6 +601,7 @@ export function useInvestigationWorkspace(
       loading,
       sessionFailure,
       terminateSession,
+      cancelExecution,
     ],
   )
 }

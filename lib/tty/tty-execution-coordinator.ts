@@ -7,6 +7,7 @@
  * and finalize the lease.
  */
 
+import { join } from 'node:path'
 import type { Redis } from '@upstash/redis'
 import { log, withSpan } from '@/lib/hexical/telemetry'
 import { TTYExecutionLeaseManager, type TTYLeasedJob, type TTYLeaseRenewResult } from './tty-execution-lease'
@@ -36,7 +37,12 @@ import { TTYResourceGuard, type TTYResourceReservation } from './tty-resource-gu
 import { TTYSessionStore } from './tty-session-store'
 import type { TTYExecutionId, TTYExecutionKind, TTYSessionId } from './tty-types'
 import { appendTTYWorkerAuditEvent, type TTYWorkerAuditSink } from './tty-worker-audit'
-import { ttyExecutionActiveIndexKey, ttyExecutionRuntimeKey, ttyExecutionStateKey } from './tty-worker-keys'
+import {
+  ttyExecutionActiveIndexKey,
+  ttyExecutionCancellationKey,
+  ttyExecutionRuntimeKey,
+  ttyExecutionStateKey,
+} from './tty-worker-keys'
 import type { TTYWorkerId } from './tty-worker-types'
 
 const STATE_TTL_SECONDS = 24 * 60 * 60
@@ -44,6 +50,15 @@ const MAX_STREAM_CHUNK_BYTES = 48 * 1024
 const DEFAULT_LEASE_RENEW_INTERVAL_MS = 15_000
 const DEFAULT_STOP_GRACE_MS = 1_000
 const DEFAULT_CONTEXT_WAIT_TIMEOUT_MS = 30_000
+const CANCELLATION_TTL_SECONDS = 60 * 60
+const CANCELLATION_POLL_INTERVAL_MS = 1_000
+type TTYExecutionMetricName =
+  | 'queue_wait_ms'
+  | 'startup_ms'
+  | 'duration_ms'
+  | 'output_bytes'
+  | 'stdout_bytes'
+  | 'stderr_bytes'
 
 const STATE_TRANSITION_SCRIPT = `
 -- tty-execution-state-transition
@@ -160,6 +175,8 @@ interface ExecutionContext {
   renewTimer: ReturnType<typeof setInterval> | undefined
   killTimer: ReturnType<typeof setTimeout> | undefined
   stopPromise: Promise<void> | null
+  cancellationTimer: ReturnType<typeof setInterval> | undefined
+  cancellationCheckInFlight: boolean
   streaming: boolean
   outputBytes: number
   stdoutBytes: number
@@ -174,6 +191,12 @@ function commandName(file: string): string {
   const normalized = file.replaceAll('\\', '/')
   const name = normalized.slice(normalized.lastIndexOf('/') + 1).toLowerCase()
   return name.endsWith('.exe') ? name.slice(0, -4) : name
+}
+
+function externalExecutable(command: string): string {
+  const toolBinDir = process.env.TTY_TOOL_BIN_DIR?.trim()
+  if (!toolBinDir) return command
+  return join(toolBinDir, process.platform === 'win32' ? `${command}.exe` : command)
 }
 
 const VIRTUAL_SESSION_UTILITIES: Readonly<Record<string, string>> = Object.freeze({
@@ -195,7 +218,7 @@ function processSpec(argv: readonly [string, ...string[]]): {
     }
   }
   const output = VIRTUAL_SESSION_UTILITIES[commandName(argv[0])]
-  if (output === undefined) return { file: argv[0], args: argv.slice(1) }
+  if (output === undefined) return { file: externalExecutable(commandName(argv[0])), args: argv.slice(1) }
   return {
     file: process.execPath,
     args: ['-e', `process.stdout.write(${JSON.stringify(output)})`],
@@ -327,6 +350,9 @@ export class TTYExecutionCoordinator {
     executionId: TTYExecutionId,
     reason: TTYExecutionCancellationReason = 'user_cancellation',
   ): Promise<TTYExecutionCancellationResult> {
+    await this.dependencies.redis.set(ttyExecutionCancellationKey(executionId), reason, {
+      ex: CANCELLATION_TTL_SECONDS,
+    })
     const context = this.contexts.get(executionId)
     if (context) {
       context.cancelReason = reason
@@ -339,19 +365,16 @@ export class TTYExecutionCoordinator {
     if (state === null || isTerminalTTYExecutionState(state.state)) return { acknowledged: state !== null, state }
     if (state.state === 'queued') {
       const cancelled = await this.transitionWithoutContext(state, 'cancelled', { completionReason: reason })
+      await this.safeAppendState(cancelled)
       await this.safeAppendCompletion(cancelled)
       return { acknowledged: true, state: cancelled }
     }
 
-    // A worker-local context is required to possess the secret lease token and
-    // process handle. Without it, the safe recovery state is expired; a
-    // reaper can then clean the persisted runtime metadata and recover the job.
-    const expired = await this.transitionWithoutContext(state, 'expired', {
-      failureCode: 'WORKER_CONTEXT_MISSING',
-      completionReason: 'worker_context_missing',
-    })
-    await this.safeAppendCompletion(expired)
-    return { acknowledged: true, state: expired }
+    // The worker may be running on a different host. The cancellation marker
+    // above lets that owner stop its process and finalize the authoritative
+    // state. Do not mark remote work expired here: doing so would hide a still
+    // running process and make cancellation non-deterministic.
+    return { acknowledged: false, state }
   }
 
   /**
@@ -439,6 +462,8 @@ export class TTYExecutionCoordinator {
       renewTimer: undefined,
       killTimer: undefined,
       stopPromise: null,
+      cancellationTimer: undefined,
+      cancellationCheckInFlight: false,
       streaming: false,
       outputBytes: 0,
       stdoutBytes: 0,
@@ -544,6 +569,11 @@ export class TTYExecutionCoordinator {
     }
 
     try {
+      if (await this.cancellationRequested(context)) {
+        context.cancelReason = 'user_cancellation'
+        state = await this.finalize(context, 'cancelled', { completionReason: context.cancelReason })
+        return { accepted: true, state }
+      }
       const spec = processSpec(argv)
       context.handle = await this.dependencies.processRuntime.start({
         executionId: context.executionId,
@@ -553,10 +583,12 @@ export class TTYExecutionCoordinator {
         args: spec.args,
         env: {},
       })
+      this.startCancellationPolling(context)
       const metadata = this.dependencies.processRuntime.getMetadata(context.handle)
       await this.persistRuntimeMetadata(metadata)
       state = await this.transition(context, 'running')
       await this.safeAppendState(state)
+      await this.safeAppendMetrics(state, ['queue_wait_ms', 'startup_ms'])
       await this.dependencies.sessionStore.recordExecutionStarted(context.sessionId, context.executionId)
       context.startedRecorded = true
       context.reservation.armTimeout(() => {
@@ -604,6 +636,8 @@ export class TTYExecutionCoordinator {
   private validJob(job: TTYLeasedJob, argv: readonly string[] | undefined): argv is readonly [string, ...string[]] {
     if (!argv || argv.length === 0 || job.kind === 'unsupported') return false
     if (isTargetGatedExecutionKind(job.kind) && !job.authorizationScopeId) return false
+    const rawCommand = argv[0].replaceAll('\\', '/')
+    if (rawCommand.includes('/') || rawCommand.includes(':')) return false
     const command = commandName(argv[0])
     return this.commandAllowlist[job.kind].some((candidate) => command === candidate.toLowerCase())
   }
@@ -661,6 +695,14 @@ export class TTYExecutionCoordinator {
 
     const state = await this.transition(context, finalState, finalPatch)
     await this.safeAppendState(state)
+    await this.safeAppendMetrics(state, [
+      'queue_wait_ms',
+      'startup_ms',
+      'duration_ms',
+      'output_bytes',
+      'stdout_bytes',
+      'stderr_bytes',
+    ])
     await this.safeAppendCompletion(state)
     await this.safeAuditForState(state, context)
     this.stopRenewal(context)
@@ -694,6 +736,11 @@ export class TTYExecutionCoordinator {
       await this.dependencies.redis.del(ttyExecutionRuntimeKey(context.executionId))
     } catch {
       // Recovery can retry runtime-key cleanup.
+    }
+    try {
+      await this.dependencies.redis.del(ttyExecutionCancellationKey(context.executionId))
+    } catch {
+      // Cancellation markers are short-lived and safe to expire naturally.
     }
     return state
   }
@@ -907,6 +954,34 @@ export class TTYExecutionCoordinator {
     context.renewTimer = undefined
   }
 
+  private startCancellationPolling(context: ExecutionContext): void {
+    context.cancellationTimer = setInterval(() => {
+      void this.pollCancellation(context)
+    }, CANCELLATION_POLL_INTERVAL_MS)
+  }
+
+  private async pollCancellation(context: ExecutionContext): Promise<void> {
+    if (context.cancelReason || context.cancellationCheckInFlight) return
+    context.cancellationCheckInFlight = true
+    try {
+      if (await this.cancellationRequested(context)) {
+        context.cancelReason = 'user_cancellation'
+        await this.requestStop(context)
+      }
+    } finally {
+      context.cancellationCheckInFlight = false
+    }
+  }
+
+  private async cancellationRequested(context: ExecutionContext): Promise<boolean> {
+    try {
+      const value = await this.dependencies.redis.get<unknown>(ttyExecutionCancellationKey(context.executionId))
+      return value === 'user_cancellation' || value === 'worker_cancellation' || value === 'system_timeout'
+    } catch {
+      return false
+    }
+  }
+
   private async waitForContext(context: ExecutionContext): Promise<TTYExecutionRunResult> {
     // run() owns the execution promise only after it registers the context;
     // callers that race cancellation with startup use the state as the safe
@@ -930,6 +1005,8 @@ export class TTYExecutionCoordinator {
 
   private clearContext(context: ExecutionContext): void {
     this.stopRenewal(context)
+    if (context.cancellationTimer) clearInterval(context.cancellationTimer)
+    context.cancellationTimer = undefined
     if (context.killTimer) clearTimeout(context.killTimer)
     if (context.abortListener) {
       context.abortSignal?.removeEventListener('abort', context.abortListener)
@@ -973,6 +1050,40 @@ export class TTYExecutionCoordinator {
         sessionId: state.sessionId,
         error: error instanceof Error ? error.message : String(error),
       })
+    }
+  }
+
+  private async safeAppendMetrics(
+    state: TTYExecutionStateRecord,
+    names: readonly TTYExecutionMetricName[],
+  ): Promise<void> {
+    const metrics: Readonly<Record<string, number | null>> = {
+      queue_wait_ms: state.queueWaitMs,
+      startup_ms: state.startupMs,
+      duration_ms: state.durationMs,
+      output_bytes: state.outputBytes,
+      stdout_bytes: state.stdoutBytes,
+      stderr_bytes: state.stderrBytes,
+    }
+    for (const name of names) {
+      const value = metrics[name]
+      if (typeof value !== 'number' || !Number.isFinite(value)) continue
+      try {
+        await this.dependencies.outputStream.appendMetric({
+          executionId: state.executionId,
+          sessionId: state.sessionId,
+          name,
+          value,
+          timestamp: state.updatedAt,
+        })
+      } catch (error) {
+        log.warn('tty.execution.metric_stream_failed', {
+          executionId: state.executionId,
+          sessionId: state.sessionId,
+          name,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
     }
   }
 

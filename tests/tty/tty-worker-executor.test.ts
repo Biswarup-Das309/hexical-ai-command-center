@@ -103,6 +103,9 @@ class CaptureLogger implements TTYWorkerExecutorLogger, TTYWorkerClaimLogger {
 }
 
 function leasedJob(id: TTYExecutionId = executionId): TTYLeasedJob {
+  const command = basename(process.execPath)
+    .toLowerCase()
+    .replace(/\.exe$/, '')
   return {
     executionId: id,
     sessionId,
@@ -112,7 +115,7 @@ function leasedJob(id: TTYExecutionId = executionId): TTYLeasedJob {
     createdAt: session.createdAt,
     admittedAt: session.createdAt,
     authorizationScopeId: null,
-    argv: [process.execPath, '-e', "process.stdout.write('worker-out'); process.stderr.write('worker-err')"],
+    argv: [command, '-e', "process.stdout.write('worker-out'); process.stderr.write('worker-err')"],
     resource: {
       maxExecutionDurationMs: session.limits.maxExecutionDurationMs,
       maxOutputBytes: session.limits.maxOutputBytesPerExecution,
@@ -444,7 +447,7 @@ test('restart during an active execution runs recovery before the replacement po
 test('poll, claim, execute, stream, complete, and recovery compose through the real coordinator and stream bridge', async () => {
   const redis = new WorkerRedisMock()
   const rootDir = join(process.cwd(), `.tmp-tty-worker-executor-${process.pid}`)
-  const runtime = new TTYProcessRuntime({ rootDir })
+  const runtime = new TTYProcessRuntime({ rootDir, baseEnv: { PATH: process.env.PATH ?? '' } })
   const job = leasedJob()
   const leases = {
     claim: async (): Promise<TTYLeaseClaimResult> => ({ claimed: true, job }),

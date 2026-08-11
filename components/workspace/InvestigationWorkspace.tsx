@@ -1,7 +1,7 @@
 'use client'
 
 import { Activity, Boxes, FileSearch, GitBranch, Play, Search, Wifi, WifiOff } from 'lucide-react'
-import { useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { EvidenceBookmarks, type TTYEvidenceCandidate } from '@/components/tty/EvidenceBookmarks'
 import { ExecutionArtifactPanel } from '@/components/tty/ExecutionArtifactPanel'
 import { ExecutionControls } from '@/components/tty/ExecutionControls'
@@ -23,6 +23,7 @@ export interface InvestigationWorkspaceProps {
   readonly sessionId?: string
   readonly command?: string
   readonly execution?: TTYBrowserExecutionView | null
+  readonly initialState?: TTYExecutionState | null
   readonly verificationStatus?: 'verified' | 'pending' | 'unverified'
   readonly plannerPanel?: React.ReactNode
   readonly findingsPanel?: React.ReactNode
@@ -59,6 +60,7 @@ export function InvestigationWorkspace({
   sessionId,
   command = 'approved execution',
   execution,
+  initialState = null,
   verificationStatus = 'pending',
   plannerPanel,
   findingsPanel,
@@ -78,9 +80,11 @@ export function InvestigationWorkspace({
   const [submitting, setSubmitting] = useState(false)
   const [executionError, setExecutionError] = useState<string | null>(null)
   const stream = useTTYExecutionStream({ executionId, sessionId, maxEvents: 20_000, onExecutionNotFound })
+  const clearStream = stream.clear
+  const reconnectStream = stream.reconnect
   const lines = useMemo(() => buildTTYTerminalLines(stream.events), [stream.events])
   const matches = useMemo(() => findTTYSearchMatches(lines, search), [lines, search])
-  const state = latestState(stream.events)
+  const state = latestState(stream.events) ?? initialState
   const connection = connectionLabel(stream.connectionState)
   const outputText = useMemo(
     () =>
@@ -141,10 +145,19 @@ export function InvestigationWorkspace({
     terminalRef.current?.scrollToLine(matches[next]!.lineNumber)
   }
 
-  const clear = () => {
-    stream.clear()
+  const clear = useCallback(() => {
+    clearStream()
     terminalRef.current?.clear()
-  }
+  }, [clearStream])
+
+  const replay = useCallback(() => {
+    clear()
+    reconnectStream()
+  }, [clear, reconnectStream])
+
+  const jumpToBookmark = useCallback((bookmark: TTYEvidenceBookmark) => {
+    if (bookmark.lineNumber) terminalRef.current?.scrollToLine(bookmark.lineNumber)
+  }, [])
 
   const submit = async () => {
     const next = input.trim()
@@ -167,7 +180,7 @@ export function InvestigationWorkspace({
       aria-label="Autonomous execution runtime"
     >
       <div className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-[1800px] flex-col gap-3">
-        <header className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-white/10 bg-black/30 px-3 py-2">
+        <header className="scanlines flex flex-wrap items-center justify-between gap-3 rounded-lg border border-white/10 bg-black/30 px-3 py-2 transition-colors duration-500">
           <div className="flex min-w-0 items-center gap-3">
             <Boxes className="size-4 shrink-0 text-cyan-300" />
             <div className="min-w-0">
@@ -178,7 +191,7 @@ export function InvestigationWorkspace({
             </div>
           </div>
           <div className="flex items-center gap-3 font-mono text-[10px] uppercase tracking-wider">
-            <span className={connection.className}>
+            <span className={`${connection.className} transition-colors duration-300`}>
               {stream.connectionState === 'open' ? (
                 <Wifi className="mr-1 inline size-3" />
               ) : (
@@ -241,7 +254,7 @@ export function InvestigationWorkspace({
                   disabled={!onExecute || submitting || !input.trim()}
                   className="inline-flex h-9 items-center gap-1 rounded border border-cyan-400/30 px-3 font-mono text-[10px] uppercase tracking-wider text-cyan-200 hover:bg-cyan-400/10 disabled:opacity-50"
                 >
-                  <Play className="size-3" />
+                  <Play className={`size-3 ${submitting ? 'animate-pulse' : ''}`} />
                   {submitting ? 'queueing' : 'execute'}
                 </button>
               </div>
@@ -292,10 +305,7 @@ export function InvestigationWorkspace({
                 outputText={outputText}
                 onCancel={onCancel}
                 onRestart={onRestart}
-                onReplay={() => {
-                  clear()
-                  stream.reconnect()
-                }}
+                onReplay={replay}
                 onClear={clear}
               />
             </div>
@@ -339,9 +349,7 @@ export function InvestigationWorkspace({
               candidates={candidates}
               initialBookmarks={initialBookmarks}
               onBookmarkAdded={onBookmarkAdded}
-              onJump={(bookmark) => {
-                if (bookmark.lineNumber) terminalRef.current?.scrollToLine(bookmark.lineNumber)
-              }}
+              onJump={jumpToBookmark}
             />
             <div className="flex items-center gap-2 rounded border border-white/10 bg-black/20 px-3 py-2 font-mono text-[10px] text-zinc-600">
               <Activity className="size-3" /> replay window bounded to 20k events

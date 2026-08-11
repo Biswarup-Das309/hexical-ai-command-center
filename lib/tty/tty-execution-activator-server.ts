@@ -5,10 +5,11 @@ import { log } from '@/lib/hexical/telemetry'
 import { recordActivationLatency, recordActivationTimeout } from './tty-activation-metrics'
 import { TTYExecutionCoordinator, type TTYExecutionCoordinatorFailureReason } from './tty-execution-coordinator'
 import { TTYExecutionLeaseManager } from './tty-execution-lease'
-import { TTYOutputStreamManager } from './tty-output-stream'
 import { createDefaultTTYProcessRuntime } from './tty-process-runtime'
 import { TTYResourceGuard } from './tty-resource-guard'
 import { createTTYSessionStore } from './tty-session-store'
+import { TTYStreamBroker, type TTYStreamRedis } from './tty-stream-broker'
+import { TTYStreamingOutputStreamManager } from './tty-stream-runtime-bridge'
 import type { TTYExecutionId, TTYSessionId } from './tty-types'
 import { createTTYWorkerId, type TTYWorkerAuthContext } from './tty-worker-types'
 
@@ -69,6 +70,7 @@ function createRuntime(): TTYExecutionActivationRuntime {
   const redis = requiredRedis()
   const sessionStore = createTTYSessionStore(redis)
   const context = workerContext()
+  const streamBroker = new TTYStreamBroker(redis as unknown as TTYStreamRedis)
   const coordinator = new TTYExecutionCoordinator({
     redis,
     workerId: context.workerId,
@@ -86,7 +88,7 @@ function createRuntime(): TTYExecutionActivationRuntime {
         DEFAULT_MAX_OUTPUT_BYTES_PER_SECOND,
       ),
     }),
-    outputStream: new TTYOutputStreamManager(redis),
+    outputStream: new TTYStreamingOutputStreamManager(redis, streamBroker),
   })
   return { coordinator }
 }
@@ -218,4 +220,26 @@ export async function repairTTYExecution(
   }
   const recovered = await coordinator.recoverExecution(executionId, sessionId)
   return { repaired: recovered?.state === 'queued', state: recovered }
+}
+
+/**
+ * Requests cancellation for one owner-authorized execution. If the execution
+ * is running on another worker, the coordinator records a short-lived Redis
+ * cancellation marker and that worker stops its process on the next control
+ * poll. This keeps cancellation execution-scoped without pretending a web
+ * request owns a process hosted elsewhere.
+ */
+export async function cancelTTYExecution(
+  rawExecutionId: string,
+  rawSessionId: string,
+): Promise<{
+  readonly acknowledged: boolean
+  readonly state: Awaited<ReturnType<TTYExecutionCoordinator['getState']>>
+}> {
+  const executionId = rawExecutionId as TTYExecutionId
+  const sessionId = rawSessionId as TTYSessionId
+  const coordinator = getRuntime().coordinator
+  const current = await coordinator.getState(executionId)
+  if (current === null || current.sessionId !== sessionId) return { acknowledged: false, state: current }
+  return coordinator.cancelExecution(executionId, 'user_cancellation')
 }
