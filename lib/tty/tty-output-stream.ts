@@ -1,6 +1,8 @@
 /** Ordered, bounded Redis-stream persistence for worker output and telemetry. */
 
 import type { Redis } from '@upstash/redis'
+import { log } from '@/lib/hexical/telemetry'
+import { normalizeTTYRedisStreamEntries, normalizeTTYRedisStreamFields } from './tty-redis-stream'
 import type { TTYExecutionId, TTYSessionId } from './tty-types'
 import { ttyExecutionOutputSequenceKey, ttyExecutionOutputStreamKey } from './tty-worker-keys'
 
@@ -59,46 +61,26 @@ function isOutputEventType(value: unknown): value is TTYOutputEventType {
   return typeof value === 'string' && EVENT_TYPES.includes(value as TTYOutputEventType)
 }
 
-function fieldMap(value: unknown): Record<string, string> | null {
-  if (Array.isArray(value)) {
-    const fields: Record<string, string> = {}
-    for (let index = 0; index + 1 < value.length; index += 2) {
-      const key = value[index]
-      const fieldValue = value[index + 1]
-      if (
-        typeof key !== 'string' ||
-        (typeof fieldValue !== 'string' && typeof fieldValue !== 'number' && typeof fieldValue !== 'boolean')
-      )
-        return null
-      fields[key] = String(fieldValue)
-    }
-    return fields
-  }
-  if (typeof value !== 'object' || value === null) return null
-  const fields: Record<string, string> = {}
-  for (const [key, fieldValue] of Object.entries(value)) {
-    if (typeof fieldValue !== 'string' && typeof fieldValue !== 'number' && typeof fieldValue !== 'boolean') return null
-    fields[key] = String(fieldValue)
-  }
-  return fields
+function fieldMap(value: unknown): Readonly<Record<string, unknown>> | null {
+  return normalizeTTYRedisStreamFields(value)
 }
 
 function parseEvent(value: unknown): TTYOutputEvent | null {
-  if (!Array.isArray(value) || value.length < 2 || typeof value[0] !== 'string') return null
-  const fields = fieldMap(value[1])
-  if (
-    fields === null ||
-    !fields.eventId ||
-    !fields.timestamp ||
-    !fields.executionId ||
-    !fields.sessionId ||
-    !isOutputEventType(fields.type)
-  )
-    return null
-  const sequence = Number(fields.sequence)
+  const entry = normalizeTTYRedisStreamEntries([value])[0]
+  if (!entry) return null
+  const fields = fieldMap(entry[1])
+  const eventId = typeof fields?.eventId === 'string' ? fields.eventId : null
+  const timestamp = typeof fields?.timestamp === 'string' ? fields.timestamp : null
+  const executionId = typeof fields?.executionId === 'string' ? fields.executionId : null
+  const sessionId = typeof fields?.sessionId === 'string' ? fields.sessionId : null
+  const type = typeof fields?.type === 'string' ? fields.type : null
+  const sequenceValue = fields?.sequence
+  if (fields === null || !eventId || !timestamp || !executionId || !sessionId || !isOutputEventType(type)) return null
+  const sequence = Number(sequenceValue)
   if (!Number.isSafeInteger(sequence) || sequence <= 0) return null
   try {
-    const data: unknown = JSON.parse(fields.data ?? '{}')
+    const rawData = fields.data
+    const data: unknown = typeof rawData === 'string' ? JSON.parse(rawData) : rawData ?? {}
     if (typeof data !== 'object' || data === null || Array.isArray(data)) return null
     const values = Object.values(data)
     if (
@@ -109,12 +91,12 @@ function parseEvent(value: unknown): TTYOutputEvent | null {
     )
       return null
     return {
-      eventId: fields.eventId,
+      eventId,
       sequence,
-      timestamp: fields.timestamp,
-      executionId: fields.executionId as TTYExecutionId,
-      sessionId: fields.sessionId as TTYSessionId,
-      type: fields.type,
+      timestamp,
+      executionId: executionId as TTYExecutionId,
+      sessionId: sessionId as TTYSessionId,
+      type,
       data: data as TTYOutputEventData,
     }
   } catch {
@@ -239,12 +221,16 @@ export class TTYOutputStreamManager {
         count === undefined
           ? await this.redis.xrange(ttyExecutionOutputStreamKey(executionId), start, end)
           : await this.redis.xrange(ttyExecutionOutputStreamKey(executionId), start, end, count)
-      return (raw as unknown as unknown[])
+      return normalizeTTYRedisStreamEntries(raw)
         .map(parseEvent)
         .filter((event): event is TTYOutputEvent => event !== null)
         .sort((left, right) => left.sequence - right.sequence)
-    } catch {
-      return []
+    } catch (error) {
+      log.warn('tty.output.read_failed', {
+        executionId,
+        errorCode: error instanceof Error && error.name ? error.name.slice(0, 80) : 'unknown_error',
+      })
+      throw error instanceof Error ? error : new Error('TTY output read failed.')
     }
   }
 }

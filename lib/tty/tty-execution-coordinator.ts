@@ -181,6 +181,10 @@ interface ExecutionContext {
   outputBytes: number
   stdoutBytes: number
   stderrBytes: number
+  stdoutChunkCount: number
+  stderrChunkCount: number
+  persistedOutputEventCount: number
+  outputPersistenceFailureCount: number
   readonly hooks: TTYExecutionCoordinatorRunHooks
   readonly correlationId?: string
   readonly abortSignal?: AbortSignal
@@ -468,6 +472,10 @@ export class TTYExecutionCoordinator {
       outputBytes: 0,
       stdoutBytes: 0,
       stderrBytes: 0,
+      stdoutChunkCount: 0,
+      stderrChunkCount: 0,
+      persistedOutputEventCount: 0,
+      outputPersistenceFailureCount: 0,
       hooks,
       ...(abortSignal ? { abortSignal } : {}),
       ...(correlationId ? { correlationId } : {}),
@@ -585,6 +593,16 @@ export class TTYExecutionCoordinator {
       })
       this.startCancellationPolling(context)
       const metadata = this.dependencies.processRuntime.getMetadata(context.handle)
+      log.info('tty.execution.process_spawned', {
+        executionId: context.executionId,
+        sessionId: context.sessionId,
+        workerId: this.dependencies.workerId,
+        command: commandName(argv[0]),
+        shellPath: spec.file,
+        shell: false,
+        pid: metadata.pid,
+        ...this.correlationFields(context),
+      })
       await this.persistRuntimeMetadata(metadata)
       state = await this.transition(context, 'running')
       await this.safeAppendState(state)
@@ -662,7 +680,7 @@ export class TTYExecutionCoordinator {
 
   private completionReasonFor(state: TTYTerminalExecutionState, context: ExecutionContext): string {
     if (context.failureCode) return context.failureCode
-    if (state === 'succeeded') return 'process_exit'
+    if (state === 'succeeded') return context.outputBytes === 0 ? 'process_exit_no_output' : 'process_exit'
     if (state === 'cancelled') return context.cancelReason ?? 'cancelled'
     if (state === 'timed_out') return 'execution_timeout'
     if (state === 'expired') return 'lease_expired'
@@ -705,6 +723,24 @@ export class TTYExecutionCoordinator {
     ])
     await this.safeAppendCompletion(state)
     await this.safeAuditForState(state, context)
+    log.info('tty.execution.completed', {
+      executionId: context.executionId,
+      sessionId: context.sessionId,
+      workerId: this.dependencies.workerId,
+      state: state.state,
+      exitCode: state.exitCode,
+      signal: state.signal,
+      durationMs: state.durationMs,
+      stdoutBytes: state.stdoutBytes,
+      stderrBytes: state.stderrBytes,
+      totalBytes: state.outputBytes,
+      stdoutChunkCount: context.stdoutChunkCount,
+      stderrChunkCount: context.stderrChunkCount,
+      persistedOutputEventCount: context.persistedOutputEventCount,
+      outputPersistenceFailureCount: context.outputPersistenceFailureCount,
+      completionReason: state.completionReason,
+      ...this.correlationFields(context),
+    })
     this.stopRenewal(context)
     if (context.killTimer) clearTimeout(context.killTimer)
     if (context.reservation) context.reservation.release()
@@ -836,6 +872,8 @@ export class TTYExecutionCoordinator {
   ): Promise<void> {
     try {
       for await (const chunk of source) {
+        if (stream === 'stdout') context.stdoutChunkCount += 1
+        else context.stderrChunkCount += 1
         const bytes = Buffer.from(chunk)
         const accounting = context.reservation?.recordOutput(stream, bytes.byteLength) ?? {
           allowed: false,
@@ -863,6 +901,7 @@ export class TTYExecutionCoordinator {
               stream,
               text: part.toString('utf8'),
             })
+            context.persistedOutputEventCount += 1
           }
         }
         if (!accounting.allowed) {
@@ -880,6 +919,7 @@ export class TTYExecutionCoordinator {
     } catch (error) {
       context.outputFailed = true
       context.failureCode = 'OUTPUT_STREAM_FAILURE'
+      context.outputPersistenceFailureCount += 1
       log.warn('tty.execution.output_stream_failed', {
         executionId: context.executionId,
         sessionId: context.sessionId,

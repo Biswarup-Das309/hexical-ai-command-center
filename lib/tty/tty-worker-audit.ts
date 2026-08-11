@@ -1,4 +1,5 @@
 import type { Redis } from '@upstash/redis'
+import { normalizeTTYRedisStreamEntries, normalizeTTYRedisStreamFields } from './tty-redis-stream'
 import type { TTYExecutionId, TTYSessionId } from './tty-types'
 import { ttyWorkerAuditStreamKey } from './tty-worker-keys'
 import { parseTTYWorkerId, type TTYLeaseId, type TTYWorkerId, type TTYWorkerMetadataValue } from './tty-worker-types'
@@ -83,28 +84,22 @@ function toFields(event: TTYWorkerAuditEvent): Record<string, string> {
 }
 
 function fieldMap(value: unknown): Record<string, string> | null {
-  if (Array.isArray(value)) {
-    const fields: Record<string, string> = {}
-    for (let index = 0; index + 1 < value.length; index += 2) {
-      const key = value[index]
-      const fieldValue = value[index + 1]
-      if (typeof key !== 'string' || typeof fieldValue !== 'string') return null
-      fields[key] = fieldValue
-    }
-    return fields
-  }
-  if (typeof value !== 'object' || value === null) return null
+  const normalized = normalizeTTYRedisStreamFields(value)
+  if (normalized === null) return null
   const fields: Record<string, string> = {}
-  for (const [key, fieldValue] of Object.entries(value)) {
-    if (typeof fieldValue !== 'string') return null
-    fields[key] = fieldValue
+  for (const [key, fieldValue] of Object.entries(normalized)) {
+    if (typeof fieldValue === 'string') fields[key] = fieldValue
+    else if (fieldValue !== null && typeof fieldValue === 'object') fields[key] = JSON.stringify(fieldValue)
+    else if (typeof fieldValue === 'number' || typeof fieldValue === 'boolean') fields[key] = String(fieldValue)
+    else return null
   }
   return fields
 }
 
 function fromStreamEntry(value: unknown): TTYWorkerAuditEvent | null {
-  if (!Array.isArray(value) || value.length < 2 || typeof value[0] !== 'string') return null
-  const fields = fieldMap(value[1])
+  const entry = normalizeTTYRedisStreamEntries([value])[0]
+  if (!entry) return null
+  const fields = fieldMap(entry[1])
   if (fields === null || !fields.eventId || !fields.timestamp || !fields.eventType) return null
   if (!TTY_WORKER_AUDIT_EVENT_TYPES.includes(fields.eventType as TTYWorkerAuditEventType)) return null
   let metadata: TTYWorkerAuditMetadata = {}
@@ -177,7 +172,7 @@ export class TTYWorkerAudit implements TTYWorkerAuditSink {
         count === undefined
           ? await this.redis.xrange(ttyWorkerAuditStreamKey(), start, end)
           : await this.redis.xrange(ttyWorkerAuditStreamKey(), start, end, count)
-      const entries = rawEntries as unknown as unknown[]
+      const entries = normalizeTTYRedisStreamEntries(rawEntries)
       const parsed = entries
         .map((entry) => fromStreamEntry(entry))
         .filter((event): event is TTYWorkerAuditEvent => event !== null)

@@ -29,6 +29,7 @@ function execution(state: TTYBrowserExecutionView['state']): TTYBrowserExecution
       totalBytes: 4,
       lastEventAt: '2026-08-09T11:00:03.000Z',
     },
+    diagnostics: { exitCode: 0, signal: null, failureCode: null, completionReason: 'process_exit' },
     resourceUsage: { queueWaitMs: 0, startupMs: 0, durationMs: 2 },
   }
 }

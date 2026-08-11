@@ -80,6 +80,28 @@ test('Redis replay survives a new broker instance and detects an expired window'
   )
 })
 
+test('Redis replay reads the object-shaped XRANGE response returned by Upstash Redis', async () => {
+  const { executionId, sessionId } = ids()
+  const redis = {
+    xrange: async () => ({
+      '1786387000000-0': {
+        eventId: 'live-event-upstash',
+        sequence: 1,
+        timestamp: '2026-08-11T10:00:00.000Z',
+        executionId,
+        sessionId,
+        type: 'stdout',
+        payload: { text: 'HEXICAL_EXECUTE_SMOKE_TEST\n', byteLength: 29 },
+      },
+    }),
+  }
+  const replay = await new TTYStreamBroker(redis as never).replay(executionId)
+  assert.equal(replay.status, 'ok')
+  assert.equal(replay.events.length, 1)
+  assert.equal(replay.events[0]?.type, 'stdout')
+  if (replay.events[0]?.type === 'stdout') assert.equal(replay.events[0].payload.text, 'HEXICAL_EXECUTE_SMOKE_TEST\n')
+})
+
 test('subscription replay is ordered before subsequent live events', async () => {
   const broker = new TTYStreamBroker(null)
   const { executionId, sessionId } = ids()

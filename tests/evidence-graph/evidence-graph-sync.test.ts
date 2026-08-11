@@ -32,6 +32,7 @@ function execution(): TTYBrowserExecutionView {
       totalBytes: 100,
       lastEventAt: '2026-08-09T12:10:05.000Z',
     },
+    diagnostics: { exitCode: 0, signal: null, failureCode: null, completionReason: 'process_exit' },
     resourceUsage: { queueWaitMs: 1, startupMs: 2, durationMs: 3 },
   }
 }

@@ -23,6 +23,12 @@ export interface TTYBrowserExecutionView {
     readonly totalBytes: number
     readonly lastEventAt: string | null
   }
+  readonly diagnostics: {
+    readonly exitCode: number | null
+    readonly signal: string | null
+    readonly failureCode: string | null
+    readonly completionReason: string | null
+  }
   readonly resourceUsage: {
     readonly queueWaitMs: number | null
     readonly startupMs: number | null
@@ -86,6 +92,12 @@ export class TTYExecutionApi {
         stderrBytes,
         totalBytes: stdoutBytes + stderrBytes,
         lastEventAt: events.at(-1)?.timestamp ?? null,
+      },
+      diagnostics: {
+        exitCode: state.exitCode,
+        signal: state.signal,
+        failureCode: state.failureCode,
+        completionReason: state.completionReason,
       },
       resourceUsage: {
         queueWaitMs: state.queueWaitMs,

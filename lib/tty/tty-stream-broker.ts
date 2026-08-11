@@ -2,6 +2,7 @@
 
 import { isTTYExecutionState, isTerminalTTYExecutionState, type TTYTerminalExecutionState } from './tty-execution-state'
 import type { TTYOutputEvent } from './tty-output-stream'
+import { normalizeTTYRedisStreamEntries, normalizeTTYRedisStreamFields } from './tty-redis-stream'
 import {
   createTTYStreamEvent,
   parseTTYStreamEvent,
@@ -60,14 +61,14 @@ interface ExecutionBuffer {
 }
 
 interface RedisStreamFieldMap {
-  event?: string
-  eventId?: string
-  sequence?: string
-  timestamp?: string
-  executionId?: string
-  sessionId?: string
-  type?: string
-  payload?: string
+  event?: unknown
+  eventId?: unknown
+  sequence?: unknown
+  timestamp?: unknown
+  executionId?: unknown
+  sessionId?: unknown
+  type?: unknown
+  payload?: unknown
 }
 
 const DEFAULT_BUFFERED_EVENTS = 256
@@ -89,34 +90,10 @@ return sequence
 `
 
 function asFieldMap(value: unknown): RedisStreamFieldMap | null {
-  if (Array.isArray(value)) {
-    const result: RedisStreamFieldMap = {}
-    for (let index = 0; index + 1 < value.length; index += 2) {
-      const key = value[index]
-      const fieldValue = value[index + 1]
-      if (
-        typeof key !== 'string' ||
-        (typeof fieldValue !== 'string' && typeof fieldValue !== 'number' && typeof fieldValue !== 'boolean')
-      )
-        return null
-      if (
-        key === 'event' ||
-        key === 'eventId' ||
-        key === 'sequence' ||
-        key === 'timestamp' ||
-        key === 'executionId' ||
-        key === 'sessionId' ||
-        key === 'type' ||
-        key === 'payload'
-      )
-        result[key] = String(fieldValue)
-    }
-    return result
-  }
-  if (typeof value !== 'object' || value === null) return null
+  const fields = normalizeTTYRedisStreamFields(value)
+  if (fields === null) return null
   const result: RedisStreamFieldMap = {}
-  for (const [key, fieldValue] of Object.entries(value)) {
-    if (typeof fieldValue !== 'string' && typeof fieldValue !== 'number' && typeof fieldValue !== 'boolean') return null
+  for (const [key, fieldValue] of Object.entries(fields)) {
     if (
       key === 'event' ||
       key === 'eventId' ||
@@ -127,36 +104,47 @@ function asFieldMap(value: unknown): RedisStreamFieldMap | null {
       key === 'type' ||
       key === 'payload'
     )
-      result[key] = String(fieldValue)
+      result[key] = fieldValue
   }
   return result
 }
 
 function parseRedisEvent(value: unknown): TTYStreamEvent | null {
-  if (!Array.isArray(value) || value.length < 2) return null
-  const fields = asFieldMap(value[1])
+  const entry = normalizeTTYRedisStreamEntries([value])[0]
+  if (!entry) return null
+  const fields = asFieldMap(entry[1])
   if (fields === null) return null
-  if (fields.event) return parseTTYStreamEvent(fields.event)
+  if (fields.event !== undefined) {
+    const serialized = typeof fields.event === 'string' ? fields.event : JSON.stringify(fields.event)
+    return serialized ? parseTTYStreamEvent(serialized) : null
+  }
+  const eventId = typeof fields.eventId === 'string' ? fields.eventId : null
+  const executionId = typeof fields.executionId === 'string' ? fields.executionId : null
+  const sessionId = typeof fields.sessionId === 'string' ? fields.sessionId : null
+  const sequence = Number(fields.sequence)
+  const timestamp = typeof fields.timestamp === 'string' ? fields.timestamp : null
+  const type = typeof fields.type === 'string' ? fields.type : null
   if (
-    !fields.eventId ||
-    !fields.executionId ||
-    !fields.sessionId ||
-    !fields.sequence ||
-    !fields.timestamp ||
-    !fields.type ||
-    !fields.payload
+    !eventId ||
+    !executionId ||
+    !sessionId ||
+    !Number.isSafeInteger(sequence) ||
+    sequence <= 0 ||
+    !timestamp ||
+    !type ||
+    fields.payload === undefined
   )
     return null
   try {
     return parseTTYStreamEvent(
       JSON.stringify({
-        eventId: fields.eventId,
-        executionId: fields.executionId,
-        sessionId: fields.sessionId,
-        sequence: Number(fields.sequence),
-        timestamp: fields.timestamp,
-        type: fields.type,
-        payload: JSON.parse(fields.payload),
+        eventId,
+        executionId,
+        sessionId,
+        sequence,
+        timestamp,
+        type,
+        payload: typeof fields.payload === 'string' ? JSON.parse(fields.payload) : fields.payload,
       }),
     )
   } catch {
@@ -447,7 +435,9 @@ export class TTYStreamBroker {
     if (!this.redis) return { events: [], failed: false }
     try {
       const raw = await this.redis.xrange(ttyExecutionLiveStreamKey(executionId), '-', '+', this.maxReplayEvents)
-      const events = (raw as unknown[]).map(parseRedisEvent).filter((event): event is TTYStreamEvent => event !== null)
+      const events = normalizeTTYRedisStreamEntries(raw)
+        .map(parseRedisEvent)
+        .filter((event): event is TTYStreamEvent => event !== null)
       return { events, failed: false }
     } catch {
       return { events: [], failed: true }

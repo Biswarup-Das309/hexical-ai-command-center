@@ -55,3 +55,24 @@ test('output stream rejects oversized event payloads before Redis persistence', 
   )
   assert.equal((await stream.read(executionId)).length, 0)
 })
+
+test('output stream reads the object-shaped XRANGE response returned by Upstash Redis', async () => {
+  const redis = {
+    xrange: async () => ({
+      '1786387000000-0': {
+        eventId: 'output-event-upstash',
+        sequence: 1,
+        timestamp: '2026-08-11T10:00:00.000Z',
+        executionId,
+        sessionId,
+        type: 'stdout',
+        data: { text: 'HEXICAL_EXECUTE_SMOKE_TEST\n', byteLength: 29 },
+      },
+    }),
+  }
+  const events = await new TTYOutputStreamManager(redis as never).read(executionId)
+  assert.equal(events.length, 1)
+  assert.equal(events[0]?.type, 'stdout')
+  assert.equal(events[0]?.data.text, 'HEXICAL_EXECUTE_SMOKE_TEST\n')
+  assert.equal(events[0]?.data.byteLength, 29)
+})
