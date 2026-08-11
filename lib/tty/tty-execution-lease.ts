@@ -4,6 +4,7 @@ import type { TTYExecutionId, TTYExecutionKind, TTYSessionId } from './tty-types
 import {
   ttyExecutionJobKey,
   ttyPendingExecutionIndexKey,
+  ttySessionActiveExecutionKey,
   ttySessionKey as workerSessionKey,
   ttyWorkerActiveLeaseIndexKey,
   ttyWorkerActiveLeasesKey,
@@ -118,6 +119,19 @@ export type TTYLeaseRecoveryResult =
         | 'not_leased'
         | 'session_terminated'
         | 'attempts_exhausted'
+        | 'internal_error'
+    }
+
+export type TTYLeasePersistentAdoptionResult =
+  | { readonly adopted: true; readonly job: TTYLeasedJob }
+  | {
+      readonly adopted: false
+      readonly reason:
+        | 'missing_job'
+        | 'not_expired'
+        | 'not_leased'
+        | 'session_terminated'
+        | 'no_persistent_execution'
         | 'internal_error'
     }
 
@@ -278,6 +292,55 @@ redis.call('EXPIRE', KEYS[5], ARGV[5])
   redis.call('SREM', 'tty:worker:' .. expiredWorkerId .. ':active-leases', job.executionId)
   redis.call('SREM', KEYS[8], expiredWorkerId .. '|' .. job.executionId)
   redis.call('SADD', KEYS[9], job.executionId)
+return {1, cjson.encode(job), expiredWorkerId .. '|' .. job.executionId .. '|' .. expiredToken}
+`
+
+const ADOPT_PERSISTENT_SCRIPT = `
+-- tty-lease-adopt-persistent
+local raw = redis.call('GET', KEYS[1])
+if not raw then return {0, 'missing_job'} end
+local job = cjson.decode(raw)
+if job.status ~= 'leased' or not job.lease then return {0, 'not_leased'} end
+if job.executionId ~= ARGV[1] or job.sessionId ~= ARGV[2] then return {0, 'session_terminated'} end
+local now = tonumber(ARGV[5])
+if tonumber(job.lease.expiresAtMs) > now then return {0, 'not_expired'} end
+local activeRaw = redis.call('GET', KEYS[8])
+if not activeRaw then return {0, 'no_persistent_execution'} end
+local active = cjson.decode(activeRaw)
+if active.version ~= 1 or active.sessionId ~= job.sessionId or active.executionId ~= job.executionId or active.ownerUserId ~= job.ownerUserId then
+  return {0, 'no_persistent_execution'}
+end
+if active.state ~= 'preparing' and active.state ~= 'dispatched' and active.state ~= 'running' and active.state ~= 'completed' then
+  return {0, 'no_persistent_execution'}
+end
+local expiredWorkerId = job.lease.workerId
+local expiredToken = job.lease.token
+if redis.call('EXISTS', KEYS[4]) == 1 or redis.call('EXISTS', KEYS[2]) == 0 or redis.call('EXISTS', KEYS[3]) == 0 then
+  redis.call('DECR', KEYS[5])
+  if tonumber(redis.call('GET', KEYS[5]) or '0') < 0 then redis.call('SET', KEYS[5], '0') end
+  redis.call('EXPIRE', KEYS[5], ARGV[8])
+  redis.call('DEL', KEYS[1])
+  redis.call('SREM', 'tty:worker:' .. expiredWorkerId .. ':active-leases', job.executionId)
+  redis.call('SREM', KEYS[7], expiredWorkerId .. '|' .. job.executionId)
+  redis.call('SREM', KEYS[7], expiredWorkerId .. '|' .. job.executionId .. '|' .. expiredToken)
+  return {0, 'session_terminated', expiredWorkerId .. '|' .. job.executionId .. '|' .. expiredToken}
+end
+local credential = cjson.decode(ARGV[4])
+job.lease = {
+  workerId = ARGV[3],
+  token = credential.token,
+  leaseId = credential.leaseId,
+  claimedAtMs = now,
+  renewedAtMs = now,
+  expiresAtMs = now + tonumber(ARGV[6]),
+  maxExpiresAtMs = now + tonumber(ARGV[7])
+}
+redis.call('SET', KEYS[1], cjson.encode(job), 'EX', ARGV[8])
+redis.call('SREM', 'tty:worker:' .. expiredWorkerId .. ':active-leases', job.executionId)
+redis.call('SREM', KEYS[7], expiredWorkerId .. '|' .. job.executionId)
+redis.call('SREM', KEYS[7], expiredWorkerId .. '|' .. job.executionId .. '|' .. expiredToken)
+redis.call('SADD', KEYS[6], job.executionId)
+redis.call('SADD', KEYS[7], ARGV[3] .. '|' .. job.executionId)
 return {1, cjson.encode(job), expiredWorkerId .. '|' .. job.executionId .. '|' .. expiredToken}
 `
 
@@ -504,6 +567,52 @@ export class TTYExecutionLeaseManager {
     }
   }
 
+  async adoptPersistent(
+    executionId: TTYExecutionId,
+    sessionId: TTYSessionId,
+  ): Promise<TTYLeasePersistentAdoptionResult> {
+    if (!this.authorized('claim_lease')) return { adopted: false, reason: 'internal_error' }
+    try {
+      const now = this.now()
+      const token = this.token()
+      const leaseId = this.leaseId()
+      if (leaseId === token) return { adopted: false, reason: 'internal_error' }
+      const credential = JSON.stringify({ token, leaseId })
+      const result = parseResult(
+        await this.redis.eval(
+          ADOPT_PERSISTENT_SCRIPT,
+          [
+            ttyExecutionJobKey(executionId),
+            workerSessionKey(sessionId, 'core'),
+            workerSessionKey(sessionId, 'status'),
+            workerSessionKey(sessionId, 'terminal'),
+            workerSessionKey(sessionId, 'active-executions'),
+            ttyWorkerActiveLeasesKey(this.workerId),
+            ttyWorkerActiveLeaseIndexKey(),
+            ttySessionActiveExecutionKey(sessionId),
+          ],
+          [
+            executionId,
+            sessionId,
+            this.workerId,
+            credential,
+            String(now),
+            String(TTY_LEASE_DURATION_MS),
+            String(TTY_MAX_LEASE_DURATION_MS),
+            String(JOB_TTL_SECONDS),
+          ],
+        ),
+      )
+      await this.notifyExpired(result[2], executionId, sessionId)
+      if (result[0] !== 1) return { adopted: false, reason: persistentAdoptionReason(resultReason(result[1])) }
+      const job = decodeJsonResult<TTYLeasedJob>(result[1])
+      await this.notify(() => this.dependencies.observer?.observeLeaseClaimed(job))
+      return { adopted: true, job }
+    } catch {
+      return { adopted: false, reason: 'internal_error' }
+    }
+  }
+
   async complete(
     executionId: TTYExecutionId,
     sessionId: TTYSessionId,
@@ -607,6 +716,20 @@ function recoveryReason(value: string): Exclude<TTYLeaseRecoveryResult, { recove
     value === 'not_leased' ||
     value === 'session_terminated' ||
     value === 'attempts_exhausted'
+  )
+    return value
+  return 'internal_error'
+}
+
+function persistentAdoptionReason(
+  value: string,
+): Exclude<TTYLeasePersistentAdoptionResult, { adopted: true }>['reason'] {
+  if (
+    value === 'missing_job' ||
+    value === 'not_expired' ||
+    value === 'not_leased' ||
+    value === 'session_terminated' ||
+    value === 'no_persistent_execution'
   )
     return value
   return 'internal_error'

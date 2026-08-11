@@ -7,7 +7,13 @@ import {
   type TTYExecutionCoordinatorDependencies,
 } from '../../lib/tty/tty-execution-coordinator'
 import type { TTYLeasedJob, TTYLeaseCompleteResult, TTYLeaseRenewResult } from '../../lib/tty/tty-execution-lease'
+import { createQueuedTTYExecutionState, transitionTTYExecutionState } from '../../lib/tty/tty-execution-state'
 import { TTYOutputStreamManager } from '../../lib/tty/tty-output-stream'
+import { TTYPersistentProcessRuntime } from '../../lib/tty/tty-persistent-process-runtime'
+import type {
+  TTYPersistentExecutionRecord,
+  TTYPersistentSessionManager,
+} from '../../lib/tty/tty-persistent-session-manager'
 import type {
   TTYProcessExit,
   TTYProcessHandle,
@@ -62,6 +68,7 @@ class ControlledRuntime {
   private active: { handle: TTYProcessHandle; resolve: (exit: TTYProcessExit) => void } | null = null
   constructor(
     private readonly output: { stdout: string; stderr: string } = { stdout: 'hello\n', stderr: 'warning\n' },
+    private readonly transport: 'subprocess' | 'persistent_pty' = 'subprocess',
   ) {}
 
   async start(spec: TTYProcessSpec): Promise<TTYProcessHandle> {
@@ -104,6 +111,7 @@ class ControlledRuntime {
       sessionId: handle.sessionId,
       workerId: handle.workerId,
       startedAt: handle.startedAt,
+      transport: this.transport,
     }
   }
 
@@ -174,7 +182,7 @@ class FakeLeases {
 }
 
 function dependencies(
-  runtime: ControlledRuntime,
+  runtime: TTYExecutionCoordinatorDependencies['processRuntime'],
   leases: FakeLeases,
   overrides: Partial<TTYExecutionCoordinatorDependencies> = {},
 ): TTYExecutionCoordinatorDependencies {
@@ -203,6 +211,63 @@ function dependencies(
   }
 }
 
+class CapturingPersistentSessionManager {
+  readonly starts: Array<{
+    readonly executionId: string
+    readonly sessionId: string
+    readonly ownerUserId: string
+    readonly argv: readonly string[]
+  }> = []
+  interruptCount = 0
+  forceTerminateCount = 0
+
+  async startExecution(input: {
+    readonly executionId: TTYExecutionId
+    readonly sessionId: TTYSessionId
+    readonly ownerUserId: string
+    readonly argv: readonly [string, ...string[]]
+  }) {
+    this.starts.push(input)
+    let resolveExit!: (value: { readonly code: number | null; readonly signal: NodeJS.Signals | null }) => void
+    const exit = new Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>((resolve) => {
+      resolveExit = resolve
+    })
+    const listeners = new Set<(data: Uint8Array) => void>()
+    const output = Buffer.from('persistent-pty-output\n')
+    let emitted = false
+    const metadata = {
+      handleId: `persistent-${input.executionId}`,
+      executionId: input.executionId,
+      sessionId: input.sessionId,
+      workerId,
+      pid: 61_001,
+      cwd: '/persistent/session',
+      startedAt: '2026-08-08T10:00:00.100Z',
+    }
+    queueMicrotask(() => {
+      emitted = true
+      for (const listener of listeners) listener(output)
+      resolveExit({ code: 0, signal: null })
+    })
+    return {
+      metadata,
+      exit,
+      onData(callback: (data: Uint8Array) => void) {
+        listeners.add(callback)
+        if (emitted) callback(output)
+        return () => listeners.delete(callback)
+      },
+      interrupt: async () => {
+        this.interruptCount += 1
+      },
+      forceTerminate: async () => {
+        this.forceTerminateCount += 1
+      },
+      dispose: () => listeners.clear(),
+    }
+  }
+}
+
 test('coordinator runs a leased job through streaming to success without persisting the lease token', async () => {
   const runtime = new ControlledRuntime()
   const leases = new FakeLeases()
@@ -224,6 +289,70 @@ test('coordinator runs a leased job through streaming to success without persist
   assert.equal(runtime.cleaned.length, 1)
 })
 
+test('coordinator resumes the original execution after persistent lease adoption without redispatching argv', async () => {
+  const runtime = new ControlledRuntime({ stdout: 'recovered-output\n', stderr: '' }, 'persistent_pty')
+  const leases = new FakeLeases()
+  const redis = new WorkerRedisMock()
+  const deps = dependencies(runtime, leases, { redis: redis as never })
+  const coordinator = new TTYExecutionCoordinator(deps)
+  const oldWorker = 'worker-before-failover' as TTYWorkerId
+  const oldLeaseId = 'old-persistent-lease' as never
+  const queued = createQueuedTTYExecutionState(executionId, sessionId, '2026-08-08T10:00:00.000Z', session.ownerUserId)
+  const leased = transitionTTYExecutionState(queued, 'leased', '2026-08-08T10:00:00.010Z', {
+    workerId: oldWorker,
+    leaseId: oldLeaseId,
+  })
+  const running = transitionTTYExecutionState(leased, 'starting', '2026-08-08T10:00:00.020Z')
+  const activeState = transitionTTYExecutionState(running, 'running', '2026-08-08T10:00:00.030Z')
+  await redis.set(`tty:execution:${executionId}:state`, JSON.stringify(activeState))
+
+  let resolveExit!: (value: TTYProcessExit) => void
+  const recoveredHandle: TTYProcessHandle = {
+    handleId: 'recovered-handle',
+    pid: 61_777,
+    startedAt: '2026-08-08T10:00:00.100Z',
+    executionId,
+    sessionId,
+    workerId,
+    stdout: Readable.from([Buffer.from('recovered-output\n')]),
+    stderr: Readable.from([]),
+    exit: new Promise<TTYProcessExit>((resolve) => {
+      resolveExit = resolve
+    }),
+  }
+  const record: TTYPersistentExecutionRecord = {
+    version: 1,
+    sessionId,
+    executionId,
+    ownerUserId: session.ownerUserId,
+    workerId: oldWorker,
+    runtimeId: 'runtime-before-failover',
+    token: '0123456789abcdef0123456789abcdef',
+    state: 'running',
+    startedAt: '2026-08-08T10:00:00.100Z',
+    updatedAt: '2026-08-08T10:00:00.200Z',
+    pid: 61_777,
+    cwd: '/persistent/session',
+  }
+  const claimed = await leases.claim(executionId, sessionId)
+  assert.equal(claimed.claimed, true)
+  if (!claimed.claimed) return
+  queueMicrotask(() => resolveExit({ code: 0, signal: null }))
+
+  const result = await coordinator.runRecoveredPersistent({ job: claimed.job, handle: recoveredHandle, record })
+
+  assert.equal(result.accepted, true)
+  if (!result.accepted) return
+  assert.equal(result.state.state, 'succeeded')
+  assert.equal(runtime.started.length, 0)
+  assert.deepEqual(leases.completed, [{ token: 'secret-renewal-token', state: 'succeeded' }])
+  const output = await deps.outputStream.read(executionId)
+  assert.equal(
+    output.some((event) => event.type === 'stdout' && event.data.text === 'recovered-output\n'),
+    true,
+  )
+})
+
 test('coordinator persists session utility output without launching a host process', async () => {
   const runtime = new ControlledRuntime()
   const leases = new FakeLeases({ completed: true, job: undefined as never }, 'session_utility', [
@@ -239,6 +368,36 @@ test('coordinator persists session utility output without launching a host proce
   assert.equal(result.state.completionReason, 'virtual_session_utility_completed')
   assert.equal(result.state.stdoutBytes > 0, true)
   assert.equal(runtime.started.length, 0)
+})
+
+test('coordinator executes admitted argv through the persistent PTY adapter with virtual commands disabled', async () => {
+  const manager = new CapturingPersistentSessionManager()
+  const runtime = new TTYPersistentProcessRuntime(manager as unknown as TTYPersistentSessionManager)
+  const leases = new FakeLeases({ completed: true, job: undefined as never }, 'session_utility', [
+    'echo',
+    'HEXICAL_RUNTIME_OS_TEST',
+  ])
+  const coordinator = new TTYExecutionCoordinator(
+    dependencies(runtime, leases, {
+      virtualSessionUtilities: false,
+      commandAllowlist: { session_utility: ['echo'] },
+    }),
+  )
+
+  const result = await coordinator.run(executionId, sessionId)
+
+  assert.equal(result.accepted, true)
+  if (!result.accepted) return
+  assert.equal(result.state.state, 'succeeded')
+  assert.equal(result.state.stdoutBytes, Buffer.byteLength('persistent-pty-output\n'))
+  assert.deepEqual(manager.starts, [
+    {
+      executionId,
+      sessionId,
+      ownerUserId: session.ownerUserId,
+      argv: ['echo', 'HEXICAL_RUNTIME_OS_TEST'],
+    },
+  ])
 })
 
 test('coordinator rejects path-qualified executables even when their basename is allowlisted', async () => {

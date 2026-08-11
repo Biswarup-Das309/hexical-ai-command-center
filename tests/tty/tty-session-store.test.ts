@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { afterEach, mock, test } from 'node:test'
 import type { Redis } from '@upstash/redis'
-import { TTYSessionStore, toBrowserSafeSession } from '../../lib/tty/tty-session-store'
+import { TTYSessionCapacityError, TTYSessionStore, toBrowserSafeSession } from '../../lib/tty/tty-session-store'
 import {
   createTTYExecutionId,
   type InternalTTYSession,
@@ -251,35 +251,27 @@ class FakeRedis {
   }
 
   async eval(script: string, keys: string[], args: string[]): Promise<unknown> {
-    if (script.includes('tty-session:create-one-active')) {
-      const activeEntry = this.entryFor(keys[0]!)
-      const active = activeEntry && typeof activeEntry.value === 'string' ? activeEntry.value : null
+    if (script.includes('tty-session:create-with-cap')) {
+      if (this.entryFor(keys[0]!) !== null) return [0, 'session_id_conflict']
       const indexed = [
-        ...(this.requireCollection<FakeSetMemberCollection>(keys[1]!, 'set')?.members ?? new Set<string>()),
+        ...(this.requireCollection<FakeSetMemberCollection>(keys[2]!, 'set')?.members ?? new Set<string>()),
       ]
-      const candidates = [...new Set([...(active ? [active] : []), ...indexed])]
-      for (const sessionId of candidates) {
+      let activeCount = 0
+      for (const sessionId of indexed) {
         const core = this.entryFor(`tty:session:${sessionId}:core`)
         const status = this.entryFor(`tty:session:${sessionId}:status`)
         const terminal = this.entryFor(`tty:session:${sessionId}:terminal`)
         if (core !== null && status !== null && terminal === null) {
-          void this.set(keys[0]!, sessionId, { ex: Number(args[3]) })
-          return [0, sessionId]
+          activeCount += 1
+        } else {
+          void this.srem(keys[2]!, sessionId)
         }
-        void this.srem(keys[1]!, sessionId)
-        if (active === sessionId) void this.del(keys[0]!)
       }
-      void this.set(keys[2]!, args[1], { ex: Number(args[3]) })
-      void this.set(keys[3]!, args[2], { ex: Number(args[4]) })
-      void this.set(keys[0]!, args[0], { ex: Number(args[3]) })
-      void this.sadd(keys[1]!, args[0])
+      if (activeCount >= Number(args[5])) return [0, 'concurrency_limit_exceeded']
+      void this.set(keys[0]!, args[1], { ex: Number(args[3]) })
+      void this.set(keys[1]!, args[2], { ex: Number(args[4]) })
+      void this.sadd(keys[2]!, args[0])
       return [1, args[0]]
-    }
-    if (script.includes('tty-session:clear-active')) {
-      const active = await this.get<string>(keys[0]!)
-      if (active === args[0]) void this.del(keys[0]!)
-      void this.srem(keys[1]!, args[0])
-      return 1
     }
     throw new Error(`Unsupported script: ${script.slice(0, 80)}`)
   }
@@ -381,16 +373,39 @@ test('creates trusted state with expected Redis TTLs and typed round-trip', asyn
   assert.deepEqual(loaded, session)
 })
 
-test('concurrent session creation is idempotent per owner and keeps one active session', async () => {
-  const fixture = startFixture()
-  const [first, second] = await Promise.all([
+test('concurrent session creation admits independent terminals until the atomic tier cap', async () => {
+  const fixture = startFixture({ maxConcurrentSessions: 3 })
+  const sessions = await Promise.all([
+    fixture.store.createSession({ principal: fixture.principal, limits: fixture.sessionLimits }),
     fixture.store.createSession({ principal: fixture.principal, limits: fixture.sessionLimits }),
     fixture.store.createSession({ principal: fixture.principal, limits: fixture.sessionLimits }),
   ])
 
-  assert.equal(first.sessionId, second.sessionId)
-  assert.equal(await fixture.store.countActiveSessionsForUser(fixture.principal.userId), 1)
-  assert.deepEqual(await fixture.redis.smembers(userIndexKey(fixture.principal.userId)), [first.sessionId])
+  assert.equal(new Set(sessions.map((session) => session.sessionId)).size, 3)
+  assert.equal(await fixture.store.countActiveSessionsForUser(fixture.principal.userId), 3)
+  assert.deepEqual(
+    new Set(await fixture.redis.smembers(userIndexKey(fixture.principal.userId))),
+    new Set(sessions.map((session) => session.sessionId)),
+  )
+  await assert.rejects(
+    fixture.store.createSession({ principal: fixture.principal, limits: fixture.sessionLimits }),
+    TTYSessionCapacityError,
+  )
+})
+
+test('lists only live owner-bound terminals and frees capacity after termination', async () => {
+  const fixture = startFixture({ maxConcurrentSessions: 2 })
+  const first = await fixture.store.createSession({ principal: fixture.principal, limits: fixture.sessionLimits })
+  const second = await fixture.store.createSession({ principal: fixture.principal, limits: fixture.sessionLimits })
+
+  const listed = await fixture.store.listSessionsForUser(fixture.principal.userId)
+  assert.deepEqual(new Set(listed.map((session) => session.sessionId)), new Set([first.sessionId, second.sessionId]))
+  assert.deepEqual(await fixture.store.listSessionsForUser('other-user'), [])
+
+  await fixture.store.terminateSession(first.sessionId, fixture.principal.userId, 'user_requested')
+  const replacement = await fixture.store.createSession({ principal: fixture.principal, limits: fixture.sessionLimits })
+  assert.notEqual(replacement.sessionId, first.sessionId)
+  assert.equal(await fixture.store.countActiveSessionsForUser(fixture.principal.userId), 2)
 })
 
 test('isolates owner-bound reads and lifecycle mutations', async () => {

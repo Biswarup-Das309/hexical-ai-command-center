@@ -8,6 +8,7 @@ import {
   hasTTYStreamSequenceGap,
   isTTYStreamTerminal,
   parseTTYStreamMessage,
+  requiresTTYDurableRecovery,
   type TTYStreamClientConnectionState,
 } from '@/lib/tty/tty-stream-client'
 import { createTTYStreamEvent, type TTYStreamEvent } from '@/lib/tty/tty-stream-types'
@@ -223,6 +224,31 @@ export function useTTYExecutionStream({
     })
   }, [executionId, recoverDurableOutput, scheduleConnect])
 
+  const recoverLiveStreamFailure = useCallback(
+    (message: string) => {
+      void recoverDurableOutput().then((recovery) => {
+        if (!mountedRef.current || !executionId) return
+        fullReplayRef.current = true
+        if (recovery === 'completed') {
+          completedRef.current = true
+          setConnectionState('completed')
+          setError('Live stream failed; recovered the saved execution output.')
+          return
+        }
+        if (recovery === 'pending') {
+          setConnectionState('reconnecting')
+          setError('Live stream failed; recovered saved events and reconnecting.')
+          scheduleConnect(250)
+          return
+        }
+        setConnectionState('reconnecting')
+        setError(message)
+        scheduleConnect(1_000)
+      })
+    },
+    [executionId, recoverDurableOutput, scheduleConnect],
+  )
+
   const connect = useCallback(() => {
     if (!mountedRef.current || !enabled || !executionId || completedRef.current || typeof EventSource === 'undefined')
       return
@@ -290,13 +316,13 @@ export function useTTYExecutionStream({
             }
             if (event.type === 'error') {
               setError(event.payload.message)
-              if (event.payload.code === 'STREAM_GAP' || event.payload.code === 'STREAM_UNAVAILABLE') {
+              if (requiresTTYDurableRecovery(event)) {
                 fullReplayRef.current = true
                 source.close()
                 sourceRef.current = null
                 setConnectionState('reconnecting')
-                scheduleConnect(250)
                 queueEvent(event)
+                recoverLiveStreamFailure(event.payload.message)
                 return
               }
             }
@@ -316,7 +342,16 @@ export function useTTYExecutionStream({
         setConnectionState('reconnecting')
         scheduleConnect(fullReplayRef.current ? 250 : 1_000)
       })
-  }, [closeSource, enabled, executionId, handleExecutionNotFound, queueEvent, scheduleConnect, sessionId])
+  }, [
+    closeSource,
+    enabled,
+    executionId,
+    handleExecutionNotFound,
+    queueEvent,
+    recoverLiveStreamFailure,
+    scheduleConnect,
+    sessionId,
+  ])
   connectRef.current = connect
 
   const disconnect = useCallback(() => {

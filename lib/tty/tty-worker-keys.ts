@@ -88,6 +88,71 @@ export function ttyPendingExecutionIndexKey(): string {
   return 'tty:executions:pending'
 }
 
+/** Durable web-to-worker control stream for persistent terminal sessions. */
+export function ttySessionControlStreamKey(): string {
+  return 'tty:sessions:control'
+}
+
+/** One consumer group arbitrates control commands across all workers. */
+export function ttySessionControlGroup(): string {
+  return 'tty-session-workers-v1'
+}
+
+/** Durable per-worker delivery stream used after session affinity is known. */
+export function ttyWorkerSessionControlStreamKey(workerId: TTYWorkerId): string {
+  return `tty:worker:${workerId}:session-control`
+}
+
+/** One reclaimable consumer group per worker-target stream. */
+export function ttyWorkerSessionControlGroup(): string {
+  return 'tty-session-target-v1'
+}
+
+/** Worker-side metadata for the currently attached PTY, never browser-safe. */
+export function ttySessionRuntimeKey(sessionId: TTYSessionId): string {
+  return `tty:session:${sessionId}:runtime`
+}
+
+/** Durable evidence that a session had a PTY; prevents unsafe silent reattachment after worker loss. */
+export function ttySessionRuntimeHistoryKey(sessionId: TTYSessionId): string {
+  return `tty:session:${sessionId}:runtime-history`
+}
+
+/** Worker-internal record for the command currently executing inside a persistent PTY session. */
+export function ttySessionActiveExecutionKey(sessionId: TTYSessionId): string {
+  return `tty:session:${sessionId}:active-execution`
+}
+
+/** Global recovery index of persistent PTY sessions that may have active command state. */
+export function ttyPersistentExecutionActiveIndexKey(): string {
+  return 'tty:persistent-executions:active'
+}
+
+/** Append-only, browser-replayable transcript for a persistent PTY session. */
+export function ttySessionTranscriptStreamKey(sessionId: TTYSessionId): string {
+  return `tty:session:${sessionId}:transcript`
+}
+
+/** Monotonic sequence allocator for the persistent-session transcript. */
+export function ttySessionTranscriptSequenceKey(sessionId: TTYSessionId): string {
+  return `tty:session:${sessionId}:transcript-sequence`
+}
+
+/** Idempotency hash for transcript events replayed from a PTY journal. */
+export function ttySessionTranscriptDedupKey(sessionId: TTYSessionId): string {
+  return `tty:session:${sessionId}:transcript-dedup`
+}
+
+/** Byte cursor for the durable runtime output journal. */
+export function ttySessionRuntimeOutputOffsetKey(sessionId: TTYSessionId): string {
+  return `tty:session:${sessionId}:runtime-output-offset`
+}
+
+/** Idempotency hash for execution output events sourced from a PTY transcript. */
+export function ttyExecutionOutputDedupKey(executionId: TTYExecutionId): string {
+  return `tty:execution:${executionId}:output-dedup`
+}
+
 /** Existing TTY session key helper, shared only for worker-aware reads. */
 export function ttySessionKey(sessionId: TTYSessionId, suffix: string): string {
   return `tty:session:${sessionId}:${suffix}`

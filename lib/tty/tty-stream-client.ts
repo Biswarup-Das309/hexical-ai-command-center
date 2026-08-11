@@ -39,3 +39,12 @@ export function isTTYStreamTerminal(event: TTYStreamEvent): boolean {
     ['succeeded', 'failed', 'cancelled', 'timed_out', 'expired'].includes(event.payload.state)
   )
 }
+
+/**
+ * The live broker is an acceleration layer. A replay gap or an unavailable
+ * broker must always send the browser to the authoritative durable-output
+ * endpoint before it attempts another live connection.
+ */
+export function requiresTTYDurableRecovery(event: TTYStreamEvent): boolean {
+  return event.type === 'error' && (event.payload.code === 'STREAM_GAP' || event.payload.code === 'STREAM_UNAVAILABLE')
+}

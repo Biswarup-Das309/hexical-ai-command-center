@@ -1,4 +1,6 @@
 import type { Redis } from '@upstash/redis'
+import { TTY_EXECUTION_HISTORY_RETENTION_SECONDS } from './tty-execution-retention'
+import { createQueuedTTYExecutionState } from './tty-execution-state'
 import {
   createTTYExecutionId,
   type InternalTTYSession,
@@ -8,7 +10,13 @@ import {
   type TTYExecutionStatus,
   type TTYSessionId,
 } from './tty-types'
-import { ttyPendingExecutionIndexKey } from './tty-worker-keys'
+import {
+  ttyExecutionActiveIndexKey,
+  ttyExecutionOutputSequenceKey,
+  ttyExecutionOutputStreamKey,
+  ttyExecutionStateKey,
+  ttyPendingExecutionIndexKey,
+} from './tty-worker-keys'
 import type { TTYWorkerAuthContext, TTYWorkerCapability } from './tty-worker-types'
 
 export interface TTYQueuedJob {
@@ -137,6 +145,23 @@ redis.call('SADD', KEYS[10], KEYS[1])
 redis.call('SADD', KEYS[11], ARGV[1])
 redis.call('EXPIRE', KEYS[9], ARGV[2])
 redis.call('EXPIRE', KEYS[10], ARGV[9])
+-- The browser, replay API, and SSE authorizer all use the immutable state
+-- record as their ownership boundary. Create its queued projection in the
+-- same atomic admission transaction as the job so a durable queued job never
+-- appears as a 404 while it waits for a worker claim.
+redis.call('SET', KEYS[12], ARGV[10], 'EX', ARGV[14])
+redis.call('SREM', KEYS[13], ARGV[1])
+local sequence = redis.call('INCR', KEYS[15])
+redis.call('XADD', KEYS[14], '*',
+  'eventId', ARGV[11],
+  'sequence', tostring(sequence),
+  'timestamp', ARGV[12],
+  'executionId', ARGV[1],
+  'sessionId', ARGV[13],
+  'type', 'state',
+  'data', '{"state":"queued"}')
+redis.call('EXPIRE', KEYS[14], ARGV[14])
+redis.call('EXPIRE', KEYS[15], ARGV[14])
 return {1, ARGV[7]}
 `
 
@@ -190,6 +215,12 @@ export class TTYExecutionAdmission {
         maxOutputBytes: args.session.limits.maxOutputBytesPerExecution,
       },
     }
+    const queuedState = createQueuedTTYExecutionState(
+      executionId,
+      args.session.sessionId,
+      now.toISOString(),
+      args.session.ownerUserId,
+    )
     const serialized = JSON.stringify({ job, fingerprint: args.rawInput })
     const idempotency = idempotencyKey(args.session.sessionId, args.session.ownerUserId, args.idempotencyKey)
     const result = await this.redis.eval<unknown[]>(
@@ -206,6 +237,10 @@ export class TTYExecutionAdmission {
         sessionKey(args.session.sessionId, 'jobs'),
         sessionKey(args.session.sessionId, 'idempotencies'),
         ttyPendingExecutionIndexKey(),
+        ttyExecutionStateKey(executionId),
+        ttyExecutionActiveIndexKey(),
+        ttyExecutionOutputStreamKey(executionId),
+        ttyExecutionOutputSequenceKey(executionId),
       ],
       [
         executionId,
@@ -217,6 +252,11 @@ export class TTYExecutionAdmission {
         JSON.stringify(job),
         serialized,
         String(IDEMPOTENCY_TTL_SECONDS),
+        JSON.stringify(queuedState),
+        crypto.randomUUID(),
+        queuedState.queuedAt,
+        args.session.sessionId,
+        String(TTY_EXECUTION_HISTORY_RETENTION_SECONDS),
       ],
     )
 

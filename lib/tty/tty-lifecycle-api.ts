@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { Tier } from '@/lib/hexical/types'
 import { denialReasonToFailure, evaluateSessionCreationPolicy, type TTYSessionCreationPolicyResult } from './tty-policy'
-import { toBrowserSafeSession, type TTYSessionCreateInput } from './tty-session-store'
+import { TTYSessionCapacityError, toBrowserSafeSession, type TTYSessionCreateInput } from './tty-session-store'
 import type {
   InternalTTYSession,
   TTYPrincipal,
@@ -32,6 +32,7 @@ export interface TTYLifecycleStore {
     reason: TTYTerminationReason,
   ): Promise<TTYTerminationResult>
   countActiveSessionsForUser(userId: string): Promise<number>
+  listSessionsForUser(userId: string): Promise<readonly InternalTTYSession[]>
 }
 
 export interface TTYLifecycleApiDependencies {
@@ -39,11 +40,14 @@ export interface TTYLifecycleApiDependencies {
   resolveTier(userId: string): Promise<Tier>
   resolveLimits(tier: Tier): TTYResourceLimits | null
   getStore(): TTYLifecycleStore
+  /** Best-effort immediate PTY teardown; the terminated session state remains authoritative if delivery retries. */
+  publishTerminationControl?: (sessionId: TTYSessionId, ownerUserId: string) => Promise<void>
 }
 
 interface SuccessResponse {
   readonly ok: true
   readonly session?: TTYSession
+  readonly sessions?: readonly TTYSession[]
   readonly sessionId?: TTYSessionId
   readonly terminatedAt?: string
 }
@@ -161,7 +165,21 @@ export function createTTYLifecycleApi(dependencies: TTYLifecycleApiDependencies)
         const session = await store.createSession({ principal, limits: policy.limits })
         return json({ ok: true, session: toBrowserSafeSession(session) }, 201)
       } catch (error) {
+        if (error instanceof TTYSessionCapacityError) return failure('concurrency_limit_exceeded', 429)
         console.error('[tty-lifecycle] create failed', error)
+        return internalError()
+      }
+    },
+
+    async list(request: Request): Promise<Response> {
+      try {
+        const userId = await authenticatedUserId(dependencies)
+        if (userId === null) return failure('unauthenticated', 401)
+        if (!(await hasValidEmptyBody(request))) return invalidRequest()
+        const sessions = await dependencies.getStore().listSessionsForUser(userId)
+        return json({ ok: true, sessions: sessions.map(toBrowserSafeSession) }, 200)
+      } catch (error) {
+        console.error('[tty-lifecycle] list failed', error)
         return internalError()
       }
     },
@@ -212,6 +230,15 @@ export function createTTYLifecycleApi(dependencies: TTYLifecycleApiDependencies)
         const store = dependencies.getStore()
         const result = await store.terminateSession(sessionId, userId, 'user_requested')
         if (!result.acknowledged) return failure('session_not_found', 404)
+        try {
+          // State is committed first. If the worker stream is temporarily
+          // unavailable, its heartbeat sees the terminal authoritative state
+          // and fences the PTY; never leave a live shell by pretending this
+          // write is a cross-system transaction.
+          await dependencies.publishTerminationControl?.(sessionId, userId)
+        } catch (error) {
+          console.error('[tty-lifecycle] terminal control enqueue failed', error)
+        }
 
         const session = await store.getSession(sessionId, userId)
         return json(

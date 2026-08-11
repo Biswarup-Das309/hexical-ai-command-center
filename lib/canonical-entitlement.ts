@@ -1,22 +1,18 @@
 import 'server-only'
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import {
-  resolveWorkspaceEntitlement,
-  type WorkspaceEntitlement,
-  type WorkspaceEntitlementProfile,
-} from './workspace-entitlement'
+import { resolveWorkspaceEntitlement, type WorkspaceEntitlement } from './workspace-entitlement'
 
 type SubscriptionRow = {
   readonly tier?: unknown
   readonly status?: unknown
   readonly current_period_end?: unknown
+  readonly enterprise_unlimited?: unknown
 }
 
 /**
- * Resolves entitlement from the canonical subscriptions ledger. The profiles
- * read is a short-lived rolling-deployment bridge only; it is never preferred
- * over subscriptions and it always fails closed to free.
+ * Resolves entitlement exclusively from the database canonical entitlement
+ * function. Profiles are provisioning metadata and must never elevate access.
  */
 export async function getCanonicalEntitlement(
   supabase: SupabaseClient,
@@ -24,28 +20,12 @@ export async function getCanonicalEntitlement(
   now = new Date(),
 ): Promise<WorkspaceEntitlement> {
   const bootstrap = await supabase.rpc('hexical_ensure_profile', { p_user_id: userId })
-  if (bootstrap.error) {
-    console.error('[ENTITLEMENT_PROFILE_BOOTSTRAP_ERROR]', bootstrap.error)
+  // Provisioning can fail independently during a rolling migration. It must
+  // never fall back to the legacy profile mirror, because that mirror is not
+  // an entitlement authority and a write to it could mask migration drift.
+  if (bootstrap.error) console.error('[ENTITLEMENT_BOOTSTRAP_ERROR]', bootstrap.error)
 
-    const fallback = await supabase.from('profiles').upsert(
-      {
-        user_id: userId,
-        tier: 'free',
-        status: 'none',
-      },
-      { onConflict: 'user_id', ignoreDuplicates: true },
-    )
-
-    if (fallback.error) console.error('[ENTITLEMENT_PROFILE_FALLBACK_ERROR]', fallback.error)
-  }
-
-  const canonical = await supabase
-    .from('subscriptions')
-    .select('tier, status, current_period_end')
-    .eq('user_id', userId)
-    .order('current_period_end', { ascending: false, nullsFirst: false })
-    .limit(1)
-    .maybeSingle()
+  const canonical = await supabase.rpc('canonical_entitlement', { p_user_id: userId }).maybeSingle()
 
   if (!canonical.error && canonical.data) {
     const row = canonical.data as SubscriptionRow
@@ -54,16 +34,12 @@ export async function getCanonicalEntitlement(
         tier: row.tier,
         subscription_status: row.status,
         current_period_end: row.current_period_end,
+        enterprise_unlimited: row.enterprise_unlimited,
       },
       now,
     )
   }
 
-  const legacy = await supabase
-    .from('profiles')
-    .select('tier, subscription_status, current_period_end')
-    .eq('user_id', userId)
-    .maybeSingle()
-
-  return resolveWorkspaceEntitlement(legacy.data as WorkspaceEntitlementProfile | null, now)
+  if (canonical.error) console.error('[CANONICAL_ENTITLEMENT_ERROR]', canonical.error)
+  return resolveWorkspaceEntitlement(null, now)
 }

@@ -32,6 +32,8 @@ const baseSession: InternalTTYSession = {
 function mockRedis(options: { coreExists?: boolean } = {}) {
   const idempotencies = new Map<string, string>()
   const jobs = new Map<string, string>()
+  const states = new Map<string, string>()
+  const queuedStateEvents: Array<{ executionId: string; sessionId: string; timestamp: string }> = []
   let queue = 0
   let active = 0
   let recent = 0
@@ -49,14 +51,22 @@ function mockRedis(options: { coreExists?: boolean } = {}) {
       const wrapper = args[7]
       jobs.set(keys[1]!, args[6]!)
       idempotencies.set(keys[0], wrapper)
+      states.set(keys[11]!, args[9]!)
+      queuedStateEvents.push({ executionId: args[0]!, sessionId: args[12]!, timestamp: args[11]! })
       return [1, args[6]]
     },
     jobs,
+    states,
+    queuedStateEvents,
   } as never
 }
 
 test('mock contract: concurrent admission reserves once and duplicate retry replays safely', async () => {
-  const redis = mockRedis() as unknown as { readonly jobs: Map<string, string> }
+  const redis = mockRedis() as unknown as {
+    readonly jobs: Map<string, string>
+    readonly states: Map<string, string>
+    readonly queuedStateEvents: readonly { executionId: string; sessionId: string; timestamp: string }[]
+  }
   const admission = new TTYExecutionAdmission(redis as never, {
     authorize: async () => ({ allowed: true, scopeId: null }),
   })
@@ -89,6 +99,20 @@ test('mock contract: concurrent admission reserves once and duplicate retry repl
   const parsedJob = JSON.parse(storedJob) as Record<string, unknown>
   assert.equal(typeof parsedJob.sessionId, 'string')
   assert.equal('job' in parsedJob, false)
+
+  const storedState = [...redis.states.values()][0]
+  assert.ok(storedState)
+  const parsedState = JSON.parse(storedState) as Record<string, unknown>
+  assert.equal(parsedState.state, 'queued')
+  assert.equal(parsedState.executionId, parsedJob.executionId)
+  assert.equal(parsedState.sessionId, baseSession.sessionId)
+  assert.equal(parsedState.ownerUserId, baseSession.ownerUserId)
+  assert.equal(redis.queuedStateEvents.length, 1)
+  assert.deepEqual(redis.queuedStateEvents[0], {
+    executionId: parsedJob.executionId,
+    sessionId: baseSession.sessionId,
+    timestamp: parsedState.queuedAt,
+  })
 })
 
 test('mock contract: resource denials do not create a second queued job', async () => {

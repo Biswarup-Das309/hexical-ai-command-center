@@ -46,6 +46,8 @@ const RECOVERABLE_EXECUTION_STATES: readonly TTYExecutionState[] = ['leased', 's
 export interface TTYExecutionStateRecord {
   readonly executionId: TTYExecutionId
   readonly sessionId: TTYSessionId
+  /** Trusted admission owner. Never projected to browser response models. */
+  readonly ownerUserId: string | null
   readonly state: TTYExecutionState
   readonly queuedAt: string
   readonly updatedAt: string
@@ -67,6 +69,7 @@ export interface TTYExecutionStateRecord {
 }
 
 export interface TTYExecutionStatePatch {
+  readonly ownerUserId?: string | null
   readonly workerId?: TTYWorkerId | null
   readonly leaseId?: TTYLeaseId | null
   readonly exitCode?: number | null
@@ -110,10 +113,12 @@ export function createQueuedTTYExecutionState(
   executionId: TTYExecutionId,
   sessionId: TTYSessionId,
   queuedAt: string,
+  ownerUserId: string | null = null,
 ): TTYExecutionStateRecord {
   return Object.freeze({
     executionId,
     sessionId,
+    ownerUserId,
     state: 'queued' as const,
     queuedAt,
     updatedAt: queuedAt,
@@ -188,6 +193,12 @@ export function recoverTTYExecutionState(
     leasedAt: null,
     workerId: null,
     leaseId: null,
+    // A recovered job is a new worker attempt. Keeping attempt-scoped timing
+    // fields would make the next start retain the crashed worker's timestamp
+    // and report a duration that includes the failover gap.
+    startedAt: null,
     finishedAt: null,
+    startupMs: null,
+    durationMs: null,
   })
 }

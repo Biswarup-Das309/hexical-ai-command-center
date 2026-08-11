@@ -46,6 +46,30 @@ test('output stream preserves terminal completion events and supports bounded re
   assert.equal(all.at(-1)?.type, 'completion')
 })
 
+test('output stream deduplicates durable PTY output when journal replay retries the same event', async () => {
+  const redis = new WorkerRedisMock()
+  const stream = new TTYOutputStreamManager(redis as never)
+  await stream.appendOutput({
+    executionId,
+    sessionId,
+    stream: 'stdout',
+    text: 'replayed-once',
+    eventId: 'session-transcript-event-1',
+    transport: 'persistent_pty',
+  })
+  await stream.appendOutput({
+    executionId,
+    sessionId,
+    stream: 'stdout',
+    text: 'replayed-once',
+    eventId: 'session-transcript-event-1',
+    transport: 'persistent_pty',
+  })
+
+  const replay = await stream.read(executionId)
+  assert.equal(replay.filter((event) => event.type === 'stdout').length, 1)
+})
+
 test('output stream rejects oversized event payloads before Redis persistence', async () => {
   const redis = new WorkerRedisMock()
   const stream = new TTYOutputStreamManager(redis as never)

@@ -5,9 +5,9 @@ import { getCanonicalEntitlement } from '@/lib/canonical-entitlement'
 import type { Tier } from '@/lib/hexical/types'
 
 /**
- * Resolves the same profile record used by /api/entitlement. Clerk supplies
- * the authenticated owner key; optional Clerk metadata must not decide paid
- * access because it can lag the durable subscription profile.
+ * Resolves the same canonical entitlement used by /api/entitlement. Clerk
+ * supplies the authenticated owner key; Clerk metadata and profile mirrors
+ * must not decide paid access because they can lag the durable ledger.
  */
 export async function getUserTier(userId: string): Promise<Tier> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL

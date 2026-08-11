@@ -5,6 +5,7 @@ import {
   buildTTYStreamUrl,
   hasTTYStreamSequenceGap,
   parseTTYStreamMessage,
+  requiresTTYDurableRecovery,
 } from '@/lib/tty/tty-stream-client'
 import { createTTYStreamEvent } from '@/lib/tty/tty-stream-types'
 
@@ -55,4 +56,35 @@ test('client detects sequence gaps and deduplicates a replay into a bounded orde
     bounded.map((item) => item.sequence),
     [1, 2, 3, 4, 5, 6],
   )
+})
+
+test('client requires durable recovery for an unavailable or gapped live broker', () => {
+  const gap = createTTYStreamEvent({
+    executionId,
+    sessionId,
+    sequence: 1,
+    timestamp: '2026-08-11T00:00:00.000Z',
+    type: 'error',
+    payload: { code: 'STREAM_GAP', message: 'gap', recoverable: true },
+  })
+  const unavailable = createTTYStreamEvent({
+    executionId,
+    sessionId,
+    sequence: 2,
+    timestamp: '2026-08-11T00:00:00.000Z',
+    type: 'error',
+    payload: { code: 'STREAM_UNAVAILABLE', message: 'unavailable', recoverable: true },
+  })
+  const ordinary = createTTYStreamEvent({
+    executionId,
+    sessionId,
+    sequence: 3,
+    timestamp: '2026-08-11T00:00:00.000Z',
+    type: 'error',
+    payload: { code: 'INTERNAL_ERROR', message: 'ordinary error', recoverable: false },
+  })
+
+  assert.equal(requiresTTYDurableRecovery(gap), true)
+  assert.equal(requiresTTYDurableRecovery(unavailable), true)
+  assert.equal(requiresTTYDurableRecovery(ordinary), false)
 })

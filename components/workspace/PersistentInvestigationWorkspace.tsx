@@ -2,6 +2,7 @@
 
 import { Archive, FilePlus2, Play, Pencil, RefreshCw, Save, Square, StickyNote, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { RuntimeOSWorkspace } from '@/components/tty/RuntimeOSWorkspace'
 import { EvidenceGraphPanel } from '@/components/workspace/EvidenceGraphPanel'
 import { InvestigationTitleEditor } from '@/components/workspace/InvestigationTitleEditor'
 import { InvestigationWorkspace } from '@/components/workspace/InvestigationWorkspace'
@@ -10,6 +11,8 @@ import type { InvestigationBookmark } from '@/lib/investigations/investigation-t
 import type { TTYExecutionState } from '@/lib/tty/tty-execution-state'
 
 export interface PersistentInvestigationWorkspaceProps {
+  /** Workspace is investigation-first; runtime exposes the terminal-first execution surface. */
+  readonly surface?: 'workspace' | 'runtime'
   readonly investigationId?: string | null
   readonly autoCreate?: boolean
   readonly sessionId?: string
@@ -37,6 +40,7 @@ function toTTYBookmark(bookmark: InvestigationBookmark) {
 export function PersistentInvestigationWorkspace({
   investigationId,
   autoCreate = true,
+  surface = 'workspace',
   sessionId,
   executionId: requestedExecutionId,
   onNewInvestigation,
@@ -45,6 +49,7 @@ export function PersistentInvestigationWorkspace({
   onRestore,
   onDelete,
 }: PersistentInvestigationWorkspaceProps) {
+  const runtimeSurface = surface === 'runtime'
   const workspace = useInvestigationWorkspace({ investigationId, autoCreate })
   const [selectedExecutionId, setSelectedExecutionId] = useState<string | null>(requestedExecutionId ?? null)
   const [title, setTitle] = useState('')
@@ -263,23 +268,54 @@ export function PersistentInvestigationWorkspace({
 
   const investigation = workspace.data.investigation
   const showExecution = activeExecutionId !== null
+  if (runtimeSurface) {
+    return (
+      <RuntimeOSWorkspace
+        title={title}
+        sessionId={activeSessionId}
+        executions={history}
+        selectedExecutionId={activeExecutionId}
+        activeExecutionState={activeExecutionState}
+        onSelectExecution={selectExecution}
+        onExecute={execute}
+        onCancel={cancelExecution}
+        onTerminateSession={terminateSession}
+        onNewInvestigation={onNewInvestigation ?? createInvestigation}
+        sessionError={sessionFailure?.message ?? null}
+        executionError={executionError}
+        lastSubmittedInput={lastSubmittedInput}
+      />
+    )
+  }
   return (
     <div className="min-h-screen bg-[#070709] text-zinc-200">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-black/30 px-4 py-3">
         <div className="min-w-0 flex-1">
-          <InvestigationTitleEditor
-            title={title}
-            disabled={savingMetadata}
-            onTitleChange={setTitle}
-            onSave={() => void saveMetadata()}
-          />
-          <input
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-            aria-label="Investigation description"
-            placeholder="Describe the investigation"
-            className="mt-1 w-full bg-transparent font-mono text-[10px] text-zinc-500 outline-none"
-          />
+          {runtimeSurface ? (
+            <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.24em] text-cyan-300">
+              Hexical runtime OS
+            </div>
+          ) : (
+            <InvestigationTitleEditor
+              title={title}
+              disabled={savingMetadata}
+              onTitleChange={setTitle}
+              onSave={() => void saveMetadata()}
+            />
+          )}
+          {runtimeSurface ? (
+            <p className="mt-1 font-mono text-[10px] text-zinc-500">
+              Persistent execution session attached to {title || 'this investigation'}
+            </p>
+          ) : (
+            <input
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              aria-label="Investigation description"
+              placeholder="Describe the investigation"
+              className="mt-1 w-full bg-transparent font-mono text-[10px] text-zinc-500 outline-none"
+            />
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-wider">
           <span className={workspace.loading ? 'text-amber-300' : 'text-emerald-300'} aria-live="polite">
@@ -288,16 +324,18 @@ export function PersistentInvestigationWorkspace({
           <span className={investigation.status === 'archived' ? 'text-amber-300' : 'text-emerald-300'}>
             {investigation.status}
           </span>
-          <button
-            type="button"
-            onClick={() => void saveMetadata()}
-            disabled={savingMetadata}
-            className="rounded border border-white/10 px-2 py-1 text-zinc-400 hover:border-cyan-400/40 hover:text-cyan-200 disabled:opacity-50"
-            title="Save investigation metadata"
-          >
-            <Save className="mr-1 inline size-3" />
-            {savingMetadata ? 'Saving' : 'Save'}
-          </button>
+          {!runtimeSurface && (
+            <button
+              type="button"
+              onClick={() => void saveMetadata()}
+              disabled={savingMetadata}
+              className="rounded border border-white/10 px-2 py-1 text-zinc-400 hover:border-cyan-400/40 hover:text-cyan-200 disabled:opacity-50"
+              title="Save investigation metadata"
+            >
+              <Save className="mr-1 inline size-3" />
+              {savingMetadata ? 'Saving' : 'Save'}
+            </button>
+          )}
           {investigation.status === 'active' ? (
             <button
               type="button"
@@ -371,7 +409,7 @@ export function PersistentInvestigationWorkspace({
         </div>
       )}
 
-      <EvidenceGraphPanel investigationId={investigation.investigationId} />
+      {!runtimeSurface && <EvidenceGraphPanel investigationId={investigation.investigationId} />}
 
       {showExecution ? (
         <InvestigationWorkspace

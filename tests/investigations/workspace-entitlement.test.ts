@@ -33,3 +33,27 @@ test('uses fresh profile data after entitlement hydration so an upgraded user be
   assert.equal(free.tier, 'free')
   assert.equal(upgraded.tier, 'pro')
 })
+
+test('accepts canonical trial and grace statuses through their valid period', () => {
+  for (const subscription_status of ['trialing', 'grace']) {
+    assert.deepEqual(
+      resolveWorkspaceEntitlement({ tier: 'pro', subscription_status, current_period_end: FUTURE }, NOW),
+      { tier: 'pro', active: true, currentPeriodEnd: FUTURE },
+    )
+  }
+})
+
+test('maps an unlimited enterprise contract to bounded Pro runtime access', () => {
+  assert.deepEqual(
+    resolveWorkspaceEntitlement(
+      {
+        tier: 'enterprise',
+        subscription_status: 'active',
+        current_period_end: null,
+        enterprise_unlimited: true,
+      },
+      NOW,
+    ),
+    { tier: 'pro', active: true, currentPeriodEnd: null },
+  )
+})

@@ -14,7 +14,7 @@ declare const ttyLeaseIdBrand: unique symbol
 export type TTYWorkerId = string & { readonly [ttyWorkerIdBrand]: true }
 export type TTYLeaseId = string & { readonly [ttyLeaseIdBrand]: true }
 
-export const TTY_WORKER_CAPABILITIES = ['claim_lease', 'renew_lease', 'execute'] as const
+export const TTY_WORKER_CAPABILITIES = ['claim_lease', 'renew_lease', 'execute', 'persistent_pty'] as const
 
 export type TTYWorkerCapability = (typeof TTY_WORKER_CAPABILITIES)[number]
 

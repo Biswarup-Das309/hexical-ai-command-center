@@ -15,7 +15,9 @@ const executionId = '00000000-0000-4000-8000-000000000022' as TTYExecutionId
 interface MockLease {
   workerId: string
   token: string
+  leaseId?: string
   claimedAtMs: number
+  renewedAtMs?: number
   expiresAtMs: number
   maxExpiresAtMs: number
 }
@@ -49,6 +51,7 @@ class LeaseRedisContractMock {
   }
   sessionLive = true
   terminal = false
+  activeExecution = true
   queue = 1
   active = 1
 
@@ -56,12 +59,36 @@ class LeaseRedisContractMock {
     if (!this.job) return [0, 'missing_job']
     const job = this.job
     const now = Number(args[2])
-    const suppliedSessionId = _script.includes('job.attempt = attempt + 1')
+    const suppliedSessionId = _script.includes('tty-lease-adopt-persistent')
+      ? args[1]
+      : _script.includes('job.attempt = attempt + 1')
       ? args.length === 7
         ? args[6]
         : args[4]
       : args[args.length - 1]
     if (job.sessionId !== suppliedSessionId) return [0, 'session_terminated']
+
+    if (_script.includes('tty-lease-adopt-persistent')) {
+      if (job.status !== 'leased' || !job.lease) return [0, 'not_leased']
+      if (job.lease.expiresAtMs > Number(args[4])) return [0, 'not_expired']
+      if (!this.activeExecution) return [0, 'no_persistent_execution']
+      if (!this.sessionLive || this.terminal) {
+        this.active = Math.max(0, this.active - 1)
+        this.job = null
+        return [0, 'session_terminated', `${job.lease.workerId}|${job.executionId}|${job.lease.token}`]
+      }
+      const credential = JSON.parse(args[3]) as { token: string; leaseId: string }
+      job.lease = {
+        workerId: args[2],
+        token: credential.token,
+        leaseId: credential.leaseId,
+        claimedAtMs: Number(args[4]),
+        renewedAtMs: Number(args[4]),
+        expiresAtMs: Number(args[4]) + Number(args[5]),
+        maxExpiresAtMs: Number(args[4]) + Number(args[6]),
+      }
+      return [1, JSON.stringify(job), `worker-a|${job.executionId}|worker-a-token`]
+    }
 
     if (args.length === 5 && _script.includes('tty-lease-complete')) {
       if (job.status !== 'leased' || !job.lease || job.lease.workerId !== args[0] || job.lease.token !== args[1])
@@ -265,6 +292,43 @@ test('renewal is bounded, expiry recovery requeues once, and retry ceiling relea
   const exhausted = await worker.recover(executionId, sessionId)
   assert.deepEqual(exhausted, { recovered: false, reason: 'attempts_exhausted' })
   assert.equal(redis.active, 0)
+})
+
+test('persistent adoption transfers an expired lease without requeueing the already-dispatched PTY command', async () => {
+  let now = 1_000
+  const redis = new LeaseRedisContractMock()
+  const claimed = await manager(redis, 'worker-a', () => now).claim(executionId, sessionId)
+  assert.equal(claimed.claimed, true)
+  if (!claimed.claimed) return
+  const attempt = claimed.job.attempt
+  assert.equal(redis.queue, 0)
+
+  now = 100_000
+  const adopted = await manager(redis, 'worker-b', () => now).adoptPersistent(executionId, sessionId)
+  assert.equal(adopted.adopted, true)
+  if (!adopted.adopted) return
+  assert.equal(adopted.job.lease.workerId, 'worker-b')
+  assert.equal(adopted.job.lease.token, 'worker-b-token')
+  assert.equal(adopted.job.attempt, attempt)
+  assert.equal(redis.queue, 0)
+  assert.equal(redis.active, 1)
+})
+
+test('persistent adoption refuses to transfer a lease without durable active PTY execution evidence', async () => {
+  let now = 1_000
+  const redis = new LeaseRedisContractMock()
+  const claimed = await manager(redis, 'worker-a', () => now).claim(executionId, sessionId)
+  assert.equal(claimed.claimed, true)
+  redis.activeExecution = false
+  now = 100_000
+
+  assert.deepEqual(await manager(redis, 'worker-b', () => now).adoptPersistent(executionId, sessionId), {
+    adopted: false,
+    reason: 'no_persistent_execution',
+  })
+  assert.equal(redis.queue, 0)
+  assert.equal(redis.active, 1)
+  assert.equal(redis.job?.lease?.workerId, 'worker-a')
 })
 
 test('termination blocks renewal and recovery cannot resurrect terminated work', async () => {

@@ -2,9 +2,14 @@
 
 import type { Redis } from '@upstash/redis'
 import { log } from '@/lib/hexical/telemetry'
+import { TTY_EXECUTION_HISTORY_RETENTION_SECONDS } from './tty-execution-retention'
 import { normalizeTTYRedisStreamEntries, normalizeTTYRedisStreamFields } from './tty-redis-stream'
 import type { TTYExecutionId, TTYSessionId } from './tty-types'
-import { ttyExecutionOutputSequenceKey, ttyExecutionOutputStreamKey } from './tty-worker-keys'
+import {
+  ttyExecutionOutputDedupKey,
+  ttyExecutionOutputSequenceKey,
+  ttyExecutionOutputStreamKey,
+} from './tty-worker-keys'
 
 export type TTYOutputEventType = 'stdout' | 'stderr' | 'state' | 'metric' | 'completion'
 export type TTYOutputEventDataValue = string | number | boolean | null
@@ -26,6 +31,8 @@ export interface TTYOutputEventInput {
   readonly type: TTYOutputEventType
   readonly timestamp?: string
   readonly data: TTYOutputEventData
+  /** Stable id makes replay from a durable PTY transcript idempotent. */
+  readonly eventId?: string
 }
 
 export interface TTYOutputReadOptions {
@@ -45,6 +52,8 @@ const EVENT_TYPES: readonly TTYOutputEventType[] = ['stdout', 'stderr', 'state',
 
 const APPEND_OUTPUT_SCRIPT = `
 -- hexical:tty-output-append
+local existing = redis.call('HGET', KEYS[3], ARGV[1])
+if existing then return existing end
 local sequence = redis.call('INCR', KEYS[2])
 redis.call('XADD', KEYS[1], '*',
   'eventId', ARGV[1],
@@ -54,6 +63,10 @@ redis.call('XADD', KEYS[1], '*',
   'sessionId', ARGV[4],
   'type', ARGV[5],
   'data', ARGV[6])
+redis.call('EXPIRE', KEYS[1], ARGV[7])
+redis.call('EXPIRE', KEYS[2], ARGV[7])
+redis.call('HSET', KEYS[3], ARGV[1], tostring(sequence))
+redis.call('EXPIRE', KEYS[3], ARGV[7])
 return sequence
 `
 
@@ -138,14 +151,26 @@ export class TTYOutputStreamManager {
     const currentCount = (this.pending.get(input.executionId)?.count ?? 0) + 1
     const operation = (async () => {
       await currentPrevious
-      const eventId = crypto.randomUUID()
+      const eventId = input.eventId ?? crypto.randomUUID()
       const timestamp = input.timestamp ?? new Date().toISOString()
       const data = Object.freeze({ ...input.data })
       const sequence = parseSequence(
         await this.redis.eval(
           APPEND_OUTPUT_SCRIPT,
-          [ttyExecutionOutputStreamKey(input.executionId), ttyExecutionOutputSequenceKey(input.executionId)],
-          [eventId, timestamp, input.executionId, input.sessionId, input.type, JSON.stringify(data)],
+          [
+            ttyExecutionOutputStreamKey(input.executionId),
+            ttyExecutionOutputSequenceKey(input.executionId),
+            ttyExecutionOutputDedupKey(input.executionId),
+          ],
+          [
+            eventId,
+            timestamp,
+            input.executionId,
+            input.sessionId,
+            input.type,
+            JSON.stringify(data),
+            String(TTY_EXECUTION_HISTORY_RETENTION_SECONDS),
+          ],
         ),
       )
       const event: TTYOutputEvent = Object.freeze({
@@ -174,13 +199,20 @@ export class TTYOutputStreamManager {
     readonly stream: 'stdout' | 'stderr'
     readonly text: string
     readonly timestamp?: string
+    readonly transport?: 'subprocess' | 'persistent_pty'
+    readonly eventId?: string
   }): Promise<TTYOutputEvent> {
     return this.append({
       executionId: input.executionId,
       sessionId: input.sessionId,
       type: input.stream,
+      ...(input.eventId ? { eventId: input.eventId } : {}),
       timestamp: input.timestamp,
-      data: { text: input.text, byteLength: Buffer.byteLength(input.text, 'utf8') },
+      data: {
+        text: input.text,
+        byteLength: Buffer.byteLength(input.text, 'utf8'),
+        ...(input.transport ? { transport: input.transport } : {}),
+      },
     })
   }
 

@@ -6,6 +6,7 @@ import {
   canTransitionTTYExecutionState,
   createQueuedTTYExecutionState,
   isTerminalTTYExecutionState,
+  recoverTTYExecutionState,
   transitionTTYExecutionState,
 } from '../../lib/tty/tty-execution-state'
 import type { TTYExecutionId, TTYSessionId } from '../../lib/tty/tty-types'
@@ -87,4 +88,31 @@ test('requeue is recovery-only and never part of ordinary execution transitions'
   assert.equal(canTransitionTTYExecutionState('running', 'queued'), false)
   assert.equal(canRecoverTTYExecutionState('running', 'queued'), true)
   assert.equal(canRecoverTTYExecutionState('succeeded', 'queued'), false)
+})
+
+test('crash recovery clears attempt-scoped timing before a fresh worker claim', () => {
+  const queued = createQueuedTTYExecutionState(executionId, sessionId, queuedAt)
+  const leased = transitionTTYExecutionState(queued, 'leased', '2026-08-08T10:00:00.250Z', { workerId, leaseId })
+  const running = transitionTTYExecutionState(
+    transitionTTYExecutionState(leased, 'starting', '2026-08-08T10:00:00.400Z'),
+    'running',
+    '2026-08-08T10:00:00.500Z',
+  )
+
+  const recovered = recoverTTYExecutionState(running, '2026-08-08T10:00:10.000Z')
+  const reclaimed = transitionTTYExecutionState(recovered, 'leased', '2026-08-08T10:00:10.250Z', {
+    workerId,
+    leaseId,
+  })
+  const rerun = transitionTTYExecutionState(
+    transitionTTYExecutionState(reclaimed, 'starting', '2026-08-08T10:00:10.400Z'),
+    'running',
+    '2026-08-08T10:00:10.500Z',
+  )
+
+  assert.equal(recovered.startedAt, null)
+  assert.equal(recovered.startupMs, null)
+  assert.equal(recovered.durationMs, null)
+  assert.equal(rerun.startedAt, '2026-08-08T10:00:10.500Z')
+  assert.equal(rerun.startupMs, 250)
 })

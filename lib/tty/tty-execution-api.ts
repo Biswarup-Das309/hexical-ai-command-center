@@ -124,6 +124,10 @@ export class TTYExecutionApi {
   ): Promise<TTYExecutionStateRecord | null> {
     const state = await this.dependencies.getState(executionId)
     if (!state) return null
+    if (state.ownerUserId !== null && state.ownerUserId !== ownerUserId) return null
+    if (state.ownerUserId === ownerUserId) return state
+    // Legacy records predate admission-time ownership. They retain the old
+    // active-session authorization path until their short retention expires.
     const session = await this.dependencies.sessionStore.getSession(state.sessionId, ownerUserId)
     if (!session || session.sessionId !== state.sessionId || session.ownerUserId !== ownerUserId) return null
     return state

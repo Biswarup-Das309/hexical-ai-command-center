@@ -101,8 +101,8 @@
  *                                             session is no longer live.
  *
  * RACE-SAFETY DESIGN CHOICE: lifecycle latches use SET NX, while the
- * one-active-session invariant uses a short Redis EVAL transaction over the
- * owner index, session core, and idle status keys. Usage counters
+ * per-tier concurrent-session ceiling uses a short Redis EVAL transaction
+ * over the owner index, session core, and idle status keys. Usage counters
  * (active executions, queue depth) remain atomic INCR/DECR counters and are
  * clamped during cleanup, matching the soft-consistency posture used by the
  * other quota counters in this codebase.
@@ -156,34 +156,24 @@ const TERMINAL_RECORD_RETENTION_SECS = 24 * 60 * 60
  * on every single accounting call. */
 const EXECUTION_COUNTER_TTL_SECS = 24 * 60 * 60
 
-const CREATE_ONE_ACTIVE_SESSION_SCRIPT = `-- tty-session:create-one-active
-local active = redis.call('GET', KEYS[1])
-local candidates = {}
-if active then table.insert(candidates, active) end
-for _, member in ipairs(redis.call('SMEMBERS', KEYS[2])) do
-  if not active or member ~= active then table.insert(candidates, member) end
-end
-for _, sessionId in ipairs(candidates) do
+const CREATE_SESSION_WITH_CAP_SCRIPT = `-- tty-session:create-with-cap
+if redis.call('EXISTS', KEYS[1]) == 1 then return {0, 'session_id_conflict'} end
+local activeCount = 0
+for _, sessionId in ipairs(redis.call('SMEMBERS', KEYS[3])) do
   local coreKey = 'tty:session:' .. sessionId .. ':core'
   local statusKey = 'tty:session:' .. sessionId .. ':status'
   local terminalKey = 'tty:session:' .. sessionId .. ':terminal'
   if redis.call('EXISTS', coreKey) == 1 and redis.call('EXISTS', statusKey) == 1 and redis.call('EXISTS', terminalKey) == 0 then
-    redis.call('SET', KEYS[1], sessionId, 'EX', ARGV[4])
-    return {0, sessionId}
+    activeCount = activeCount + 1
+  else
+    redis.call('SREM', KEYS[3], sessionId)
   end
-  redis.call('SREM', KEYS[2], sessionId)
-  if active == sessionId then redis.call('DEL', KEYS[1]) end
 end
-redis.call('SET', KEYS[3], ARGV[2], 'EX', ARGV[4])
-redis.call('SET', KEYS[4], ARGV[3], 'EX', ARGV[5])
-redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[4])
-redis.call('SADD', KEYS[2], ARGV[1])
+if activeCount >= tonumber(ARGV[6]) then return {0, 'concurrency_limit_exceeded'} end
+redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[4])
+redis.call('SET', KEYS[2], ARGV[3], 'EX', ARGV[5])
+redis.call('SADD', KEYS[3], ARGV[1])
 return {1, ARGV[1]}`
-
-const CLEAR_ACTIVE_SESSION_SCRIPT = `-- tty-session:clear-active
-if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('DEL', KEYS[1]) end
-redis.call('SREM', KEYS[2], ARGV[1])
-return 1`
 
 // ============================================================================
 // 2. ERRORS / LOGGING
@@ -202,6 +192,14 @@ export class TTYSessionStoreError extends Error {
   ) {
     super(message)
     this.name = 'TTYSessionStoreError'
+  }
+}
+
+/** The atomic store, not a stale preflight, is the authority for session capacity. */
+export class TTYSessionCapacityError extends TTYSessionStoreError {
+  constructor() {
+    super('The concurrent terminal-session limit has been reached.')
+    this.name = 'TTYSessionCapacityError'
   }
 }
 
@@ -290,9 +288,6 @@ export class TTYSessionStore {
   }
   private userIndexKey(userId: string): string {
     return `${USER_INDEX_KEY_PREFIX}${userId}:sessions`
-  }
-  private activeSessionKey(userId: string): string {
-    return `${USER_INDEX_KEY_PREFIX}${userId}:active-session`
   }
 
   // --------------------------------------------------------------------
@@ -428,11 +423,6 @@ export class TTYSessionStore {
         this.redis.del(this.idempotenciesKey(sessionId)),
         ...(jobIds.length > 0 ? [this.redis.del(...jobIds.map((id) => `tty:job:${id}`))] : []),
         ...(idempotencyKeys.length > 0 ? [this.redis.del(...idempotencyKeys)] : []),
-        this.redis.eval(
-          CLEAR_ACTIVE_SESSION_SCRIPT,
-          [this.activeSessionKey(ownerUserId), this.userIndexKey(ownerUserId)],
-          [sessionId],
-        ),
         this.redis.srem(this.userIndexKey(ownerUserId), sessionId),
         ...workerLeases.flatMap((lease) => [
           this.redis.srem(ttyWorkerActiveLeasesKey(lease.workerId), lease.executionId),
@@ -596,30 +586,29 @@ export class TTYSessionStore {
     let created: string | null
     try {
       const result = await this.redis.eval<unknown[]>(
-        CREATE_ONE_ACTIVE_SESSION_SCRIPT,
-        [
-          this.activeSessionKey(input.principal.userId),
-          this.userIndexKey(input.principal.userId),
-          this.coreKey(sessionId),
-          this.statusKey(sessionId),
-        ],
+        CREATE_SESSION_WITH_CAP_SCRIPT,
+        [this.coreKey(sessionId), this.statusKey(sessionId), this.userIndexKey(input.principal.userId)],
         [
           sessionId,
           JSON.stringify(core),
           JSON.stringify({ status: 'active', lastActiveAt: nowIso } satisfies PersistedStatusRecord),
           String(this.toTtlSeconds(input.limits.maxSessionDurationMs)),
           String(this.toTtlSeconds(input.limits.maxSessionIdleMs)),
+          String(input.limits.maxConcurrentSessions),
         ],
       )
       if (!Array.isArray(result) || typeof result[0] !== 'number' || typeof result[1] !== 'string')
         throw new Error('Invalid session creation result.')
       if (result[0] === 0) {
-        const existing = await this.getSession(result[1] as TTYSessionId, input.principal.userId)
-        if (existing && (existing.status === 'active' || existing.status === 'idle')) return existing
-        throw new Error('The active session changed during creation.')
+        if (result[1] === 'concurrency_limit_exceeded') throw new TTYSessionCapacityError()
+        if (result[1] === 'session_id_conflict')
+          throw new TTYSessionStoreError(`TTY session id collision for '${sessionId}'; refusing to overwrite.`)
+        throw new Error('Unexpected session creation denial.')
       }
+      if (result[0] !== 1 || result[1] !== sessionId) throw new Error('Unexpected session creation result.')
       created = 'OK'
     } catch (error) {
+      if (error instanceof TTYSessionStoreError) throw error
       throw new TTYSessionStoreError('Failed to persist new TTY session core record.', error)
     }
     if (created === null) {
@@ -638,6 +627,32 @@ export class TTYSessionStore {
       ownerUserId: input.principal.userId,
       usage,
     }
+  }
+
+  /**
+   * Returns only the caller's currently live sessions. The owner index is
+   * advisory, so each member is revalidated through getSession() before it
+   * is returned; stale members are pruned by the existing lifecycle path.
+   */
+  async listSessionsForUser(ownerUserId: string): Promise<readonly InternalTTYSession[]> {
+    let memberIds: string[]
+    try {
+      memberIds = await this.redis.smembers(this.userIndexKey(ownerUserId))
+    } catch (error) {
+      this.logger.error('Failed to read TTY session index for user.', { userId: ownerUserId, error })
+      return []
+    }
+    const sessions = await Promise.all(
+      memberIds.map((sessionId) => this.getSession(sessionId as TTYSessionId, ownerUserId)),
+    )
+    return Object.freeze(
+      sessions
+        .filter(
+          (session): session is InternalTTYSession =>
+            session !== null && (session.status === 'active' || session.status === 'idle'),
+        )
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+    )
   }
 
   /**

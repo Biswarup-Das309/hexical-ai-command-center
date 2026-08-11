@@ -5,6 +5,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const extensions = ['', '.ts', '.tsx', '.js', '.mjs']
 
 export function resolve(specifier, context, nextResolve) {
+  if (specifier === 'server-only') {
+    return nextResolve(new URL('./server-only-test-stub.mjs', import.meta.url).href, context)
+  }
+
   const isAlias = specifier.startsWith('@/')
   const isRelative = specifier.startsWith('./') || specifier.startsWith('../')
 

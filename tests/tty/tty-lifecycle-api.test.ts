@@ -80,6 +80,12 @@ class FakeLifecycleStore implements TTYLifecycleStore {
     ).length
   }
 
+  async listSessionsForUser(userId: string): Promise<readonly InternalTTYSession[]> {
+    return [...this.sessions.values()]
+      .filter((session) => session.ownerUserId === userId && (session.status === 'active' || session.status === 'idle'))
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+  }
+
   setStatus(sessionId: TTYSessionId, status: InternalTTYSession['status']): void {
     const session = this.sessions.get(sessionId)
     if (session !== undefined) this.sessions.set(sessionId, { ...session, status })
@@ -162,6 +168,36 @@ test('creates trusted server-owned state and exposes only the browser-safe proje
   assert.equal('ownerUserId' in session, false)
   assert.equal('usage' in session, false)
   assert.deepEqual(session.limits, resolveTTYResourceLimits('pro'))
+})
+
+test("lists only the authenticated owner's live terminal sessions for browser restart recovery", async () => {
+  const fixture = createFixture()
+  const first = await createSession(fixture)
+  const second = await createSession(fixture)
+  const otherSessionId = createTTYSessionId()
+  fixture.store.sessions.set(otherSessionId, {
+    sessionId: otherSessionId,
+    ownerUserId: OTHER_USER,
+    tier: 'pro',
+    status: 'active',
+    createdAt: BASE_TIME,
+    lastActiveAt: BASE_TIME,
+    limits: resolveTTYResourceLimits('pro')!,
+    usage: {
+      activeSessions: 1,
+      activeExecutionsInSession: 0,
+      queueDepth: 0,
+      executionsInLastMinute: 0,
+      capturedAt: BASE_TIME,
+    },
+  })
+
+  const response = await fixture.api.list(request('GET'))
+  const body = await payload(response)
+  const sessions = body.sessions as readonly Record<string, unknown>[]
+  assert.equal(response.status, 200)
+  assert.deepEqual(new Set(sessions.map((session) => session.sessionId)), new Set([first, second]))
+  assert.ok(sessions.every((session) => !('ownerUserId' in session) && !('usage' in session)))
 })
 
 test('rejects spoofed identity/tier fields and malformed request bodies', async () => {

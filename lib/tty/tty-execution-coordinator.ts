@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import type { Redis } from '@upstash/redis'
 import { log, withSpan } from '@/lib/hexical/telemetry'
 import { TTYExecutionLeaseManager, type TTYLeasedJob, type TTYLeaseRenewResult } from './tty-execution-lease'
+import { TTY_EXECUTION_HISTORY_RETENTION_SECONDS } from './tty-execution-retention'
 import {
   TTY_EXECUTION_STATES,
   canRecoverTTYExecutionState,
@@ -24,6 +25,7 @@ import {
   type TTYTerminalExecutionState,
 } from './tty-execution-state'
 import { TTYOutputStreamManager } from './tty-output-stream'
+import type { TTYPersistentExecutionRecord } from './tty-persistent-session-manager'
 import {
   DIAGNOSTIC_KEYWORDS,
   FUZZ_PROBE_KEYWORDS,
@@ -32,7 +34,7 @@ import {
   SESSION_UTILITY_KEYWORDS,
   isTargetGatedExecutionKind,
 } from './tty-policy'
-import { TTYProcessRuntime, type TTYProcessHandle } from './tty-process-runtime'
+import { TTYProcessRuntime, type TTYProcessExit, type TTYProcessHandle } from './tty-process-runtime'
 import { TTYResourceGuard, type TTYResourceReservation } from './tty-resource-guard'
 import { TTYSessionStore } from './tty-session-store'
 import type { TTYExecutionId, TTYExecutionKind, TTYSessionId } from './tty-types'
@@ -45,7 +47,6 @@ import {
 } from './tty-worker-keys'
 import type { TTYWorkerId } from './tty-worker-types'
 
-const STATE_TTL_SECONDS = 24 * 60 * 60
 const MAX_STREAM_CHUNK_BYTES = 48 * 1024
 const DEFAULT_LEASE_RENEW_INTERVAL_MS = 15_000
 const DEFAULT_STOP_GRACE_MS = 1_000
@@ -119,6 +120,15 @@ export interface TTYExecutionCoordinatorRunOptions {
   readonly correlationId?: string
 }
 
+export interface TTYExecutionCoordinatorRecoveredRun {
+  /** The lease atomically adopted by the replacement worker. */
+  readonly job: TTYLeasedJob
+  /** A handle attached to the original framed command, never a new dispatch. */
+  readonly handle: TTYProcessHandle | null
+  /** Durable command evidence read before the replacement worker attached. */
+  readonly record: TTYPersistentExecutionRecord
+}
+
 export interface TTYExecutionCoordinatorDependencies {
   readonly redis: Redis
   readonly workerId: TTYWorkerId
@@ -132,6 +142,12 @@ export interface TTYExecutionCoordinatorDependencies {
   readonly leaseRenewIntervalMs?: number
   readonly stopGraceMs?: number
   readonly commandAllowlist?: Partial<Readonly<Record<TTYExecutionKind, readonly string[]>>>
+  /**
+   * Legacy isolated-process tests retain deterministic virtual utilities.
+   * The production persistent PTY worker disables them so even echo/pwd/cd
+   * execute in the durable shell and therefore prove shell-state continuity.
+   */
+  readonly virtualSessionUtilities?: boolean
 }
 
 export type TTYExecutionCoordinatorFailureReason =
@@ -185,6 +201,8 @@ interface ExecutionContext {
   stderrChunkCount: number
   persistedOutputEventCount: number
   outputPersistenceFailureCount: number
+  runtimeTransport: 'subprocess' | 'persistent_pty'
+  outputDurable: boolean
   readonly hooks: TTYExecutionCoordinatorRunHooks
   readonly correlationId?: string
   readonly abortSignal?: AbortSignal
@@ -263,6 +281,7 @@ function parseScriptResult(value: unknown): { readonly ok: boolean; readonly val
 
 function safeRecordPatch(patch: TTYExecutionStatePatch): TTYExecutionStatePatch {
   const result: TTYExecutionStatePatch = {
+    ...(patch.ownerUserId !== undefined ? { ownerUserId: patch.ownerUserId } : {}),
     ...(patch.workerId !== undefined ? { workerId: patch.workerId } : {}),
     ...(patch.leaseId !== undefined ? { leaseId: patch.leaseId } : {}),
     ...(patch.exitCode !== undefined ? { exitCode: patch.exitCode } : {}),
@@ -282,6 +301,7 @@ export class TTYExecutionCoordinator {
   private readonly leaseRenewIntervalMs: number
   private readonly stopGraceMs: number
   private readonly commandAllowlist: Readonly<Record<TTYExecutionKind, readonly string[]>>
+  private readonly virtualSessionUtilities: boolean
 
   constructor(private readonly dependencies: TTYExecutionCoordinatorDependencies) {
     this.now = dependencies.now ?? (() => new Date())
@@ -291,6 +311,7 @@ export class TTYExecutionCoordinator {
     )
     this.stopGraceMs = Math.max(50, Math.floor(dependencies.stopGraceMs ?? DEFAULT_STOP_GRACE_MS))
     this.commandAllowlist = Object.freeze({ ...DEFAULT_COMMANDS, ...(dependencies.commandAllowlist ?? {}) })
+    this.virtualSessionUtilities = dependencies.virtualSessionUtilities ?? true
   }
 
   async getState(executionId: TTYExecutionId): Promise<TTYExecutionStateRecord | null> {
@@ -348,6 +369,38 @@ export class TTYExecutionCoordinator {
         'tty.execution.run_claimed',
         { executionId: job.executionId, sessionId: job.sessionId, workerId: this.dependencies.workerId },
         async () => this.execute(context, job),
+      )
+    } finally {
+      this.clearContext(context)
+    }
+  }
+
+  /**
+   * Resumes an execution whose PTY command was already dispatched before the
+   * previous worker lost its attachment. The caller must have atomically
+   * adopted `job.lease`; this method never claims, requeues, or dispatches the
+   * command again.
+   */
+  async runRecoveredPersistent(
+    input: TTYExecutionCoordinatorRecoveredRun,
+    hooks: TTYExecutionCoordinatorRunHooks = {},
+  ): Promise<TTYExecutionRunResult> {
+    const { job } = input
+    const existing = await this.getState(job.executionId)
+    if (existing && isTerminalTTYExecutionState(existing.state)) return { accepted: true, state: existing }
+    if (existing === null || existing.sessionId !== job.sessionId)
+      return { accepted: false, reason: 'missing_job', state: existing }
+    if (this.contexts.has(job.executionId)) return { accepted: false, reason: 'already_running', state: existing }
+    if (job.status !== 'leased' || job.lease.workerId !== this.dependencies.workerId)
+      return { accepted: false, reason: 'unauthorized_worker', state: existing }
+
+    const context = this.createContext(job.executionId, job.sessionId, hooks)
+    this.contexts.set(job.executionId, context)
+    try {
+      return await withSpan(
+        'tty.execution.run_recovered_persistent',
+        { executionId: job.executionId, sessionId: job.sessionId, workerId: this.dependencies.workerId },
+        async () => this.execute(context, job, {}, input.handle ?? undefined, input.record),
       )
     } finally {
       this.clearContext(context)
@@ -480,6 +533,8 @@ export class TTYExecutionCoordinator {
       stderrChunkCount: 0,
       persistedOutputEventCount: 0,
       outputPersistenceFailureCount: 0,
+      runtimeTransport: 'subprocess',
+      outputDurable: false,
       hooks,
       ...(abortSignal ? { abortSignal } : {}),
       ...(correlationId ? { correlationId } : {}),
@@ -500,6 +555,8 @@ export class TTYExecutionCoordinator {
     context: ExecutionContext,
     preclaimedJob?: TTYLeasedJob,
     options: TTYExecutionCoordinatorRunOptions = {},
+    recoveredHandle?: TTYProcessHandle,
+    recoveredRecord?: TTYPersistentExecutionRecord,
   ): Promise<TTYExecutionRunResult> {
     let state = await this.ensureQueued(context)
     if (state === null) return { accepted: false, reason: 'internal_error', state: null }
@@ -526,11 +583,18 @@ export class TTYExecutionCoordinator {
     }
 
     context.leaseToken = claimed.job.lease.token
-    state = await this.transition(context, 'leased', {
+    const ownershipPatch: TTYExecutionStatePatch = {
+      ownerUserId: claimed.job.ownerUserId,
       workerId: this.dependencies.workerId,
       leaseId: claimed.job.lease.leaseId ?? claimed.job.lease.token,
-    })
-    await this.safeAppendState(state)
+    }
+    if (recoveredRecord !== undefined) {
+      state = await this.adoptRecoveredState(context, state, ownershipPatch)
+      await this.safeAppendState(state)
+    } else {
+      state = await this.transition(context, 'leased', ownershipPatch)
+      await this.safeAppendState(state)
+    }
     try {
       options.onAccepted?.(state)
     } catch {
@@ -560,6 +624,25 @@ export class TTYExecutionCoordinator {
       return { accepted: true, state }
     }
 
+    if (recoveredRecord !== undefined && recoveredHandle === undefined) {
+      context.startedRecorded = state.startedAt !== null
+      const recoveredTerminal =
+        recoveredRecord.state === 'completed' ? this.terminalForRecoveredRecord(recoveredRecord) : 'failed'
+      state = await this.finalize(context, recoveredTerminal, {
+        exitCode: recoveredRecord.exitCode ?? null,
+        signal: recoveredRecord.signal ?? null,
+        failureCode:
+          recoveredRecord.state === 'completed'
+            ? recoveredRecord.error
+              ? 'PERSISTENT_EXECUTION_COMPLETED_WITH_ERROR'
+              : null
+            : 'PERSISTENT_RUNTIME_UNAVAILABLE',
+        completionReason:
+          recoveredRecord.state === 'completed' ? 'persistent_execution_reconciled' : 'persistent_runtime_unavailable',
+      })
+      return { accepted: true, state }
+    }
+
     const reservationResult = this.dependencies.resourceGuard.reserve(context.executionId, {
       maxExecutionDurationMs: claimed.job.resource.maxExecutionDurationMs,
       maxOutputBytesPerExecution: claimed.job.resource.maxOutputBytes,
@@ -573,8 +656,10 @@ export class TTYExecutionCoordinator {
     }
     context.reservation = reservationResult.reservation
 
-    state = await this.transition(context, 'starting')
-    await this.safeAppendState(state)
+    if (recoveredRecord === undefined) {
+      state = await this.transition(context, 'starting')
+      await this.safeAppendState(state)
+    }
     if (context.cancelReason) {
       state = await this.finalize(context, 'cancelled', { completionReason: context.cancelReason })
       return { accepted: true, state }
@@ -586,7 +671,7 @@ export class TTYExecutionCoordinator {
         state = await this.finalize(context, 'cancelled', { completionReason: context.cancelReason })
         return { accepted: true, state }
       }
-      const virtualOutput = virtualSessionOutput(argv)
+      const virtualOutput = this.virtualSessionUtilities ? virtualSessionOutput(argv) : null
       if (virtualOutput !== null) {
         state = await this.markExecutionRunning(context)
         log.info('tty.execution.virtual_command_started', {
@@ -614,28 +699,39 @@ export class TTYExecutionCoordinator {
       }
 
       const spec = processSpec(argv)
-      context.handle = await this.dependencies.processRuntime.start({
-        executionId: context.executionId,
-        sessionId: context.sessionId,
-        workerId: this.dependencies.workerId,
-        file: spec.file,
-        args: spec.args,
-        env: {},
-      })
+      context.handle =
+        recoveredHandle ??
+        (await this.dependencies.processRuntime.start({
+          executionId: context.executionId,
+          sessionId: context.sessionId,
+          ownerUserId: claimed.job.ownerUserId,
+          workerId: this.dependencies.workerId,
+          file: spec.file,
+          args: spec.args,
+          env: {},
+        }))
       this.startCancellationPolling(context)
       const metadata = this.dependencies.processRuntime.getMetadata(context.handle)
-      log.info('tty.execution.process_spawned', {
-        executionId: context.executionId,
-        sessionId: context.sessionId,
-        workerId: this.dependencies.workerId,
-        command: commandName(argv[0]),
-        shellPath: spec.file,
-        shell: false,
-        pid: metadata.pid,
-        ...this.correlationFields(context),
-      })
+      context.runtimeTransport = metadata.transport ?? 'subprocess'
+      context.outputDurable = metadata.outputDurable === true
+      log.info(
+        context.runtimeTransport === 'persistent_pty' ? 'tty.execution.pty_attached' : 'tty.execution.process_spawned',
+        {
+          executionId: context.executionId,
+          sessionId: context.sessionId,
+          workerId: this.dependencies.workerId,
+          command: commandName(argv[0]),
+          runtimePath: spec.file,
+          transport: context.runtimeTransport,
+          pid: metadata.pid,
+          ...this.correlationFields(context),
+        },
+      )
       await this.persistRuntimeMetadata(metadata)
-      state = await this.markExecutionRunning(context)
+      context.startedRecorded = state.startedAt !== null
+      context.streaming = state.state === 'streaming'
+      if (state.state === 'starting' || state.state === 'leased') state = await this.markExecutionRunning(context)
+      else await this.safeAppendState(state)
       context.reservation.armTimeout(() => {
         context.cancelReason = 'system_timeout'
         context.failureCode = 'EXECUTION_TIMEOUT'
@@ -709,9 +805,37 @@ export class TTYExecutionCoordinator {
     const state = await this.transition(context, 'running')
     await this.safeAppendState(state)
     await this.safeAppendMetrics(state, ['queue_wait_ms', 'startup_ms'])
-    await this.dependencies.sessionStore.recordExecutionStarted(context.sessionId, context.executionId)
-    context.startedRecorded = true
+    if (!context.startedRecorded) {
+      await this.dependencies.sessionStore.recordExecutionStarted(context.sessionId, context.executionId)
+      context.startedRecorded = true
+    }
     return state
+  }
+
+  private async adoptRecoveredState(
+    context: ExecutionContext,
+    current: TTYExecutionStateRecord,
+    ownershipPatch: TTYExecutionStatePatch,
+  ): Promise<TTYExecutionStateRecord> {
+    let state = current
+    if (state.state === 'queued') {
+      state = await this.transition(context, 'leased', ownershipPatch)
+      await this.safeAppendState(state)
+      state = await this.transition(context, 'starting')
+      await this.safeAppendState(state)
+      return state
+    }
+    if (state.state === 'leased') {
+      state = await this.transition(context, 'starting', ownershipPatch)
+      await this.safeAppendState(state)
+      return state
+    }
+    state = await this.transition(context, state.state, ownershipPatch)
+    return state
+  }
+
+  private terminalForRecoveredRecord(record: TTYPersistentExecutionRecord): TTYTerminalExecutionState {
+    return record.exitCode === 0 && record.signal === null && record.error === undefined ? 'succeeded' : 'failed'
   }
 
   private completionReasonFor(state: TTYTerminalExecutionState, context: ExecutionContext): string {
@@ -879,7 +1003,7 @@ export class TTYExecutionCoordinator {
           serialized,
           isExecutionStateActive(candidate.state) ? '1' : '0',
           executionId,
-          String(STATE_TTL_SECONDS),
+          String(TTY_EXECUTION_HISTORY_RETENTION_SECONDS),
         ],
       ),
     )
@@ -895,9 +1019,10 @@ export class TTYExecutionCoordinator {
     readonly sessionId: TTYSessionId
     readonly workerId: TTYWorkerId
     readonly startedAt: string
+    readonly transport?: 'subprocess' | 'persistent_pty'
   }): Promise<void> {
     await this.dependencies.redis.set(ttyExecutionRuntimeKey(metadata.executionId), JSON.stringify(metadata), {
-      ex: STATE_TTL_SECONDS,
+      ex: TTY_EXECUTION_HISTORY_RETENTION_SECONDS,
     })
   }
 
@@ -931,12 +1056,15 @@ export class TTYExecutionCoordinator {
           const accepted = bytes.subarray(0, accounting.acceptedBytes)
           for (let offset = 0; offset < accepted.byteLength; offset += MAX_STREAM_CHUNK_BYTES) {
             const part = accepted.subarray(offset, Math.min(accepted.byteLength, offset + MAX_STREAM_CHUNK_BYTES))
-            await this.dependencies.outputStream.appendOutput({
-              executionId: context.executionId,
-              sessionId: context.sessionId,
-              stream,
-              text: part.toString('utf8'),
-            })
+            if (!context.outputDurable) {
+              await this.dependencies.outputStream.appendOutput({
+                executionId: context.executionId,
+                sessionId: context.sessionId,
+                stream,
+                text: part.toString('utf8'),
+                transport: context.runtimeTransport,
+              })
+            }
             context.persistedOutputEventCount += 1
           }
         }

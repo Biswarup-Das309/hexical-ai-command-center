@@ -5,6 +5,7 @@ import { Redis } from '@upstash/redis'
 import { getUserTier } from '@/lib/get-user-tier'
 import { createTTYLifecycleApi, type TTYLifecycleApiDependencies } from './tty-lifecycle-api'
 import { resolveTTYResourceLimits } from './tty-resource-limits'
+import { publishTTYSessionControl } from './tty-session-control'
 import { createTTYSessionStore } from './tty-session-store'
 
 function createRedis(): Redis {
@@ -22,6 +23,10 @@ export function createTTYLifecycleApiForRequest() {
     resolveTier: getUserTier,
     resolveLimits: resolveTTYResourceLimits,
     getStore: () => createTTYSessionStore(createRedis()),
+    publishTerminationControl: async (sessionId, ownerUserId) => {
+      const client = createRedis()
+      await publishTTYSessionControl(client, { sessionId, ownerUserId, type: 'terminate' })
+    },
   }
   return createTTYLifecycleApi(dependencies)
 }

@@ -1,12 +1,17 @@
 import { Redis } from '@upstash/redis'
 import { TTYExecutionCoordinator } from '../lib/tty/tty-execution-coordinator'
 import { TTYExecutionLeaseManager } from '../lib/tty/tty-execution-lease'
-import { createDefaultTTYProcessRuntime } from '../lib/tty/tty-process-runtime'
-import { TTYRecoveryManager } from '../lib/tty/tty-recovery'
+import { TTYPersistentProcessRuntime } from '../lib/tty/tty-persistent-process-runtime'
+import { TTYPersistentRecoveryService } from '../lib/tty/tty-persistent-recovery-service'
+import { TTYPersistentSessionManager } from '../lib/tty/tty-persistent-session-manager'
 import { TTYResourceGuard } from '../lib/tty/tty-resource-guard'
+import { TTYSessionControlConsumer } from '../lib/tty/tty-session-control'
+import { TTYSessionControlRouter } from '../lib/tty/tty-session-control-router'
 import { createTTYSessionStore } from '../lib/tty/tty-session-store'
+import { TTYSessionTranscriptManager } from '../lib/tty/tty-session-transcript'
 import { TTYStreamBroker, type TTYStreamRedis } from '../lib/tty/tty-stream-broker'
 import { TTYStreamingOutputStreamManager } from '../lib/tty/tty-stream-runtime-bridge'
+import { createNodePtyTmuxAdapter, TTYTmuxRuntime } from '../lib/tty/tty-tmux-runtime'
 import type { TTYExecutionId, TTYSessionId } from '../lib/tty/tty-types'
 import { TTYWorkerAudit } from '../lib/tty/tty-worker-audit'
 import { TTYWorkerAuthenticator, issueTTYWorkerToken, verifyWorkerToken } from '../lib/tty/tty-worker-auth'
@@ -14,10 +19,14 @@ import { createTTYWorkerClaimService } from '../lib/tty/tty-worker-claim'
 import { TTYWorkerDaemon } from '../lib/tty/tty-worker-daemon'
 import { TTYWorkerExecutor } from '../lib/tty/tty-worker-executor'
 import { TTYWorkerHeartbeatService } from '../lib/tty/tty-worker-heartbeat'
-import { ttyExecutionJobKey, ttyPendingExecutionIndexKey } from '../lib/tty/tty-worker-keys'
+import {
+  ttyExecutionJobKey,
+  ttyPendingExecutionIndexKey,
+  ttyWorkerSessionControlGroup,
+  ttyWorkerSessionControlStreamKey,
+} from '../lib/tty/tty-worker-keys'
 import { TTYWorkerLeaseObserver } from '../lib/tty/tty-worker-observer'
 import { createTTYWorkerPoller, type PendingExecutionQueue } from '../lib/tty/tty-worker-poller'
-import { createTTYWorkerRecoveryService } from '../lib/tty/tty-worker-recovery'
 import { TTYWorkerRegistry } from '../lib/tty/tty-worker-registry'
 import { createTTYWorkerId, type TTYWorkerAuthContext } from '../lib/tty/tty-worker-types'
 
@@ -38,6 +47,11 @@ function positiveInteger(name: string, fallback: number): number {
   const parsed = Number(raw)
   if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer.`)
   return parsed
+}
+
+function requiredTrue(name: string): void {
+  const value = requiredEnv(name).toLowerCase()
+  if (value !== 'true') throw new Error(`${name} must be true for the authoritative persistent PTY worker.`)
 }
 
 function workerLogger(level: 'info' | 'warn' | 'error', event: string, fields: Readonly<Record<string, unknown>> = {}) {
@@ -140,11 +154,57 @@ async function main(): Promise<void> {
   const heartbeat = new TTYWorkerHeartbeatService(redis, registry, { audit })
   const observer = new TTYWorkerLeaseObserver(redis, { audit })
   const sessionStore = createTTYSessionStore(redis)
-  const processRuntime = createDefaultTTYProcessRuntime({ rootDir: process.env.TTY_RUNTIME_ROOT })
+  requiredTrue('TTY_PERSISTENT_PTY_ENABLED')
+  if (requiredEnv('TTY_RUNTIME_BACKEND') !== 'tmux')
+    throw new Error('TTY_RUNTIME_BACKEND must be tmux; the worker has no subprocess fallback.')
+  const ptyEnvironment = {
+    PATH: requiredEnv('TTY_PTY_PATH'),
+    TERM: 'xterm-256color',
+    LANG: process.env.TTY_PTY_LANG?.trim() || 'C.UTF-8',
+  }
+  const tmuxAdapter = await createNodePtyTmuxAdapter({ adminEnv: ptyEnvironment })
+  const tmuxRuntime = new TTYTmuxRuntime(tmuxAdapter, {
+    rootDir: requiredEnv('TTY_PTY_WORKSPACE_ROOT'),
+    baseEnv: ptyEnvironment,
+  })
+  const streamBroker = new TTYStreamBroker(redis as unknown as TTYStreamRedis)
+  const executionOutput = new TTYStreamingOutputStreamManager(redis, streamBroker)
+  const sessionTranscript = new TTYSessionTranscriptManager(redis)
+  const persistentSessionManager = new TTYPersistentSessionManager(
+    redis,
+    tmuxRuntime,
+    sessionStore,
+    sessionTranscript,
+    workerId,
+    {
+      leaseTtlMs: positiveInteger('TTY_PTY_LEASE_TTL_MS', 30_000),
+      heartbeatIntervalMs: positiveInteger('TTY_PTY_HEARTBEAT_INTERVAL_MS', 5_000),
+      journalPollIntervalMs: positiveInteger('TTY_PTY_JOURNAL_POLL_INTERVAL_MS', 100),
+      executionOutput,
+    },
+  )
+  const sessionControlRouter = new TTYSessionControlRouter(redis, workerId, persistentSessionManager)
+  const globalSessionControl = new TTYSessionControlConsumer(
+    redis,
+    `${workerId}:global-session-control`,
+    sessionControlRouter,
+  )
+  const workerSessionControl = new TTYSessionControlConsumer(
+    redis,
+    `${workerId}:target-session-control`,
+    sessionControlRouter,
+    {
+      streamKey: ttyWorkerSessionControlStreamKey(workerId),
+      group: ttyWorkerSessionControlGroup(),
+    },
+  )
+  // This is intentionally not TTYProcessRuntime. Every admitted argv is
+  // written into the manager-owned tmux shell, so cwd/env/history/process
+  // state survives commands and worker attachment changes.
+  const processRuntime = new TTYPersistentProcessRuntime(persistentSessionManager)
   // The durable output stream is authoritative, but the browser subscribes to
   // the separate live stream. The bridge writes both in order so an execution
   // is observable while it runs and remains replayable after completion.
-  const streamBroker = new TTYStreamBroker(redis as unknown as TTYStreamRedis)
   const leaseManager = new TTYExecutionLeaseManager(redis, context, { observer })
   const coordinator = new TTYExecutionCoordinator({
     redis,
@@ -157,17 +217,19 @@ async function main(): Promise<void> {
       maxStdoutBytesPerSecond: positiveInteger('TTY_MAX_STDOUT_BYTES_PER_SECOND', 1_048_576),
       maxStderrBytesPerSecond: positiveInteger('TTY_MAX_STDERR_BYTES_PER_SECOND', 1_048_576),
     }),
-    outputStream: new TTYStreamingOutputStreamManager(redis, streamBroker),
+    outputStream: executionOutput,
     audit,
+    virtualSessionUtilities: false,
   })
-  const recoveryManager = new TTYRecoveryManager(redis, processRuntime)
-  const recovery = createTTYWorkerRecoveryService({
-    redis: {
-      smembers: async (key) => (await redis.smembers(key)).map((value) => String(value)),
-    },
-    orphanRecovery: recoveryManager,
+  const persistentRecovery = new TTYPersistentRecoveryService(workerId, persistentSessionManager, leaseManager, {
+    scanIntervalMs: positiveInteger('TTY_PERSISTENT_RECOVERY_SCAN_INTERVAL_MS', 5_000),
     coordinator,
-    observer,
+    processRuntime,
+    logger: {
+      info: (event, fields) => workerLogger('info', event, fields),
+      warn: (event, fields) => workerLogger('warn', event, fields),
+      error: (event, fields) => workerLogger('error', event, fields),
+    },
   })
   const claim = createTTYWorkerClaimService({
     workerId,
@@ -181,7 +243,11 @@ async function main(): Promise<void> {
     baseIntervalMs: positiveInteger('TTY_WORKER_POLL_INTERVAL_MS', 1_000),
     maxIntervalMs: positiveInteger('TTY_WORKER_MAX_POLL_INTERVAL_MS', 15_000),
   })
-  const executor = new TTYWorkerExecutor({ workerId, poller, claim, coordinator, recovery })
+  // Legacy orphan-process recovery is deliberately not wired here: its
+  // contract kills a process and requeues work, which would duplicate a live
+  // tmux command. Persistent recovery adopts expired leases using the durable
+  // PTY command record and reattaches the existing tmux session.
+  const executor = new TTYWorkerExecutor({ workerId, poller, claim, coordinator })
   const daemon = new TTYWorkerDaemon({
     registry,
     authenticator,
@@ -191,23 +257,30 @@ async function main(): Promise<void> {
       workerId,
       identity: workerId,
       version,
-      capabilities: ['execute'],
-      metadata: { runtime: 'node', platform: process.platform },
+      capabilities: ['execute', 'persistent_pty'],
+      metadata: { runtime: 'node', platform: process.platform, ptyBackend: 'tmux' },
     },
     requiredCapability: 'execute',
+    recovery: persistentRecovery,
   })
 
+  await persistentSessionManager.start()
   await daemon.start()
+  await globalSessionControl.start()
+  await workerSessionControl.start()
   await executor.start()
-  workerLogger('info', 'worker_ready', { workerId, version })
+  workerLogger('info', 'worker_ready', { workerId, version, ptyBackend: 'tmux' })
 
   let shuttingDown = false
   const shutdown = async (signal: 'SIGINT' | 'SIGTERM') => {
     if (shuttingDown) return
     shuttingDown = true
     workerLogger('info', 'worker_shutdown_started', { workerId, signal })
+    await globalSessionControl.stop()
+    await workerSessionControl.stop()
     await executor.stop()
     await daemon.stop(signal)
+    await persistentSessionManager.stop()
     workerLogger('info', 'worker_shutdown_completed', { workerId, signal })
     process.exit(0)
   }

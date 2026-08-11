@@ -26,6 +26,12 @@ const MAX_ENV_ENTRIES = 128
 export interface TTYProcessSpec {
   readonly executionId: TTYExecutionId
   readonly sessionId: TTYSessionId
+  /**
+   * Resolved by the worker from the admitted job, never supplied by the
+   * browser.  A persistent-session runtime needs this to prove it is
+   * attaching the execution to the same owner-authorized shell.
+   */
+  readonly ownerUserId?: string
   readonly workerId: TTYWorkerId
   readonly file: string
   readonly args: readonly string[]
@@ -62,6 +68,10 @@ export interface TTYProcessMetadata extends TTYOrphanProcess {
   readonly sessionId: TTYSessionId
   readonly workerId: TTYWorkerId
   readonly startedAt: string
+  /** Distinguishes legacy isolated children from the authoritative PTY path. */
+  readonly transport?: 'subprocess' | 'persistent_pty'
+  /** Persistent session manager already wrote these bytes to durable output. */
+  readonly outputDurable?: boolean
 }
 
 export interface TTYProcessRuntimeOptions {
@@ -244,6 +254,7 @@ export class TTYProcessRuntime {
       sessionId: internal.sessionId,
       workerId: internal.workerId,
       startedAt: internal.startedAt,
+      transport: 'subprocess',
     }
   }
 

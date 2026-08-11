@@ -1,132 +1,160 @@
-# Hexical production runtime release — manual execution package
+# Hexical Runtime OS release package — manual execution and evidence gates
 
-## Scope and release decision
+## Release position
 
-This release fixes the verified Execute failure where an approved virtual
-command reached `succeeded` with zero durable stdout bytes. The worker had
-completed the command, but output depended on a child Node process's Windows
-stdio capture. That boundary was not deterministic in the affected worker
-environment.
+The repository now contains the Runtime OS execution path: transactional
+admission, worker leases, persistent tmux/node-pty sessions, durable session
+transcript replay, output-stream deduplication, worker recovery, and a
+terminal-first Execute surface.
 
-`echo`, `clear`, `help`, `history`, `status`, and `exit` are now executed as
-worker-owned virtual operations. Their output is written directly through the
-same bounded, ordered, durable Redis output stream as process output. No shell,
-no Node child process, and no inherited environment are used for these commands.
+Local code evidence is strong, but production readiness is not yet signed off.
+No Vercel, Redis, Supabase, Clerk, Linux-worker, or browser production action
+has been performed from this workspace.
 
-External allowlisted commands remain isolated argv-only subprocesses with the
-existing resource guard, lease ownership, cancellation, cleanup, and output
-streaming controls.
+## Local verification recorded in this checkout
 
-## Release contents
+Run from the repository root:
 
-- `lib/tty/tty-execution-coordinator.ts`
-  - direct durable output for virtual session utilities;
-  - explicit `virtual_session_utility_completed` diagnostic;
-  - structured virtual-command start event;
-  - shared running/accounting transition for process and virtual executions.
-- `tests/tty/tty-execution-coordinator.test.ts`
-  - proves virtual utilities do not launch a host process.
-- `tests/tty/tty-execution-e2e.test.ts`
-  - proves `echo HEXICAL_EXECUTE_SMOKE_TEST` produces durable stdout with zero
-    spawn attempts.
-
-## Required environment contract
-
-The Vercel application and every worker must share one long-lived,
-cryptographically random `TTY_WORKER_AUTH_SECRET`. Generate it once, store it
-in a password manager, set it in Vercel Production, and use that same value on
-each worker restart. Never put it in Git, source code, an issue, browser
-DevTools, screenshots, or chat.
-
-Vercel Production environment variables:
-
-```text
-TTY_DIRECT_ACTIVATION=false
-TTY_WORKER_AUTH_SECRET=<the single permanent secret>
+```powershell
+npm.cmd run typecheck
+npm.cmd run verify:node-pty
+npm.cmd run test:tty-runtime
+npm.cmd run test:tty-frontend
+npm.cmd run test:all
+npm.cmd run format:check
+npm.cmd run security:audit
+npm.cmd run build
 ```
 
-The worker host must also have the existing production Redis, Supabase, and
-application environment values available through `.env.local` or its secured
-service configuration.
+The current continuation verified TypeScript successfully, the real local
+`node-pty` smoke successfully, the full TTY runtime suite at 72/72 tests, the
+full repository suite with exit code 0, formatting, audit, and the production
+build. These are local results only. The Linux/tmux worker path, worker
+handoff, and deployed browser workflow remain manual gates.
 
-## Manual release order
+## Runtime implementation
 
-1. Restore the generated TypeScript cache so it is not committed.
-2. Run local validation before committing.
-3. Commit and push `main`; wait for the Vercel deployment to become Ready.
-4. Restart every old worker one at a time with the unchanged permanent secret.
-5. Confirm the health endpoint reports at least one online worker.
-6. Run the smoke command from a newly created investigation and confirm both
-   visible output and durable API replay.
-7. Run the Supabase verification script after the application smoke test.
+- Admission persists the execution identity and queued state before the API
+  acknowledges it.
+- The worker claims the execution lease and routes it to
+  `TTYPersistentProcessRuntime`.
+- The process bridge writes the admitted argv into the existing manager-owned
+  shell and never re-dispatches argv during recovery.
+- `TTYPersistentSessionManager` owns PTY lifecycle, session ownership,
+  heartbeat, runtime lease, control commands, journal polling, cleanup, and
+  diagnostics.
+- tmux keeps the shell alive across worker attachment loss; the recovery
+  service reattaches only when durable runtime history proves the shell exists.
+- The session transcript is cursor-replayable and its event IDs are
+  deduplicated. The separate execution output stream is also deduplicated.
+- Session creation atomically enforces the canonical tier's concurrent-session
+  ceiling, and `GET /api/tty/sessions` restores only the authenticated owner's
+  live terminals after a browser restart. Each tab receives an independent
+  persistent session rather than an alias to the owner's first shell.
+- `components/tty/RuntimeOSWorkspace.tsx` is the terminal-first Execute
+  surface. It renders durable timing/output metrics and execution timeline
+  events when the worker emits them; unavailable process-level host telemetry
+  is displayed as unavailable rather than fabricated. Investigation graph,
+  notes, evidence, and timeline controls remain under the Workspace surface.
 
-## Manual Supabase package
+## Worker package and environment
 
-Run the complete contents of each file in the Supabase SQL editor, in this
-order, against the intended project and database. Do not combine files, omit
-statements, or run the rollback file during normal deployment.
+Run manually on the Linux worker host/image, not in Vercel:
 
-1. `supabase/migrations/20260810_hexical_definitive_rebuild.sql`
-2. `supabase/repair/20260810_hexical_definitive_repair.sql`
-3. `supabase/verification/20260810_hexical_definitive_verification.sql`
-
-If verification identifies a known repairable data inconsistency, rerun the
-repair file once and then rerun the verification file. The emergency reversal
-file is:
-
-```text
-supabase/rollback/20260810_hexical_definitive_rollback.sql
+```powershell
+npm.cmd ci --include=optional
+node -e "import('node-pty').then(() => console.log('node-pty available'))"
+tmux -V
+npm.cmd run typecheck
+npm.cmd run test:tty-runtime
 ```
 
-Use the alternate `20260810_hexical_complete_production_*` family only if the
-definitive family was not previously applied; never apply both schema families
-to the same production database without reviewing their migration history.
-
-## Explicit production smoke criteria
-
-For a fresh investigation:
+Required worker variables include:
 
 ```text
-echo HEXICAL_EXECUTE_SMOKE_TEST
+TTY_PERSISTENT_PTY_ENABLED=true
+TTY_RUNTIME_BACKEND=tmux
+TTY_PTY_PATH=<approved executable PATH>
+TTY_PTY_WORKSPACE_ROOT=<private writable worker directory>
+TTY_EXECUTION_WORKER_ID=<unique worker id>
+TTY_WORKER_AUTH_SECRET=<shared secret with the web app>
+UPSTASH_REDIS_REST_URL=<production Redis URL>
+UPSTASH_REDIS_REST_TOKEN=<production Redis token>
 ```
 
-Pass criteria:
+The worker must run on Linux with `tmux` installed. Keep the shared worker
+secret out of Git, logs, browser diagnostics, and chat.
 
-- request is admitted once and returns a queued execution id;
-- the worker leases, starts, streams, and succeeds the same execution id;
-- the Execute panel visibly renders `HEXICAL_EXECUTE_SMOKE_TEST`;
-- `GET /api/tty/executions/<executionId>/output` reports `stdoutBytes > 0` and
-  includes a stdout event containing `HEXICAL_EXECUTE_SMOKE_TEST\n`;
-- refresh and reconnect preserve the transcript;
-- health reports `mode: worker` and `onlineCount >= 1`.
+## Supabase additive package
 
-Fail criteria requiring rollback or incident investigation:
+After a backup and change review, run the following files manually in the
+intended Supabase project, in order:
 
-- command ends `succeeded` with `stdoutBytes: 0`;
-- stream output is visible only until a refresh;
-- any execution is stuck in `queued`, `leased`, `starting`, `running`, or
-  `streaming` past its resource timeout;
-- no worker is online;
-- Vercel and worker secrets differ.
+```text
+supabase/migrations/20260811_hexical_runtime_os_additive.sql
+supabase/repair/20260811_hexical_runtime_os_additive_repair.sql
+supabase/verification/20260811_hexical_runtime_os_additive_verification.sql
+```
 
-## Operational safeguards
+Run the repair once only if verification reports one of its documented
+repairable inconsistencies, then rerun verification. Keep
+`supabase/rollback/20260811_hexical_runtime_os_additive_rollback.sql` as the
+reversal package; do not run it during normal deployment and do not use a
+destructive rebuild family.
 
-- Run a worker as a persistent service, not an interactive developer terminal,
-  before accepting customer traffic. A Windows Scheduled Task or service
-  manager must restart it after host reboot or process failure.
-- Rotate `TTY_WORKER_AUTH_SECRET` only as a coordinated deployment: update
-  Vercel, restart all workers with the new secret, then verify health.
-- Keep `TTY_DIRECT_ACTIVATION=false`; the web app must only admit jobs and the
-  authenticated worker must claim them.
-- Do not use browser cookies, Clerk tokens, Supabase service-role keys, Redis
-  URLs, or the worker secret in diagnostics sent outside the secured team.
-- Treat non-terminal execution recovery exclusively as a worker recovery
-  operation. Do not manually requeue live executions.
+## Required production smoke workflow
 
-## Rollback decision
+From a newly created investigation, use the authenticated Execute UI or the
+corresponding API path to admit:
 
-Application rollback is safe only before running a new database migration. If
-the output smoke test fails after deployment, first stop newly started workers,
-redeploy the prior known-good Git commit in Vercel, and restart workers from
-that same commit. Use the SQL rollback file only when the migration itself is
-the confirmed cause and its documented prerequisites are satisfied.
+```text
+echo HEXICAL_RUNTIME_OS_TEST
+```
+
+Capture the execution ID and verify, using the deployed API and worker logs:
+
+1. one admission creates the execution and returns its queued identifier;
+2. the worker claims the same identifier;
+3. the existing PTY is attached and emits output;
+4. the output is persisted in both the session transcript and execution stream;
+5. refresh replays the transcript from its cursor;
+6. disconnect/reconnect resumes without duplicate or missing bytes;
+7. historical replay after completion includes the same output and terminal
+   completion state;
+8. no `EXECUTION_NOT_FOUND`, state divergence, or lost output occurs;
+9. worker health shows the expected authenticated online worker;
+10. canonical entitlement checks, RLS, and migration verification pass;
+11. create up to the entitlement's terminal-tab cap, refresh, and confirm
+    each restored tab retains its own session ID, cwd, and transcript;
+12. exercise the production process telemetry collector before claiming CPU,
+    memory, or disk monitoring is available.
+
+The production result must be recorded separately from local test output. This
+workspace cannot claim that result without the operator running it.
+
+## Deployment order
+
+1. Review the diff and run the local commands above.
+2. Install/verify native worker dependencies on the Linux worker image.
+3. Back up Supabase and apply the additive migration, repair only if needed,
+   then verification.
+4. Deploy the matching web commit to Vercel and wait for Ready.
+5. Restart workers one at a time with the same commit and permanent auth secret.
+6. Verify worker health, then run the smoke workflow.
+7. Record the browser, worker, Redis, and Supabase evidence before sign-off.
+
+## Rollback
+
+If the smoke workflow fails, stop newly started workers, redeploy the prior
+known-good web commit, and restart workers from that same commit. Use the SQL
+rollback file only when the additive migration is confirmed as the cause and
+its prerequisites are satisfied. Preserve the failed execution IDs, cursors,
+worker logs, and verification output for incident analysis.
+
+## Current sign-off decision
+
+Repository implementation: in place and locally tested.
+
+Production Runtime OS: pending native-worker, deployed-browser, Redis,
+Supabase, and end-to-end smoke evidence. Do not describe the platform as
+public-launch ready until those gates are completed manually.

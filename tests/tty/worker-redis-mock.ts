@@ -7,6 +7,17 @@ interface StreamEntry {
   readonly fields: Record<string, string>
 }
 
+function compareStreamIds(left: string, right: string): number {
+  const parse = (value: string): [number, number] => {
+    const [milliseconds, sequence] = value.split('-').map(Number)
+    return [milliseconds ?? 0, sequence ?? 0]
+  }
+  const [leftMilliseconds, leftSequence] = parse(left)
+  const [rightMilliseconds, rightSequence] = parse(right)
+  if (leftMilliseconds !== rightMilliseconds) return leftMilliseconds - rightMilliseconds
+  return leftSequence - rightSequence
+}
+
 export class WorkerRedisMock {
   readonly values = new Map<string, string>()
   readonly sets = new Map<string, Set<string>>()
@@ -73,9 +84,19 @@ export class WorkerRedisMock {
     return id
   }
 
-  async xrange(key: string, _start: string, _end: string, count?: number): Promise<unknown[]> {
+  async xrange(key: string, start: string, end: string, count?: number): Promise<unknown[]> {
     const stream = this.streams.get(key) ?? []
-    return stream.slice(0, count).map((entry) => [entry.id, Object.entries(entry.fields).flat()])
+    const exclusiveStart = start.startsWith('(')
+    const normalizedStart = exclusiveStart ? start.slice(1) : start
+    const filtered = stream.filter((entry) => {
+      if (normalizedStart !== '-') {
+        const comparison = compareStreamIds(entry.id, normalizedStart)
+        if (exclusiveStart ? comparison <= 0 : comparison < 0) return false
+      }
+      if (end !== '+' && compareStreamIds(entry.id, end) > 0) return false
+      return true
+    })
+    return filtered.slice(0, count).map((entry) => [entry.id, Object.entries(entry.fields).flat()])
   }
 
   async xtrim(
@@ -91,6 +112,62 @@ export class WorkerRedisMock {
 
   async eval(_script: string, keys: string[], args: string[]): Promise<unknown> {
     const script = _script
+    if (script.includes('tty-session-runtime-claim')) {
+      const existing = this.values.get(keys[0]!)
+      if (existing !== undefined) return [0, existing]
+      this.values.set(keys[0]!, args[0]!)
+      return [1, args[0]!]
+    }
+    if (script.includes('tty-session-runtime-promote')) {
+      const current = this.values.get(keys[0]!)
+      if (!current) return 0
+      if ((JSON.parse(current) as { runtimeId?: unknown }).runtimeId !== args[0]) return 0
+      this.values.set(keys[0]!, args[1]!)
+      this.values.set(keys[1]!, args[3]!)
+      return 1
+    }
+    if (script.includes('tty-session-runtime-renew')) {
+      const current = this.values.get(keys[0]!)
+      if (!current) return 0
+      if ((JSON.parse(current) as { runtimeId?: unknown }).runtimeId !== args[0]) return 0
+      this.values.set(keys[0]!, args[1]!)
+      return 1
+    }
+    if (script.includes('tty-session-runtime-release')) {
+      const current = this.values.get(keys[0]!)
+      if (!current) return 1
+      if ((JSON.parse(current) as { runtimeId?: unknown }).runtimeId !== args[0]) return 0
+      this.values.delete(keys[0]!)
+      return 1
+    }
+    if (script.includes('tty-session-active-execution-claim')) {
+      const existing = this.values.get(keys[0]!)
+      if (existing !== undefined) return [0, existing]
+      this.values.set(keys[0]!, args[0]!)
+      await this.sadd(keys[1]!, args[2]!)
+      return [1, args[0]!]
+    }
+    if (script.includes('tty-session-active-execution-update')) {
+      const current = this.values.get(keys[0]!)
+      if (!current) return 0
+      const parsed = JSON.parse(current) as { sessionId?: unknown; executionId?: unknown; token?: unknown }
+      if (parsed.sessionId !== args[0] || parsed.executionId !== args[1] || parsed.token !== args[2]) return 0
+      this.values.set(keys[0]!, args[3]!)
+      await this.sadd(keys[1]!, args[0]!)
+      return 1
+    }
+    if (script.includes('tty-session-active-execution-release')) {
+      const current = this.values.get(keys[0]!)
+      if (!current) {
+        await this.srem(keys[1]!, args[0]!)
+        return 1
+      }
+      const parsed = JSON.parse(current) as { sessionId?: unknown; executionId?: unknown }
+      if (parsed.sessionId !== args[0] || parsed.executionId !== args[1]) return 0
+      this.values.delete(keys[0]!)
+      await this.srem(keys[1]!, args[0]!)
+      return 1
+    }
     if (script.includes('tty-live-publish')) {
       const sequence = await this.incr(keys[1]!)
       await this.xadd(keys[0]!, '*', {
@@ -105,6 +182,9 @@ export class WorkerRedisMock {
       return sequence
     }
     if (script.includes('tty-output-append')) {
+      const dedupKey = `${keys[2]}:${args[0]}`
+      const existing = this.values.get(dedupKey)
+      if (existing !== undefined) return Number(existing)
       const sequence = await this.incr(keys[1]!)
       await this.xadd(keys[0]!, '*', {
         eventId: args[0]!,
@@ -115,7 +195,27 @@ export class WorkerRedisMock {
         type: args[4]!,
         data: args[5]!,
       })
+      this.values.set(dedupKey, String(sequence))
       return sequence
+    }
+    if (script.includes('tty-session-transcript-append')) {
+      const dedupKey = `${keys[2]}:${args[0]}`
+      const existing = this.values.get(dedupKey)
+      if (existing !== undefined) {
+        const [sequence, cursor] = existing.split('|')
+        return [Number(sequence), cursor]
+      }
+      const sequence = await this.incr(keys[1]!)
+      const cursor = await this.xadd(keys[0]!, '*', {
+        eventId: args[0]!,
+        sequence: String(sequence),
+        timestamp: args[1]!,
+        sessionId: args[2]!,
+        type: args[3]!,
+        data: args[4]!,
+      })
+      this.values.set(dedupKey, `${sequence}|${cursor}`)
+      return [sequence, cursor]
     }
     if (script.includes('tty-execution-state-transition')) {
       const raw = this.values.get(keys[0])

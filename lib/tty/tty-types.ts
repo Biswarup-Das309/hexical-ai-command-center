@@ -508,6 +508,7 @@ export type TTYTerminationReason =
   | 'duration_limit_exceeded'
   | 'resource_limit_exceeded'
   | 'policy_violation'
+  | 'runtime_exited'
   | 'system_shutdown'
 
 export interface TTYTerminationResult {

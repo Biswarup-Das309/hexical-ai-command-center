@@ -1922,6 +1922,7 @@ export function HexicalConsole() {
                       key={`terminal:${activeInvestigationId}:${workspaceRevision}`}
                       investigationId={activeInvestigationId}
                       autoCreate={false}
+                      surface="runtime"
                       onNewInvestigation={handleNewInvestigation}
                       onRename={(title, description) =>
                         handleRenameInvestigation(activeInvestigationId, title, description)
