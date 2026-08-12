@@ -75,7 +75,8 @@ npm.cmd run test:tty-runtime
 ```
 
 The worker host also needs `tmux`, a private writable `TTY_PTY_WORKSPACE_ROOT`,
-and a `TTY_PTY_PATH` containing the approved executable directories. The
+`TTY_PTY_TELEMETRY_INTERVAL_MS` (default 5000), and a `TTY_PTY_PATH`
+containing the approved executable directories. The
 worker startup fails closed if the persistent backend variables are missing or
 if the platform is Windows.
 
@@ -104,9 +105,10 @@ Linux `tmux` reattachment and worker-handoff gate.
   deployed authenticated session, including independent multi-terminal tab
   restoration;
 - verify the required `stdout`/`stderr` accounting semantics for PTY output;
-- add and verify process-level CPU, memory, and disk telemetry for the live
-  tmux process tree (the current monitor is intentionally limited to durable
-  execution timing/output metrics and does not invent host metrics);
+- run the Linux worker's `/proc` process-tree collector against the live tmux
+  pane and verify CPU, memory, disk, and process-count metrics in the durable
+  execution stream; Windows remains an explicit unsupported/skipped host for
+  this gate;
 - collect queue, claim, PTY attach, first-byte, replay, and completion timing
   from the production observability path.
 

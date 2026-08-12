@@ -287,6 +287,8 @@ test('coordinator runs a leased job through streaming to success without persist
   assert.equal(runtime.started[0]?.file, 'debug')
   assert.deepEqual(runtime.started[0]?.args, ['--safe-flag'])
   assert.equal(runtime.cleaned.length, 1)
+  const output = await deps.outputStream.read(executionId)
+  assert.equal(output.filter((event) => event.type === 'metric' && event.data.name === 'first_byte_ms').length, 1)
 })
 
 test('coordinator resumes the original execution after persistent lease adoption without redispatching argv', async () => {

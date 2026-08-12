@@ -154,17 +154,19 @@ export function createTTYSessionRuntimeApi(dependencies: TTYSessionRuntimeApiDep
         const after = url.searchParams.get('after')
         const limit = replayLimit(url.searchParams.get('limit'))
         if ((after !== null && !CURSOR_PATTERN.test(after)) || limit === null) return failure('input_rejected', 400)
-        const events = await dependencies.transcript.replay(sessionId, {
+        const replayedEvents = await dependencies.transcript.replay(sessionId, {
           ...(after === null ? {} : { after }),
-          count: limit,
+          count: limit + 1,
         })
+        const hasMore = replayedEvents.length > limit
+        const events = hasMore ? replayedEvents.slice(0, limit) : replayedEvents
         return json(
           {
             ok: true,
             sessionId,
             events,
             cursor: events.at(-1)?.cursor ?? after,
-            hasMore: events.length === limit,
+            hasMore,
             sessionState: session.status,
           },
           200,

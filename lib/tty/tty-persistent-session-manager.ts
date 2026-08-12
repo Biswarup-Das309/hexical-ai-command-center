@@ -17,6 +17,7 @@ import {
   TTYPersistentExecutionProtocolDecoder,
 } from './tty-persistent-execution-protocol'
 import type { TTYPersistentSessionHandle } from './tty-persistent-runtime'
+import type { TTYProcessTelemetrySnapshot } from './tty-process-telemetry'
 import type { TTYSessionControlEntry, TTYSessionControlHandler } from './tty-session-control'
 import type { TTYSessionTranscriptData, TTYSessionTranscriptManager } from './tty-session-transcript'
 import type { InternalTTYSession, TTYExecutionId, TTYSessionId, TTYTerminationResult } from './tty-types'
@@ -131,9 +132,11 @@ export interface TTYPersistentSessionManagerOptions {
   readonly clearInterval?: (handle: unknown) => void
   readonly logger?: TTYPersistentSessionManagerLogger
   /** Durable execution output authority for framed PTY bytes. */
-  readonly executionOutput?: Pick<TTYOutputStreamManager, 'appendOutput'>
+  readonly executionOutput?: Pick<TTYOutputStreamManager, 'appendOutput' | 'appendMetric'>
   /** How often a journal-backed PTY is polled for new bytes. */
   readonly journalPollIntervalMs?: number
+  /** How often the worker publishes authoritative process-tree samples. */
+  readonly telemetryIntervalMs?: number
 }
 
 interface RuntimeLeaseRecord {
@@ -205,6 +208,7 @@ export interface TTYPersistentRuntimeBackend {
   recoverSession?(input: TTYPersistentRuntimeSessionInput): Promise<TTYPersistentRuntimeHandle | null>
   getSession(sessionId: TTYSessionId, ownerUserId: string): TTYPersistentRuntimeHandle | null
   hasPersistentSession?(sessionId: TTYSessionId): Promise<boolean>
+  getProcessTelemetry?(sessionId: TTYSessionId, ownerUserId: string): Promise<TTYProcessTelemetrySnapshot | null>
 }
 
 export interface TTYPersistentExecutionExit {
@@ -398,8 +402,10 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
   private readonly setTimer: (handler: () => void, timeoutMs: number) => unknown
   private readonly clearTimer: (handle: unknown) => void
   private readonly logger: TTYPersistentSessionManagerLogger
-  private readonly executionOutput: Pick<TTYOutputStreamManager, 'appendOutput'> | null
+  private readonly executionOutput: Pick<TTYOutputStreamManager, 'appendOutput' | 'appendMetric'> | null
   private readonly journalPollIntervalMs: number
+  private readonly telemetryIntervalMs: number
+  private readonly telemetryLastSampleAt = new Map<TTYSessionId, number>()
   private readonly managed = new Map<TTYSessionId, ManagedSession>()
   private readonly completed = new Map<TTYSessionId, string[]>()
   private readonly outputTails = new Map<TTYSessionId, Promise<void>>()
@@ -420,12 +426,14 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS
     this.maxCompletedCommands = options.maxCompletedCommandsPerSession ?? MAX_COMPLETED_COMMANDS_PER_SESSION
     this.journalPollIntervalMs = options.journalPollIntervalMs ?? 100
+    this.telemetryIntervalMs = options.telemetryIntervalMs ?? 5_000
     if (
       !isPositiveInteger(this.leaseTtlMs) ||
       !isPositiveInteger(this.heartbeatIntervalMs) ||
       this.heartbeatIntervalMs >= this.leaseTtlMs ||
       !isPositiveInteger(this.maxCompletedCommands) ||
-      !isPositiveInteger(this.journalPollIntervalMs)
+      !isPositiveInteger(this.journalPollIntervalMs) ||
+      !isPositiveInteger(this.telemetryIntervalMs)
     )
       throw new Error('Invalid persistent TTY session manager timing configuration.')
     this.now = options.now ?? (() => new Date())
@@ -447,6 +455,7 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
     this.started = false
     if (this.timer !== null) this.clearTimer(this.timer)
     this.timer = null
+    this.telemetryLastSampleAt.clear()
     const active = [...this.managed.values()]
     for (const managed of active) await this.fence(managed, 'worker_detached', 'detach')
   }
@@ -513,6 +522,7 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
         }
         const renewed = await this.renewLease(managed).catch(() => false)
         if (!renewed) await this.fence(managed, 'runtime_lease_lost', 'detach')
+        else await this.sampleProcessTelemetry(managed)
       }
     } finally {
       this.heartbeatInFlight = false
@@ -1293,6 +1303,62 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
   private async failClosedAfterWorkerLoss(session: InternalTTYSession, reason: string): Promise<void> {
     await this.appendSystem(session.sessionId, reason)
     await this.sessions.terminateSession(session.sessionId, session.ownerUserId, 'system_shutdown')
+  }
+
+  private async sampleProcessTelemetry(managed: ManagedSession): Promise<void> {
+    if (!this.runtime.getProcessTelemetry) return
+    const nowMs = this.now().getTime()
+    const lastSampleAt = this.telemetryLastSampleAt.get(managed.sessionId) ?? 0
+    if (nowMs - lastSampleAt < this.telemetryIntervalMs) return
+    this.telemetryLastSampleAt.set(managed.sessionId, nowMs)
+    const sample = await this.runtime.getProcessTelemetry(managed.sessionId, managed.ownerUserId).catch((error) => {
+      this.logger.warn('persistent_process_telemetry_failed', {
+        sessionId: managed.sessionId,
+        errorCode: error instanceof Error ? error.name : 'unknown_error',
+      })
+      return null
+    })
+    if (!sample) return
+    const executionId = managed.activeExecution?.metadata.executionId
+    if (executionId && this.executionOutput) {
+      for (const [name, value] of [
+        ['cpu_percent', sample.cpuPercent],
+        ['memory_bytes', sample.memoryBytes],
+        ['disk_bytes', sample.diskBytes],
+        ['process_count', sample.processCount],
+      ] as const) {
+        if (value === null || !Number.isFinite(value)) continue
+        await this.executionOutput
+          .appendMetric({
+            executionId,
+            sessionId: managed.sessionId,
+            name,
+            value,
+            timestamp: sample.sampledAt,
+          })
+          .catch((error) => {
+            this.logger.warn('persistent_process_telemetry_publish_failed', {
+              sessionId: managed.sessionId,
+              executionId,
+              metric: name,
+              errorCode: error instanceof Error ? error.name : 'unknown_error',
+            })
+          })
+      }
+    }
+    await this.appendSystem(managed.sessionId, 'process_telemetry_sampled', {
+      rootPid: sample.rootPid,
+      processCount: sample.processCount,
+      cpuPercent: sample.cpuPercent,
+      memoryBytes: sample.memoryBytes,
+      diskBytes: sample.diskBytes,
+      sampledAt: sample.sampledAt,
+    }).catch((error) => {
+      this.logger.warn('persistent_process_telemetry_transcript_failed', {
+        sessionId: managed.sessionId,
+        errorCode: error instanceof Error ? error.name : 'unknown_error',
+      })
+    })
   }
 
   private async appendSystem(

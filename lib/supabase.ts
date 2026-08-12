@@ -76,6 +76,8 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 const globalForSupabase = globalThis as unknown as {
   supabasePublicSingleton: SupabaseClient<Database> | undefined
+  supabaseAuthenticatedClient: { token: string; client: SupabaseClient<Database> } | undefined
+  supabaseAuthenticatedClientSequence: number | undefined
 }
 
 export const createSupabaseClient = (token?: string): SupabaseClient<Database> => {
@@ -92,10 +94,23 @@ export const createSupabaseClient = (token?: string): SupabaseClient<Database> =
   }
 
   if (token) {
-    return createClient<Database>(supabaseUrl, supabaseAnonKey, {
+    if (globalForSupabase.supabaseAuthenticatedClient?.token === token) {
+      return globalForSupabase.supabaseAuthenticatedClient.client
+    }
+
+    // Clerk bearer clients do not use Supabase's persisted session, but GoTrue
+    // still warns when two live clients share one storage key. Keep this key
+    // separate from the legacy public client and unique across token rotation.
+    const sequence = (globalForSupabase.supabaseAuthenticatedClientSequence ?? 0) + 1
+    globalForSupabase.supabaseAuthenticatedClientSequence = sequence
+    const storageKey = `hexical-${process.env.NODE_ENV === 'development' ? 'dev' : 'prod'}-clerk-bearer-${sequence}`
+    const client = createClient<Database>(supabaseUrl, supabaseAnonKey, {
       ...clientOptions,
+      auth: { ...clientOptions.auth, storageKey },
       global: { headers: { Authorization: `Bearer ${token}` } },
     })
+    globalForSupabase.supabaseAuthenticatedClient = { token, client }
+    return client
   }
 
   if (!globalForSupabase.supabasePublicSingleton) {

@@ -83,6 +83,23 @@ test('terminated execution streams clear stale browser state', async () => {
   assert.match(stream, /handleExecutionNotFound\(\)/)
 })
 
+test('runtime transcript recovery rebinds a missing persisted session through investigation ensure', async () => {
+  const [runtime, transcript, workspace] = await Promise.all([
+    source('components/tty/RuntimeOSWorkspace.tsx'),
+    source('hooks/useTTYSessionTranscript.ts'),
+    source('components/workspace/PersistentInvestigationWorkspace.tsx'),
+  ])
+
+  assert.match(runtime, /useTTYSessionTranscript\(activeSessionId, recoverActiveSession\)/)
+  assert.match(runtime, /tab\.id === staleSessionId \? \{ \.\.\.tab, id: nextId \} : tab/)
+  assert.match(runtime, /method: 'POST'/)
+  assert.match(transcript, /cause\.code === 'SESSION_NOT_FOUND' \|\| cause\.code === 'SESSION_NOT_ACTIVE'/)
+  assert.match(transcript, /onSessionUnavailableRef\.current\(\)/)
+  assert.match(transcript, /recoveryAttemptRef\.current = false/)
+  assert.match(transcript, /body\.hasMore && body\.events\.length > 0 && nextCursor !== after/)
+  assert.match(workspace, /onRecoverSession=\{async \(\) => \{[\s\S]*await workspace\.ensureSession\(\)/)
+})
+
 test('stream recovery does not reconnect merely because the parent callback identity changed', async () => {
   const stream = await source('hooks/useTTYExecutionStream.ts')
 

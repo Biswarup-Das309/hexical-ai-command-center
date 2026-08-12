@@ -17,6 +17,7 @@ import type {
   TTYPersistentPtySpawnOptions,
   TTYPersistentSessionMetadata,
 } from './tty-persistent-runtime'
+import { TTYLinuxProcessTelemetryCollector, type TTYProcessTelemetrySnapshot } from './tty-process-telemetry'
 import type { TTYSessionId } from './tty-types'
 import type { TTYWorkerId } from './tty-worker-types'
 
@@ -52,6 +53,8 @@ export interface TTYTmuxAdapter {
   attach(input: TTYTmuxAttachInput): TTYPersistentPty
   /** Idempotently keeps tmux pane output flowing to the durable journal. */
   readonly enableOutputJournal?: (tmuxSessionName: string, outputJournal: string) => Promise<void>
+  /** Returns the authoritative tmux pane PID, not the node-pty attach client. */
+  readonly getPanePid?: (tmuxSessionName: string) => Promise<number | null>
   killServer(tmuxSessionName: string): Promise<void>
 }
 
@@ -158,6 +161,7 @@ export class TTYTmuxRuntime {
   private readonly shellArgs: readonly string[]
   private readonly defaultSize: { readonly columns: number; readonly rows: number }
   private readonly terminationWaitMs: number
+  private readonly processTelemetry: TTYLinuxProcessTelemetryCollector
   private readonly sessions = new Map<TTYSessionId, InternalSession>()
 
   constructor(
@@ -174,6 +178,7 @@ export class TTYTmuxRuntime {
     if (!Number.isSafeInteger(requestedWait) || requestedWait < 1 || requestedWait > MAX_TERMINATION_WAIT_MS)
       throw new Error('Invalid terminal termination timeout.')
     this.terminationWaitMs = requestedWait
+    this.processTelemetry = new TTYLinuxProcessTelemetryCollector()
   }
 
   async createSession(input: {
@@ -218,6 +223,14 @@ export class TTYTmuxRuntime {
         .filter((session) => session.metadata.ownerUserId === ownerUserId)
         .map((session) => session.metadata),
     )
+  }
+
+  async getProcessTelemetry(sessionId: TTYSessionId, ownerUserId: string): Promise<TTYProcessTelemetrySnapshot | null> {
+    const internal = this.sessions.get(sessionId)
+    if (!internal || internal.metadata.ownerUserId !== ownerUserId || !this.adapter.getPanePid) return null
+    const panePid = await this.adapter.getPanePid(internal.tmuxSessionName)
+    if (panePid === null) return null
+    return this.processTelemetry.sample(panePid, internal.cwd)
   }
 
   async detachSession(sessionId: TTYSessionId, ownerUserId: string): Promise<boolean> {
@@ -436,6 +449,7 @@ export class TTYTmuxRuntime {
 
 interface SpawnResult {
   readonly code: number | null
+  readonly stdout: string
   readonly stderr: string
 }
 
@@ -469,14 +483,18 @@ async function runTmuxCommand(
       env: env as NodeJS.ProcessEnv,
       shell: false,
       windowsHide: true,
-      stdio: ['ignore', 'ignore', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8')
     })
     let stderr = ''
     child.stderr?.on('data', (chunk: Buffer) => {
       stderr += chunk.toString('utf8')
     })
     child.once('error', rejectCommand)
-    child.once('close', (code) => resolveCommand({ code, stderr }))
+    child.once('close', (code) => resolveCommand({ code, stdout, stderr }))
   })
 }
 
@@ -513,6 +531,15 @@ export async function createNodePtyTmuxAdapter(
         adminEnv,
       )
       if (result.code !== 0) throw new Error(`Failed to enable persistent PTY journal (${result.code ?? 'unknown'}).`)
+    },
+    async getPanePid(tmuxSessionName) {
+      const result = await runTmuxCommand(
+        ['display-message', '-p', '-t', `${tmuxSessionName}:0.0`, '#{pane_pid}'],
+        '/',
+        adminEnv,
+      )
+      const pid = Number(result.stdout.trim())
+      return result.code === 0 && Number.isSafeInteger(pid) && pid > 0 ? pid : null
     },
     attach(input) {
       const options: TTYPersistentPtySpawnOptions = {

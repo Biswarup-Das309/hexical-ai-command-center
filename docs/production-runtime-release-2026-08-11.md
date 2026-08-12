@@ -18,6 +18,8 @@ Run from the repository root:
 ```powershell
 npm.cmd run typecheck
 npm.cmd run verify:node-pty
+npm.cmd run stress:node-pty
+npm.cmd run verify:runtime-os-local
 npm.cmd run test:tty-runtime
 npm.cmd run test:tty-frontend
 npm.cmd run test:all
@@ -27,10 +29,13 @@ npm.cmd run build
 ```
 
 The current continuation verified TypeScript successfully, the real local
-`node-pty` smoke successfully, the full TTY runtime suite at 72/72 tests, the
-full repository suite with exit code 0, formatting, audit, and the production
-build. These are local results only. The Linux/tmux worker path, worker
-handoff, and deployed browser workflow remain manual gates.
+`node-pty` smoke and three-session stress suite successfully, the local
+queued-to-completed Runtime OS proof successfully, the full TTY runtime suite,
+the full repository suite with exit code 0, formatting, audit, and the
+production build. The anonymous dashboard regression also returned a Clerk
+307 sign-in redirect with the requested dashboard URL preserved. These are
+local results only. The Linux/tmux worker path, worker handoff, deployed
+browser workflow, and production data-plane verification remain manual gates.
 
 ## Runtime implementation
 
@@ -53,9 +58,11 @@ handoff, and deployed browser workflow remain manual gates.
   persistent session rather than an alias to the owner's first shell.
 - `components/tty/RuntimeOSWorkspace.tsx` is the terminal-first Execute
   surface. It renders durable timing/output metrics and execution timeline
-  events when the worker emits them; unavailable process-level host telemetry
-  is displayed as unavailable rather than fabricated. Investigation graph,
-  notes, evidence, and timeline controls remain under the Workspace surface.
+  events when the worker emits them. Linux workers can now publish
+  authoritative `/proc` process-tree samples through the tmux pane PID;
+  unavailable host telemetry is displayed as unavailable rather than
+  fabricated. Investigation graph, notes, evidence, and timeline controls
+  remain under the Workspace surface.
 
 ## Worker package and environment
 
@@ -76,6 +83,7 @@ TTY_PERSISTENT_PTY_ENABLED=true
 TTY_RUNTIME_BACKEND=tmux
 TTY_PTY_PATH=<approved executable PATH>
 TTY_PTY_WORKSPACE_ROOT=<private writable worker directory>
+TTY_PTY_TELEMETRY_INTERVAL_MS=5000
 TTY_EXECUTION_WORKER_ID=<unique worker id>
 TTY_WORKER_AUTH_SECRET=<shared secret with the web app>
 UPSTASH_REDIS_REST_URL=<production Redis URL>

@@ -280,6 +280,9 @@ export function PersistentInvestigationWorkspace({
         onExecute={execute}
         onCancel={cancelExecution}
         onTerminateSession={terminateSession}
+        onRecoverSession={async () => {
+          await workspace.ensureSession()
+        }}
         onNewInvestigation={onNewInvestigation ?? createInvestigation}
         sessionError={sessionFailure?.message ?? null}
         executionError={executionError}

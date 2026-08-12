@@ -2,14 +2,20 @@
  * Framed command protocol for a persistent POSIX shell.
  *
  * A PTY intentionally multiplexes stdout and stderr into one terminal byte
- * stream.  The random OSC frames below give the worker a bounded, unforgeable
- * (for ordinary command output) boundary around an admitted argv command
- * without evaluating browser-controlled shell source.  Text outside a frame
+ * stream.  The random token-boundary frames below give the worker a bounded,
+ * unforgeable (for ordinary command output) boundary around an admitted argv
+ * command without evaluating browser-controlled shell source.  The printable
+ * frame is emitted because some Windows PTY backends consume OSC and C0
+ * control sequences before they reach the reader.  The decoder retains
+ * legacy OSC support during rolling worker upgrades.  Text outside a frame
  * remains normal terminal transcript data; text between a matching START and
  * END is also attributable to the durable execution stream.
  */
 
-const OSC_PREFIX = '\u001b]9;HEXICAL;'
+const FRAME_PREFIX = 'HEXICAL_RUNTIME_FRAME;'
+const LEGACY_OSC_PREFIX = '\u001b]9;HEXICAL;'
+const FRAME_PREFIXES = [FRAME_PREFIX, LEGACY_OSC_PREFIX] as const
+const FRAME_TERMINATOR = '\n'
 const BEL = '\u0007'
 const STRING_TERMINATOR = '\u001b\\'
 const MAX_FRAME_BYTES = 512
@@ -25,9 +31,9 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\\"'\\\"'")}'`
 }
 
-function marker(token: string, phase: 'START' | 'END'): string {
-  const suffix = phase === 'START' ? `START;${token}` : `END;${token};%s`
-  return `\\033]9;HEXICAL;${suffix}\\a`
+function markerCommand(token: string, phase: 'START' | 'END'): string {
+  if (phase === 'START') return `printf '%s%s\\n' 'HEXICAL_RUNTIME_FRAME' ';START;${token}'`
+  return `printf '%s%s;%s\\n' 'HEXICAL_RUNTIME_FRAME' ';END;${token}' "$__hexical_exit"`
 }
 
 function validToken(value: string): boolean {
@@ -56,33 +62,53 @@ export function serializeTTYPersistentShellExecution(input: {
     [
       '__hexical_errexit=0',
       'case $- in *e*) __hexical_errexit=1; set +e ;; esac',
-      `printf '${marker(input.token, 'START')}'`,
+      markerCommand(input.token, 'START'),
       command,
       '__hexical_exit=$?',
-      `printf '${marker(input.token, 'END')} ' "$__hexical_exit"`,
+      markerCommand(input.token, 'END'),
       '[ "$__hexical_errexit" -eq 0 ] || set -e',
     ].join('; ') + '\n'
   )
 }
 
 function longestPrefixSuffix(value: string): number {
-  const max = Math.min(value.length, OSC_PREFIX.length - 1)
-  for (let length = max; length > 0; length -= 1) {
-    if (value.endsWith(OSC_PREFIX.slice(0, length))) return length
+  for (const prefix of FRAME_PREFIXES) {
+    const max = Math.min(value.length, prefix.length - 1)
+    for (let length = max; length > 0; length -= 1) {
+      if (value.endsWith(prefix.slice(0, length))) return length
+    }
   }
   return 0
 }
 
-function terminatorIndex(value: string, from: number): { readonly index: number; readonly length: number } | null {
+function terminatorIndex(
+  value: string,
+  prefix: string,
+  from: number,
+): { readonly index: number; readonly length: number } | null {
+  const frameTerminator = prefix === FRAME_PREFIX ? value.indexOf(FRAME_TERMINATOR, from) : -1
   const bell = value.indexOf(BEL, from)
   const st = value.indexOf(STRING_TERMINATOR, from)
-  if (bell < 0 && st < 0) return null
-  if (bell >= 0 && (st < 0 || bell < st)) return { index: bell, length: BEL.length }
-  return { index: st, length: STRING_TERMINATOR.length }
+  const candidates = [
+    frameTerminator >= 0 ? { index: frameTerminator, length: FRAME_TERMINATOR.length } : null,
+    bell >= 0 ? { index: bell, length: BEL.length } : null,
+    st >= 0 ? { index: st, length: STRING_TERMINATOR.length } : null,
+  ].filter((candidate): candidate is { readonly index: number; readonly length: number } => candidate !== null)
+  if (candidates.length === 0) return null
+  return candidates.reduce((earliest, candidate) => (candidate.index < earliest.index ? candidate : earliest))
+}
+
+function framePrefix(value: string): { readonly index: number; readonly prefix: string } | null {
+  const matches = FRAME_PREFIXES.map((prefix) => ({ index: value.indexOf(prefix), prefix })).filter(
+    (match) => match.index >= 0,
+  )
+  if (matches.length === 0) return null
+  return matches.reduce((earliest, match) => (match.index < earliest.index ? match : earliest))
 }
 
 function parseFrame(frame: string, raw: string): TTYPersistentExecutionProtocolEvent | null {
-  const parts = frame.split(';')
+  const normalizedFrame = frame.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '').replaceAll('\r', '')
+  const parts = normalizedFrame.split(';')
   if (parts[0] === 'START' && parts.length === 2 && validToken(parts[1] ?? ''))
     return { type: 'started', token: parts[1] as string, raw }
   if (parts[0] === 'END' && parts.length === 3 && validToken(parts[1] ?? '')) {
@@ -116,27 +142,27 @@ export class TTYPersistentExecutionProtocolDecoder {
     }
 
     while (this.buffered.length > 0) {
-      const prefixIndex = this.buffered.indexOf(OSC_PREFIX)
-      if (prefixIndex < 0) {
+      const prefix = framePrefix(this.buffered)
+      if (prefix === null) {
         const keep = longestPrefixSuffix(this.buffered)
         emitOutput(this.buffered.slice(0, this.buffered.length - keep))
         this.buffered = this.buffered.slice(this.buffered.length - keep)
         break
       }
-      if (prefixIndex > 0) {
-        emitOutput(this.buffered.slice(0, prefixIndex))
-        this.buffered = this.buffered.slice(prefixIndex)
+      if (prefix.index > 0) {
+        emitOutput(this.buffered.slice(0, prefix.index))
+        this.buffered = this.buffered.slice(prefix.index)
       }
-      const terminator = terminatorIndex(this.buffered, OSC_PREFIX.length)
+      const terminator = terminatorIndex(this.buffered, prefix.prefix, prefix.prefix.length)
       if (terminator === null) {
         if (this.buffered.length > MAX_FRAME_BYTES) {
-          emitOutput(this.buffered.slice(0, this.buffered.length - OSC_PREFIX.length))
-          this.buffered = this.buffered.slice(this.buffered.length - OSC_PREFIX.length)
+          emitOutput(this.buffered.slice(0, this.buffered.length - prefix.prefix.length))
+          this.buffered = this.buffered.slice(this.buffered.length - prefix.prefix.length)
         }
         break
       }
       const rawFrame = this.buffered.slice(0, terminator.index + terminator.length)
-      const frame = this.buffered.slice(OSC_PREFIX.length, terminator.index)
+      const frame = this.buffered.slice(prefix.prefix.length, terminator.index)
       this.buffered = this.buffered.slice(terminator.index + terminator.length)
       const parsed = parseFrame(frame, rawFrame)
       if (parsed === null) emitOutput(rawFrame)

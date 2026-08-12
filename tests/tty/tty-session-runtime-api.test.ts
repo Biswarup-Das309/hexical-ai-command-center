@@ -146,3 +146,37 @@ test('session transcript replay uses exclusive durable cursors across browser re
     ['second\n'],
   )
 })
+
+test('session transcript replay paginates without gaps, duplicates, or false continuation', async () => {
+  const testFixture = fixture()
+  for (const text of ['first\n', 'second\n', 'third\n']) {
+    await testFixture.transcript.appendOutput({ sessionId, text })
+  }
+
+  let after: string | null = null
+  const received: string[] = []
+  const cursors: string[] = []
+
+  for (let page = 0; page < 3; page += 1) {
+    const url = new URL(`https://hexical.test/api/tty/sessions/${sessionId}/transcript`)
+    url.searchParams.set('limit', '1')
+    if (after) url.searchParams.set('after', after)
+    const response = await testFixture.api.replay(new Request(url), sessionId)
+    const body = (await response.json()) as {
+      events: Array<{ cursor: string; data: Record<string, unknown> }>
+      cursor: string
+      hasMore: boolean
+    }
+
+    assert.equal(response.status, 200)
+    assert.equal(body.events.length, 1)
+    assert.notEqual(body.cursor, after)
+    received.push(String(body.events[0]?.data.text))
+    cursors.push(body.cursor)
+    after = body.cursor
+    assert.equal(body.hasMore, page < 2)
+  }
+
+  assert.deepEqual(received, ['first\n', 'second\n', 'third\n'])
+  assert.equal(new Set(cursors).size, cursors.length)
+})

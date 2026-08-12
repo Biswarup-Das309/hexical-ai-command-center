@@ -56,6 +56,7 @@ const CANCELLATION_POLL_INTERVAL_MS = 1_000
 type TTYExecutionMetricName =
   | 'queue_wait_ms'
   | 'startup_ms'
+  | 'first_byte_ms'
   | 'duration_ms'
   | 'output_bytes'
   | 'stdout_bytes'
@@ -201,6 +202,9 @@ interface ExecutionContext {
   stderrChunkCount: number
   persistedOutputEventCount: number
   outputPersistenceFailureCount: number
+  startedAtMs: number | null
+  firstByteRecorded: boolean
+  firstByteMs: number | null
   runtimeTransport: 'subprocess' | 'persistent_pty'
   outputDurable: boolean
   readonly hooks: TTYExecutionCoordinatorRunHooks
@@ -533,6 +537,9 @@ export class TTYExecutionCoordinator {
       stderrChunkCount: 0,
       persistedOutputEventCount: 0,
       outputPersistenceFailureCount: 0,
+      startedAtMs: null,
+      firstByteRecorded: false,
+      firstByteMs: null,
       runtimeTransport: 'subprocess',
       outputDurable: false,
       hooks,
@@ -730,6 +737,7 @@ export class TTYExecutionCoordinator {
       await this.persistRuntimeMetadata(metadata)
       context.startedRecorded = state.startedAt !== null
       context.streaming = state.state === 'streaming'
+      if (context.startedAtMs === null && state.startedAt !== null) context.startedAtMs = Date.parse(state.startedAt)
       if (state.state === 'starting' || state.state === 'leased') state = await this.markExecutionRunning(context)
       else await this.safeAppendState(state)
       context.reservation.armTimeout(() => {
@@ -803,6 +811,7 @@ export class TTYExecutionCoordinator {
 
   private async markExecutionRunning(context: ExecutionContext): Promise<TTYExecutionStateRecord> {
     const state = await this.transition(context, 'running')
+    context.startedAtMs = state.startedAt === null ? null : Date.parse(state.startedAt)
     await this.safeAppendState(state)
     await this.safeAppendMetrics(state, ['queue_wait_ms', 'startup_ms'])
     if (!context.startedRecorded) {
@@ -897,6 +906,7 @@ export class TTYExecutionCoordinator {
       stdoutChunkCount: context.stdoutChunkCount,
       stderrChunkCount: context.stderrChunkCount,
       persistedOutputEventCount: context.persistedOutputEventCount,
+      firstByteMs: context.firstByteMs,
       outputPersistenceFailureCount: context.outputPersistenceFailureCount,
       completionReason: state.completionReason,
       ...this.correlationFields(context),
@@ -1048,6 +1058,42 @@ export class TTYExecutionCoordinator {
         context.stdoutBytes = accounting.stdoutBytes
         context.stderrBytes = accounting.stderrBytes
         if (accounting.acceptedBytes > 0) {
+          if (!context.firstByteRecorded) {
+            context.firstByteRecorded = true
+            const startedAtMs = context.startedAtMs
+            const firstByteMs =
+              startedAtMs !== null && Number.isFinite(startedAtMs)
+                ? Math.max(0, this.now().getTime() - startedAtMs)
+                : null
+            context.firstByteMs = firstByteMs
+            log.info('tty.execution.first_byte', {
+              executionId: context.executionId,
+              sessionId: context.sessionId,
+              workerId: this.dependencies.workerId,
+              stream,
+              latencyMs: firstByteMs,
+              transport: context.runtimeTransport,
+              ...this.correlationFields(context),
+            })
+            if (firstByteMs !== null) {
+              try {
+                await this.dependencies.outputStream.appendMetric({
+                  executionId: context.executionId,
+                  sessionId: context.sessionId,
+                  name: 'first_byte_ms',
+                  value: firstByteMs,
+                  timestamp: this.now().toISOString(),
+                })
+              } catch (error) {
+                log.warn('tty.execution.metric_stream_failed', {
+                  executionId: context.executionId,
+                  sessionId: context.sessionId,
+                  name: 'first_byte_ms',
+                  error: error instanceof Error ? error.message : String(error),
+                })
+              }
+            }
+          }
           if (!context.streaming) {
             context.streaming = true
             const state = await this.transition(context, 'streaming')

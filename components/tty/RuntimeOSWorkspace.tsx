@@ -21,6 +21,7 @@ interface RuntimeOSWorkspaceProps {
   readonly onExecute: (input: string) => Promise<void>
   readonly onCancel: () => Promise<void>
   readonly onTerminateSession: () => Promise<void>
+  readonly onRecoverSession?: () => Promise<void>
   readonly onNewInvestigation?: () => Promise<void> | void
   readonly sessionError?: string | null
   readonly executionError?: string | null
@@ -82,6 +83,7 @@ export function RuntimeOSWorkspace({
   onExecute,
   onCancel,
   onTerminateSession,
+  onRecoverSession,
   onNewInvestigation,
   sessionError,
   executionError,
@@ -98,12 +100,50 @@ export function RuntimeOSWorkspace({
   )
   const [activeTabId, setActiveTabId] = useState<string | null>(sessionId)
   const [lastTabExecutionId, setLastTabExecutionId] = useState<string | null>(null)
+  const primaryTabIdRef = useRef<string | null>(sessionId)
+  const recoveryInFlightRef = useRef<Promise<void> | null>(null)
   const primarySessionId = sessionId
   const activeSessionId = activeTabId ?? primarySessionId
   const activeTab = tabs.find((tab) => tab.id === activeSessionId) ?? null
   const activeTabIsPrimary = activeTab?.primary === true || activeSessionId === primarySessionId
   const terminalReady = terminalReadySessionId === activeSessionId
-  const transcript = useTTYSessionTranscript(activeSessionId)
+  const recoverActiveSession = useCallback((): Promise<void> => {
+    const inFlight = recoveryInFlightRef.current
+    if (inFlight) return inFlight
+    if (!activeSessionId) return Promise.resolve()
+
+    const staleSessionId = activeSessionId
+    const operation = (async () => {
+      if (activeTabIsPrimary) {
+        await onRecoverSession?.()
+        return
+      }
+
+      const body = await runtimeRequest<CreatedSessionResponse>('/api/tty/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      })
+      const nextId = body.session.sessionId
+      setTabs((current) =>
+        current.some((tab) => tab.id === staleSessionId)
+          ? current.map((tab) => (tab.id === staleSessionId ? { ...tab, id: nextId } : tab))
+          : current,
+      )
+      setActiveTabId((current) => (current === staleSessionId ? nextId : current))
+    })()
+      .catch((cause) => {
+        setControlError(cause instanceof Error ? cause.message : 'The runtime session could not be restored.')
+        throw cause
+      })
+      .finally(() => {
+        if (recoveryInFlightRef.current === operation) recoveryInFlightRef.current = null
+      })
+
+    recoveryInFlightRef.current = operation
+    return operation
+  }, [activeSessionId, activeTabIsPrimary, onRecoverSession])
+  const transcript = useTTYSessionTranscript(activeSessionId, recoverActiveSession)
   const observedExecutionId = activeTabIsPrimary ? selectedExecutionId : lastTabExecutionId
   const executionStream = useTTYExecutionStream({
     executionId: observedExecutionId,
@@ -120,13 +160,26 @@ export function RuntimeOSWorkspace({
 
   useEffect(() => {
     if (!sessionId) return
+    const previousPrimaryTabId = primaryTabIdRef.current
+    primaryTabIdRef.current = sessionId
     queueMicrotask(() => {
-      setTabs((current) =>
-        current.some((tab) => tab.id === sessionId)
-          ? current.map((tab) => (tab.id === sessionId ? { ...tab, primary: true, label: 'primary' } : tab))
-          : [{ id: sessionId, label: 'primary', primary: true }, ...current],
-      )
-      setActiveTabId((current) => current ?? sessionId)
+      setTabs((current) => {
+        const replacementId = previousPrimaryTabId && previousPrimaryTabId !== sessionId ? previousPrimaryTabId : null
+        const withoutTarget = current.filter((tab) => tab.id !== sessionId)
+        const normalized = withoutTarget.map((tab) =>
+          tab.id === replacementId ? { ...tab, id: sessionId, label: 'primary', primary: true } : tab,
+        )
+        const seen = new Set<string>()
+        const unique = normalized.filter((tab) => {
+          if (seen.has(tab.id)) return false
+          seen.add(tab.id)
+          return true
+        })
+        return unique.some((tab) => tab.id === sessionId)
+          ? unique.map((tab) => (tab.id === sessionId ? { ...tab, label: 'primary', primary: true } : tab))
+          : [{ id: sessionId, label: 'primary', primary: true }, ...unique]
+      })
+      setActiveTabId((current) => (current === previousPrimaryTabId || current === null ? sessionId : current))
     })
   }, [sessionId])
 

@@ -1,6 +1,6 @@
 'use client'
 
-import { Clock3, Database, Gauge, HardDrive, Timer } from 'lucide-react'
+import { Clock3, Cpu, Database, Gauge, GitBranch, HardDrive, Timer } from 'lucide-react'
 
 export interface ExecutionResourceMonitorProps {
   readonly metrics?: Readonly<Record<string, number>>
@@ -23,6 +23,12 @@ export function ExecutionResourceMonitor({ metrics = {}, className = '' }: Execu
       tone: 'text-violet-300',
     },
     {
+      label: 'First byte',
+      value: display(metrics, ['first_byte_ms'], ' ms'),
+      icon: Timer,
+      tone: 'text-cyan-300',
+    },
+    {
       label: 'Duration',
       value: display(metrics, ['duration_ms'], ' ms'),
       icon: Gauge,
@@ -39,6 +45,30 @@ export function ExecutionResourceMonitor({ metrics = {}, className = '' }: Execu
       value: `${display(metrics, ['stdout_bytes'], ' B')} / ${display(metrics, ['stderr_bytes'], ' B')}`,
       icon: Database,
       tone: 'text-rose-300',
+    },
+    {
+      label: 'CPU',
+      value: display(metrics, ['cpu_percent'], '%'),
+      icon: Cpu,
+      tone: 'text-cyan-300',
+    },
+    {
+      label: 'Memory',
+      value: display(metrics, ['memory_bytes'], ' B'),
+      icon: Database,
+      tone: 'text-violet-300',
+    },
+    {
+      label: 'Disk',
+      value: display(metrics, ['disk_bytes'], ' B'),
+      icon: HardDrive,
+      tone: 'text-amber-300',
+    },
+    {
+      label: 'Processes',
+      value: display(metrics, ['process_count']),
+      icon: GitBranch,
+      tone: 'text-emerald-300',
     },
   ] as const
 
@@ -59,7 +89,7 @@ export function ExecutionResourceMonitor({ metrics = {}, className = '' }: Execu
           {hasMetrics ? 'telemetry live' : 'awaiting telemetry'}
         </span>
       </div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5 lg:grid-cols-1">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-1">
         {cards.map(({ label, value, icon: Icon, tone }) => (
           <div key={label} className="rounded border border-white/5 bg-white/[0.02] px-2 py-2">
             <div className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-wider text-zinc-600">

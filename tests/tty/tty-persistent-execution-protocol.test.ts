@@ -14,6 +14,8 @@ test('persistent shell protocol preserves literal argv and frames split PTY outp
   })
   assert.match(command, /'one; \$\(not-a-substitution\); it'\\"'\\"'s literal'/)
   assert.equal(command.includes('eval'), false)
+  assert.match(command, /printf '%s%s\\n' 'HEXICAL_RUNTIME_FRAME' ';START;/)
+  assert.match(command, /printf '%s%s;%s\\n' 'HEXICAL_RUNTIME_FRAME' ';END;/)
 
   const decoder = new TTYPersistentExecutionProtocolDecoder()
   const first = decoder.push(`shell echo\r\n\u001b]9;HEXICAL;START;${token.slice(0, 12)}`)
@@ -30,6 +32,22 @@ test('persistent shell protocol preserves literal argv and frames split PTY outp
     { type: 'completed', token, exitCode: 7, raw: `\u001b]9;HEXICAL;END;${token};7\u0007` },
     { type: 'output', text: 'prompt$ ' },
   ])
+})
+
+test('persistent shell protocol decodes printable token-boundary frames', () => {
+  const decoder = new TTYPersistentExecutionProtocolDecoder()
+  assert.deepEqual(decoder.push(`before\r\nHEXICAL_RUNTIME_FRAME;START;${token}`), [
+    { type: 'output', text: 'before\r\n' },
+  ])
+  assert.deepEqual(
+    decoder.push(`\u001b[0K\r\nportable output\nHEXICAL_RUNTIME_FRAME;END;${token};0\u001b[0K\r\nafter`),
+    [
+      { type: 'started', token, raw: `HEXICAL_RUNTIME_FRAME;START;${token}\u001b[0K\r\n` },
+      { type: 'output', text: 'portable output\n' },
+      { type: 'completed', token, exitCode: 0, raw: `HEXICAL_RUNTIME_FRAME;END;${token};0\u001b[0K\r\n` },
+      { type: 'output', text: 'after' },
+    ],
+  )
 })
 
 test('persistent shell protocol never consumes malformed or foreign OSC text', () => {
