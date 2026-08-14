@@ -12,11 +12,13 @@ class ControlRedisFake {
   entries: Array<readonly [string, Record<string, unknown>]> = []
   acknowledgements: string[] = []
   groupCreates = 0
+  groupOptions: unknown[] = []
   expirationSeconds: number | null = null
   pending: readonly [string, Record<string, unknown>][] = []
 
-  async xgroup(_key: string, _options: unknown): Promise<string> {
+  async xgroup(_key: string, options: unknown): Promise<string> {
     this.groupCreates += 1
+    this.groupOptions.push(options)
     if (this.groupCreates > 1) throw new Error('BUSYGROUP Consumer Group name already exists')
     return 'OK'
   }
@@ -62,6 +64,12 @@ test('control publisher creates one durable consumer group and appends a bounded
 
   assert.equal(streamId, '1-0')
   assert.equal(redis.groupCreates, 1)
+  assert.deepEqual(redis.groupOptions[0], {
+    type: 'CREATE',
+    group: ttySessionControlGroup(),
+    id: '0-0',
+    options: { MKSTREAM: true },
+  })
   assert.equal(redis.expirationSeconds, 7 * 24 * 60 * 60)
   assert.equal(redis.entries[0]?.[1].sessionId, sessionId)
   assert.equal(redis.entries[0]?.[1].type, 'write')
@@ -113,6 +121,19 @@ test('consumer processes fresh, reclaimed, and malformed commands with durable a
   assert.equal(ttySessionControlGroup(), 'tty-session-workers-v1')
 })
 
+test('consumer acknowledges malformed flat Redis fields by their stream entry ID', async () => {
+  const redis = new ControlRedisFake()
+  redis.entries.push(['13-0', ['commandId', 'malformed-command', 'sessionId', sessionId, 'type', 'open']] as never)
+  const consumer = new TTYSessionControlConsumer(redis as never, 'worker-control-malformed-fields', {
+    handle: async () => undefined,
+  })
+
+  await consumer.start()
+  await consumer.stop()
+
+  assert.deepEqual(redis.acknowledgements, ['13-0'])
+})
+
 test('consumer leaves a failed command pending for reclamation instead of acknowledging it', async () => {
   const redis = new ControlRedisFake()
   redis.entries.push([
@@ -133,4 +154,19 @@ test('consumer leaves a failed command pending for reclamation instead of acknow
   await consumer.stop()
 
   assert.deepEqual(redis.acknowledgements, [])
+})
+
+test('consumer labels Redis stream startup failures with the affected stream and group', async () => {
+  const redis = new ControlRedisFake()
+  redis.xautoclaim = async () => {
+    throw new Error('ERR invalid stream id')
+  }
+  const consumer = new TTYSessionControlConsumer(redis as never, 'worker-control-diagnostics', {
+    handle: async () => undefined,
+  })
+
+  await assert.rejects(() => consumer.start(), {
+    message:
+      /TTY control stream poll failed for tty:sessions:control\/tty-session-workers-v1: xautoclaim failed for tty:sessions:control\/tty-session-workers-v1: ERR invalid stream id/,
+  })
 })

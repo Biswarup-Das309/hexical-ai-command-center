@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createTTYInputQueue } from '@/lib/tty/tty-input-queue'
 import type { TTYSessionTranscriptEvent } from '@/lib/tty/tty-session-transcript'
 
 type TTYSessionConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'error'
@@ -91,6 +92,7 @@ export function useTTYSessionTranscript(
   const startedRef = useRef(false)
   const onSessionUnavailableRef = useRef(onSessionUnavailable)
   const recoveryAttemptRef = useRef(false)
+  const writeQueueRef = useRef<ReturnType<typeof createTTYInputQueue> | null>(null)
 
   useEffect(() => {
     onSessionUnavailableRef.current = onSessionUnavailable
@@ -120,7 +122,10 @@ export function useTTYSessionTranscript(
   const write = useCallback(
     async (data: string) => {
       if (!data) return
-      await control({ type: 'write', data })
+      if (!writeQueueRef.current) {
+        writeQueueRef.current = createTTYInputQueue((nextData) => control({ type: 'write', data: nextData }))
+      }
+      await writeQueueRef.current.enqueue(data)
     },
     [control],
   )
@@ -214,6 +219,8 @@ export function useTTYSessionTranscript(
     const generation = generationRef.current
     startedRef.current = false
     recoveryAttemptRef.current = false
+    writeQueueRef.current?.reset()
+    writeQueueRef.current = null
     if (pollTimerRef.current !== null) clearTimeout(pollTimerRef.current)
     if (touchTimerRef.current !== null) clearInterval(touchTimerRef.current)
     pollTimerRef.current = null

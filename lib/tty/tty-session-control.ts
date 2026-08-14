@@ -68,13 +68,21 @@ async function ensureControlGroup(redis: Redis, streamKey: string, group: string
     await redis.xgroup(streamKey, {
       type: 'CREATE',
       group,
-      id: '0',
+      // Redis stream IDs require the `<milliseconds>-<sequence>` form.
+      // Upstash rejects the shorthand `0` with `ERR invalid stream id`,
+      // which previously allowed the worker to register and heartbeat before
+      // dying while starting its control consumers.
+      id: '0-0',
       options: { MKSTREAM: true },
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (!message.toUpperCase().includes('BUSYGROUP')) throw error
   }
+}
+
+function controlErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message.length > 0 ? error.message : String(error)
 }
 
 export async function publishTTYSessionControl(
@@ -155,8 +163,17 @@ function parseReadResponse(value: unknown): ParsedControlBatch {
     if (Array.isArray(candidate) && candidate.length >= 2 && typeof candidate[0] === 'string') {
       const entry = parseEntry(candidate)
       if (entry) entries.push(entry)
-      else if (Array.isArray(candidate[1])) visit(candidate[1])
-      else invalidIds.push(candidate[0])
+      else {
+        // A stream entry's fields are also an array, but they are a flat
+        // key/value list. Recurse only through a nested list of stream-entry
+        // tuples; otherwise acknowledge the actual entry ID. Descending into
+        // fields made `commandId` look like a Redis stream ID and caused
+        // `ERR invalid stream id` during worker startup.
+        const nestedEntries =
+          Array.isArray(candidate[1]) && candidate[1].some((item) => Array.isArray(item) && typeof item[0] === 'string')
+        if (nestedEntries) visit(candidate[1])
+        else invalidIds.push(candidate[0])
+      }
       return
     }
     if (Array.isArray(candidate)) for (const item of candidate) visit(item)
@@ -206,9 +223,24 @@ export class TTYSessionControlConsumer {
 
   async start(): Promise<void> {
     if (this.started) return
-    await ensureControlGroup(this.redis, this.streamKey, this.group)
+    try {
+      await ensureControlGroup(this.redis, this.streamKey, this.group)
+    } catch (error) {
+      throw new Error(
+        `TTY control group initialization failed for ${this.streamKey}/${this.group}: ${controlErrorMessage(error)}`,
+        { cause: error },
+      )
+    }
     this.started = true
-    await this.pollOnce()
+    try {
+      await this.pollOnce()
+    } catch (error) {
+      this.started = false
+      throw new Error(
+        `TTY control stream poll failed for ${this.streamKey}/${this.group}: ${controlErrorMessage(error)}`,
+        { cause: error },
+      )
+    }
     this.timer = setInterval(() => void this.pollOnce(), this.pollIntervalMs)
   }
 
@@ -222,24 +254,49 @@ export class TTYSessionControlConsumer {
     if (!this.started || this.polling) return 0
     this.polling = true
     try {
-      const reclaimed = await this.redis.xautoclaim(
-        this.streamKey,
-        this.group,
-        this.consumer,
-        this.minIdleMs,
-        this.reclaimCursor,
-        { count: this.batchSize },
-      )
+      let reclaimed: unknown
+      try {
+        reclaimed = await this.redis.xautoclaim(
+          this.streamKey,
+          this.group,
+          this.consumer,
+          this.minIdleMs,
+          this.reclaimCursor,
+          { count: this.batchSize },
+        )
+      } catch (error) {
+        throw new Error(`xautoclaim failed for ${this.streamKey}/${this.group}: ${controlErrorMessage(error)}`, {
+          cause: error,
+        })
+      }
       const reclaimedBatch = parseReadResponse(Array.isArray(reclaimed) ? reclaimed[1] : reclaimed)
       if (Array.isArray(reclaimed) && typeof reclaimed[0] === 'string') this.reclaimCursor = reclaimed[0]
-      const fresh = await this.redis.xreadgroup(this.group, this.consumer, this.streamKey, '>', {
-        count: this.batchSize,
-      })
+      let fresh: unknown
+      try {
+        fresh = await this.redis.xreadgroup(this.group, this.consumer, this.streamKey, '>', {
+          count: this.batchSize,
+        })
+      } catch (error) {
+        throw new Error(`xreadgroup failed for ${this.streamKey}/${this.group}: ${controlErrorMessage(error)}`, {
+          cause: error,
+        })
+      }
       const freshBatch = parseReadResponse(fresh)
       const entries = [...reclaimedBatch.entries, ...freshBatch.entries]
       const invalidIds = [...reclaimedBatch.invalidIds, ...freshBatch.invalidIds]
       let processed = 0
-      for (const streamId of invalidIds) await this.redis.xack(this.streamKey, this.group, streamId)
+      for (const streamId of invalidIds) {
+        try {
+          await this.redis.xack(this.streamKey, this.group, streamId)
+        } catch (error) {
+          throw new Error(
+            `xack failed for ${this.streamKey}/${this.group}/${streamId}: ${controlErrorMessage(error)}`,
+            {
+              cause: error,
+            },
+          )
+        }
+      }
       for (const entry of entries) {
         try {
           await this.handler.handle(entry)
