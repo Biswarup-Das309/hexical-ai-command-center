@@ -200,9 +200,12 @@ export class TTYWorkerPoller {
           if (!this.active || executionIds.length === 0 || !this.dependencies.onPendingExecutionIds) return
           await this.dependencies.onPendingExecutionIds(executionIds)
         })
-      } else {
-        this.scheduleNextPoll()
       }
+      // Realtime is the low-latency wake-up path, not the sole source of
+      // truth. A bounded reconciliation poll is still required after a
+      // worker releases or recovers a lease: those state changes do not
+      // necessarily append a new admission event to the realtime stream.
+      this.scheduleNextPoll()
     }
     return this.getStatus()
   }

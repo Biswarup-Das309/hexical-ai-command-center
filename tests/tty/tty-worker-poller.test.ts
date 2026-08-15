@@ -24,6 +24,18 @@ class QueueHarness implements PendingExecutionQueue {
   }
 }
 
+class RealtimeQueueHarness extends QueueHarness {
+  subscribed = false
+
+  async subscribe(
+    onPendingExecutionIds: (executionIds: readonly string[]) => Promise<void> | void,
+  ): Promise<() => void> {
+    void onPendingExecutionIds
+    this.subscribed = true
+    return () => undefined
+  }
+}
+
 class ManualTimer {
   private nextHandle = 1
   private readonly entries = new Map<number, { readonly callback: () => void; readonly delayMs: number }>()
@@ -123,6 +135,20 @@ test('performs an immediate poll and schedules the configured base interval', as
   assert.ok(
     logger.entries.some((entry) => entry.message === 'pending_execution_count' && entry.fields?.pendingCount === 0),
   )
+  await poller.stopPolling()
+})
+
+test('keeps bounded reconciliation polling when realtime wake-ups are active', async () => {
+  const queue = new RealtimeQueueHarness([[], []])
+  const timer = new ManualTimer()
+  const poller = createPoller(queue, timer, new CaptureLogger())
+
+  await poller.startPolling()
+
+  assert.equal(queue.subscribed, true)
+  assert.equal(timer.nextDelayMs, 1_000)
+  await timer.fireNext()
+  assert.equal(queue.calls, 2)
   await poller.stopPolling()
 })
 
