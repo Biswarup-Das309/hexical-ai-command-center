@@ -17,7 +17,10 @@ const WAIT_TIMEOUT_MS = 20_000
 
 function minimalEnvironment(): Readonly<Record<string, string>> {
   if (process.platform !== 'win32') {
-    return { PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin', TERM: 'xterm-256color' }
+    return {
+      PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+      TERM: 'xterm-256color',
+    }
   }
   const systemRoot = process.env.SystemRoot ?? 'C:\\Windows'
   return {
