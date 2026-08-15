@@ -19,7 +19,10 @@ const WAIT_TIMEOUT_MS = 15_000
 function minimalEnvironment(): Readonly<Record<string, string>> {
   if (process.platform !== 'win32') {
     return {
-      PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+      // WSL can inject a very long Windows PATH into the Linux process. Keep
+      // the smoke environment bounded and representative of the worker's
+      // approved Linux executable path instead of inheriting host state.
+      PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
       TERM: 'xterm-256color',
     }
   }
