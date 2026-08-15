@@ -1,7 +1,7 @@
 /** Adapter that observes the frozen durable output-stream API. */
 
-import type { Redis } from '@upstash/redis'
 import { TTYOutputStreamManager, type TTYOutputEvent, type TTYOutputEventInput } from './tty-output-stream'
+import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
 import { TTYStreamBroker } from './tty-stream-broker'
 
 /**

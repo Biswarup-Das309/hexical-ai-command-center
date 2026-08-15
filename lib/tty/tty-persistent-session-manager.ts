@@ -8,7 +8,6 @@
  * state.
  */
 
-import type { Redis } from '@upstash/redis'
 import { TTY_EXECUTION_HISTORY_RETENTION_SECONDS } from './tty-execution-retention'
 import type { TTYOutputStreamManager } from './tty-output-stream'
 import {
@@ -18,6 +17,7 @@ import {
 } from './tty-persistent-execution-protocol'
 import type { TTYPersistentSessionHandle } from './tty-persistent-runtime'
 import type { TTYProcessTelemetrySnapshot } from './tty-process-telemetry'
+import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
 import type { TTYSessionControlEntry, TTYSessionControlHandler } from './tty-session-control'
 import type { TTYSessionTranscriptData, TTYSessionTranscriptManager } from './tty-session-transcript'
 import type { InternalTTYSession, TTYExecutionId, TTYSessionId, TTYTerminationResult } from './tty-types'

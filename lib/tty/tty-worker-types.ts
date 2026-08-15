@@ -34,7 +34,7 @@ export interface TTYWorkerRegistration {
   readonly metadata?: Readonly<Record<string, string>>
 }
 
-/** Canonical worker record persisted in Redis. */
+/** Canonical worker record persisted in Supabase runtime storage. */
 export interface TTYWorkerMetadata {
   readonly workerId: TTYWorkerId
   readonly identity: string

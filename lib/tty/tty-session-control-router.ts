@@ -1,6 +1,6 @@
 /** Durable worker-affinity router for persistent PTY control commands. */
 
-import type { Redis } from '@upstash/redis'
+import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
 import type { TTYSessionControlEntry, TTYSessionControlHandler } from './tty-session-control'
 import { ttySessionRuntimeKey, ttyWorkerSessionControlStreamKey } from './tty-worker-keys'
 import { parseTTYWorkerId, type TTYWorkerId } from './tty-worker-types'

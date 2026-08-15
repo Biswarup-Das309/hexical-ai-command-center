@@ -1,9 +1,9 @@
-/** Ordered, bounded Redis-stream persistence for worker output and telemetry. */
+/** Ordered, bounded Postgres-stream persistence for worker output and telemetry. */
 
-import type { Redis } from '@upstash/redis'
 import { log } from '@/lib/hexical/telemetry'
 import { TTY_EXECUTION_HISTORY_RETENTION_SECONDS } from './tty-execution-retention'
 import { normalizeTTYRedisStreamEntries, normalizeTTYRedisStreamFields } from './tty-redis-stream'
+import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
 import type { TTYExecutionId, TTYSessionId } from './tty-types'
 import {
   ttyExecutionOutputDedupKey,

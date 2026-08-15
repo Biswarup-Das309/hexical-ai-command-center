@@ -1,4 +1,4 @@
-import type { Redis } from '@upstash/redis'
+import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
 import { appendTTYWorkerAuditEvent, type TTYWorkerAuditSink } from './tty-worker-audit'
 import { ttyWorkerHeartbeatKey, ttyWorkerHealthKey, ttyWorkerMetadataKey } from './tty-worker-keys'
 import type { TTYWorkerRegistry } from './tty-worker-registry'

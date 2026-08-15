@@ -1,19 +1,19 @@
 import 'server-only'
 
 import { auth } from '@clerk/nextjs/server'
-import { Redis } from '@upstash/redis'
-import { createInvestigationRedis, createRedis } from '@/lib/investigations/investigation-server'
+import { createInvestigationRedis, createRuntimeStore } from '@/lib/investigations/investigation-server'
 import { InvestigationStore } from '@/lib/investigations/investigation-store'
 import { TTYExecutionApi } from '@/lib/tty/tty-execution-api'
 import { isTTYExecutionState, type TTYExecutionStateRecord } from '@/lib/tty/tty-execution-state'
 import { TTYOutputStreamManager } from '@/lib/tty/tty-output-stream'
+import type { TTYRuntimeStore } from '@/lib/tty/tty-runtime-store'
 import { createTTYSessionStore } from '@/lib/tty/tty-session-store'
 import { ttyExecutionStateKey } from '@/lib/tty/tty-worker-keys'
 import { createEvidenceGraphApi } from './evidence-graph-api'
 import { EvidenceGraphStore, type EvidenceGraphRedis } from './evidence-graph-store'
 import { EvidenceGraphSynchronizer } from './evidence-graph-sync'
 
-function createGraphRedis(redis: Redis): EvidenceGraphRedis {
+function createGraphRedis(redis: TTYRuntimeStore): EvidenceGraphRedis {
   return {
     get: <T>(key: string) => redis.get<T>(key),
     set: (key, value, options) => (options?.nx ? redis.set(key, value, { nx: true }) : redis.set(key, value)),
@@ -23,7 +23,7 @@ function createGraphRedis(redis: Redis): EvidenceGraphRedis {
       min: number,
       max: number,
       options: { readonly rev?: boolean; readonly offset: number; readonly count: number },
-    ) => redis.zrange<T>(key, min, max, options),
+    ) => redis.zrange(key, min, max, options).then((value) => value as T),
     zcard: (key) => redis.zcard(key),
     eval: <T>(script: string, keys: readonly string[], args: readonly string[]) =>
       redis.eval<unknown[]>(script, [...keys], [...args]).then((value) => value as T),
@@ -47,7 +47,7 @@ function parseExecutionState(raw: unknown): TTYExecutionStateRecord | null {
 }
 
 export function createEvidenceGraphApiForRequest() {
-  const redis = createRedis()
+  const redis = createRuntimeStore()
   const investigationStore = new InvestigationStore(createInvestigationRedis(redis))
   const getInvestigation = async (
     ownerUserId: string,

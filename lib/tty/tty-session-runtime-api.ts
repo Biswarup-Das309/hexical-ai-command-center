@@ -42,7 +42,7 @@ export interface TTYSessionRuntimeApiDependencies {
   readonly authenticate: () => Promise<string | null>
   readonly store: TTYSessionRuntimeStore
   readonly transcript: Pick<TTYSessionTranscriptManager, 'replay'>
-  /** Server adapter binds the Redis client; this API never exposes it to callers. */
+  /** Server adapter binds the runtime store; this API never exposes it to callers. */
   readonly publish: (command: Parameters<typeof publishTTYSessionControl>[1]) => Promise<string>
 }
 

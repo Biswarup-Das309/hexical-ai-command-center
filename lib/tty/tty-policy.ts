@@ -67,9 +67,9 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { Redis } from '@upstash/redis'
 import { verifyAuthorization } from '@/lib/hexical/authorization'
 import { VALID_TIERS, type Profile } from '@/lib/hexical/types'
+import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
 import {
   hasTTYCapability,
   type TTYPrincipal,

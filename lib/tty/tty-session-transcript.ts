@@ -8,9 +8,9 @@
  * stdin is never copied into the transcript by this module.
  */
 
-import type { Redis } from '@upstash/redis'
 import { TTY_EXECUTION_HISTORY_RETENTION_SECONDS } from './tty-execution-retention'
 import { normalizeTTYRedisStreamEntries, normalizeTTYRedisStreamFields } from './tty-redis-stream'
+import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
 import type { TTYSessionId } from './tty-types'
 import {
   ttySessionTranscriptDedupKey,

@@ -24,7 +24,6 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { Redis } from '@upstash/redis'
 import {
   AUTHORIZATION_EXPIRY_WARNING_HOURS,
   AUTHORIZATION_GATED_PROFILES,
@@ -46,7 +45,16 @@ export function isAuthorizationGated(profile: Profile): boolean {
   return AUTHORIZATION_GATED_PROFILES.includes(profile)
 }
 
-async function fetchVerifiedScopes(supabase: SupabaseClient, redis: Redis, userId: string): Promise<ScopeRow[]> {
+interface AuthorizationCache {
+  get<T = unknown>(key: string): Promise<T | null>
+  set<T = unknown>(key: string, value: T, options?: { readonly ex?: number }): Promise<unknown>
+}
+
+async function fetchVerifiedScopes(
+  supabase: SupabaseClient,
+  redis: AuthorizationCache,
+  userId: string,
+): Promise<ScopeRow[]> {
   const cacheKey = `authz:scopes:${userId}`
   const cached = await redis.get<string>(cacheKey)
   if (cached) {
@@ -94,7 +102,7 @@ async function logAuthorizationAudit(
  */
 export async function verifyAuthorization(args: {
   supabase: SupabaseClient
-  redis: Redis
+  redis: AuthorizationCache
   userId: string
   profile: Profile
   targetScope: string | undefined

@@ -6,14 +6,6 @@ import type { TTYSessionTranscriptEvent } from '@/lib/tty/tty-session-transcript
 
 type TTYSessionConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'error'
 
-interface TranscriptResponse {
-  readonly ok: true
-  readonly events: readonly TTYSessionTranscriptEvent[]
-  readonly cursor: string | null
-  readonly hasMore: boolean
-  readonly sessionState: string
-}
-
 interface UseTTYSessionTranscriptResult {
   readonly events: readonly TTYSessionTranscriptEvent[]
   readonly cursor: string | null
@@ -36,7 +28,6 @@ class RuntimeSessionRequestError extends Error {
   }
 }
 
-const POLL_INTERVAL_MS = 750
 const TOUCH_INTERVAL_MS = 15_000
 const REPLAY_LIMIT = 2_000
 
@@ -86,9 +77,10 @@ export function useTTYSessionTranscript(
   const cursorRef = useRef<string | null>(null)
   const sessionIdRef = useRef<string | null>(sessionId)
   const generationRef = useRef(0)
-  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const touchTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const pollRef = useRef<(() => Promise<void>) | null>(null)
+  const streamRef = useRef<EventSource | null>(null)
+  const streamReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const connectStreamRef = useRef<(() => void) | null>(null)
   const startedRef = useRef(false)
   const onSessionUnavailableRef = useRef(onSessionUnavailable)
   const recoveryAttemptRef = useRef(false)
@@ -138,80 +130,110 @@ export function useTTYSessionTranscript(
     [control],
   )
 
-  const poll = useCallback(async () => {
+  const stopStream = useCallback(() => {
+    streamRef.current?.close()
+    streamRef.current = null
+    if (streamReconnectTimerRef.current !== null) clearTimeout(streamReconnectTimerRef.current)
+    streamReconnectTimerRef.current = null
+  }, [])
+
+  const connectStream = useCallback(() => {
     const activeSessionId = sessionIdRef.current
     const generation = generationRef.current
     if (!activeSessionId || !startedRef.current) return
-    const after = cursorRef.current
+    stopStream()
     const query = new URLSearchParams({ limit: String(REPLAY_LIMIT) })
-    if (after) query.set('after', after)
-    try {
-      const body = await readJson<TranscriptResponse>(
-        `/api/tty/sessions/${encodeURIComponent(activeSessionId)}/transcript?${query.toString()}`,
-        { headers: { Accept: 'application/json' } },
-      )
-      if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
-      setEvents((current) => mergeEvents(current, body.events))
-      const nextCursor = body.events.at(-1)?.cursor ?? body.cursor ?? after
-      setReplayCursor(nextCursor)
-      setConnectionState('open')
-      setError(null)
-      if (body.hasMore && body.events.length > 0 && nextCursor !== after) {
-        pollTimerRef.current = setTimeout(() => void pollRef.current?.(), 0)
-      } else {
-        pollTimerRef.current = setTimeout(() => void pollRef.current?.(), POLL_INTERVAL_MS)
+    if (cursorRef.current) query.set('after', cursorRef.current)
+    const source = new EventSource(
+      `/api/tty/sessions/${encodeURIComponent(activeSessionId)}/transcript/stream?${query.toString()}`,
+    )
+    streamRef.current = source
+    source.onopen = () => {
+      if (generation === generationRef.current && activeSessionId === sessionIdRef.current) {
+        setConnectionState('open')
+        setError(null)
       }
-    } catch (cause) {
-      if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
-      if (
-        cause instanceof RuntimeSessionRequestError &&
-        (cause.code === 'SESSION_NOT_FOUND' || cause.code === 'SESSION_NOT_ACTIVE') &&
-        onSessionUnavailableRef.current &&
-        !recoveryAttemptRef.current
-      ) {
-        recoveryAttemptRef.current = true
-        setConnectionState('reconnecting')
-        setError('The runtime session is being restored.')
-        void Promise.resolve(onSessionUnavailableRef.current())
-          .then(() => {
-            if (generation === generationRef.current && activeSessionId === sessionIdRef.current) {
-              recoveryAttemptRef.current = false
-            }
-          })
-          .catch((repairCause) => {
-            if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
-            setConnectionState('reconnecting')
-            setError(repairCause instanceof Error ? repairCause.message : 'The runtime session could not be restored.')
-          })
-          .finally(() => {
-            if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
-            void pollRef.current?.()
-          })
-        return
-      }
-      setConnectionState('reconnecting')
-      setError(cause instanceof Error ? cause.message : 'Runtime replay is unavailable.')
-      pollTimerRef.current = setTimeout(() => void pollRef.current?.(), Math.min(POLL_INTERVAL_MS * 2, 2_000))
     }
-  }, [setReplayCursor])
+    source.addEventListener('transcript', (message) => {
+      if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
+      try {
+        const parsed = JSON.parse((message as MessageEvent<string>).data) as { event?: TTYSessionTranscriptEvent }
+        const event = parsed.event
+        if (!event) return
+        setEvents((current) => mergeEvents(current, [event]))
+        setReplayCursor(event.cursor)
+      } catch {
+        setError('The runtime transcript returned an invalid event.')
+      }
+    })
+    source.onerror = () => {
+      source.close()
+      if (streamRef.current === source) streamRef.current = null
+      if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
+      setConnectionState('reconnecting')
+      setError('The runtime transcript stream was interrupted. Reconnecting from durable replay.')
+      streamReconnectTimerRef.current = setTimeout(() => connectStreamRef.current?.(), 1_000)
+    }
+  }, [setReplayCursor, stopStream])
   useEffect(() => {
-    pollRef.current = poll
-  }, [poll])
+    connectStreamRef.current = connectStream
+  }, [connectStream])
+
+  const recoverMissingSession = useCallback(
+    (cause: unknown, generation: number, activeSessionId: string): boolean => {
+      if (
+        generation !== generationRef.current ||
+        activeSessionId !== sessionIdRef.current ||
+        !(cause instanceof RuntimeSessionRequestError) ||
+        !(cause.code === 'SESSION_NOT_FOUND' || cause.code === 'SESSION_NOT_ACTIVE') ||
+        !onSessionUnavailableRef.current ||
+        recoveryAttemptRef.current
+      ) {
+        return false
+      }
+
+      recoveryAttemptRef.current = true
+      setConnectionState('reconnecting')
+      setError('The runtime session is being restored.')
+      void Promise.resolve(onSessionUnavailableRef.current())
+        .then(() => {
+          if (generation === generationRef.current && activeSessionId === sessionIdRef.current) {
+            recoveryAttemptRef.current = false
+          }
+        })
+        .catch((repairCause) => {
+          if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
+          setConnectionState('reconnecting')
+          setError(repairCause instanceof Error ? repairCause.message : 'The runtime session could not be restored.')
+        })
+        .finally(() => {
+          if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
+          stopStream()
+          connectStreamRef.current?.()
+        })
+      return true
+    },
+    [stopStream],
+  )
 
   const reconnect = useCallback(() => {
     if (!sessionId) return
-    if (pollTimerRef.current !== null) clearTimeout(pollTimerRef.current)
+    stopStream()
     recoveryAttemptRef.current = false
     setReconnectCount((count) => count + 1)
     setConnectionState('connecting')
     setError(null)
     void open()
       .catch((cause) => {
+        if (recoverMissingSession(cause, generationRef.current, sessionId)) return true
         setConnectionState('reconnecting')
         setError(cause instanceof Error ? cause.message : 'The runtime shell could not be attached.')
+        return false
       })
-      .finally(() => void pollRef.current?.())
-  }, [open, sessionId])
+      .then((recoveryStarted) => {
+        if (!recoveryStarted) connectStream()
+      })
+  }, [connectStream, open, recoverMissingSession, sessionId, stopStream])
 
   useEffect(() => {
     sessionIdRef.current = sessionId
@@ -221,9 +243,8 @@ export function useTTYSessionTranscript(
     recoveryAttemptRef.current = false
     writeQueueRef.current?.reset()
     writeQueueRef.current = null
-    if (pollTimerRef.current !== null) clearTimeout(pollTimerRef.current)
+    stopStream()
     if (touchTimerRef.current !== null) clearInterval(touchTimerRef.current)
-    pollTimerRef.current = null
     touchTimerRef.current = null
     queueMicrotask(() => {
       if (generation !== generationRef.current || sessionIdRef.current !== sessionId) return
@@ -246,11 +267,13 @@ export function useTTYSessionTranscript(
       void open()
         .catch((cause) => {
           if (sessionIdRef.current !== sessionId) return
+          if (recoverMissingSession(cause, generation, sessionId)) return true
           setConnectionState('reconnecting')
           setError(cause instanceof Error ? cause.message : 'The runtime shell could not be attached.')
+          return false
         })
-        .finally(() => {
-          if (sessionIdRef.current === sessionId) void pollRef.current?.()
+        .then((recoveryStarted) => {
+          if (!recoveryStarted && sessionIdRef.current === sessionId) connectStream()
         })
     })
     touchTimerRef.current = setInterval(() => {
@@ -264,12 +287,11 @@ export function useTTYSessionTranscript(
     return () => {
       startedRef.current = false
       generationRef.current += 1
-      if (pollTimerRef.current !== null) clearTimeout(pollTimerRef.current)
+      stopStream()
       if (touchTimerRef.current !== null) clearInterval(touchTimerRef.current)
-      pollTimerRef.current = null
       touchTimerRef.current = null
     }
-  }, [open, sessionId, setReplayCursor])
+  }, [connectStream, open, recoverMissingSession, sessionId, setReplayCursor, stopStream])
 
   return { events, cursor, connectionState, error, reconnectCount, open, write, resize, reconnect }
 }

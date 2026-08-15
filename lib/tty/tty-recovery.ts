@@ -1,9 +1,9 @@
 /** Worker-crash reconciliation for orphaned runtime processes. */
 
-import type { Redis } from '@upstash/redis'
 import { log } from '@/lib/hexical/telemetry'
 import type { TTYExecutionState, TTYExecutionStateRecord } from './tty-execution-state'
 import type { TTYProcessRuntime, TTYOrphanProcess } from './tty-process-runtime'
+import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
 import type { TTYExecutionId, TTYSessionId } from './tty-types'
 import { ttyExecutionActiveIndexKey, ttyExecutionRuntimeKey, ttyExecutionStateKey } from './tty-worker-keys'
 

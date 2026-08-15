@@ -9,12 +9,12 @@
  * "Policy decides, store records" — the same decides/does split this
  * codebase already uses for planner.ts vs executor.ts.
  *
- * SOURCE OF TRUTH: Upstash Redis only. No in-memory Map, no per-instance
- * cache of mutable state — every read/write goes to Redis, so this is safe
+ * SOURCE OF TRUTH: Supabase Postgres only. No in-memory Map, no per-instance
+ * cache of mutable state — every read/write goes to the runtime store, so this is safe
  * across any number of concurrent serverless/Vercel instances. The `Redis`
  * client is injected (constructor param), mirroring the exact dependency-
  * injection pattern lib/hexical/authorization.ts already uses for
- * `verifyAuthorization({ supabase, redis, ... })` — this module has no
+ * `verifyAuthorization({ supabase, cache, ... })` — this module has no
  * global singleton of its own and does not instantiate a client.
  *
  * BROWSER-WRITE BOUNDARY: this module is imported only from server code
@@ -40,8 +40,8 @@
  *       session (see below)?
  *   (b) has wall-clock time since creation exceeded limits
  *       .maxSessionDurationMs (absolute cap)?
- *   (c) has the session's own idle-TTL'd status key vanished from Redis
- *       (idle cap, enforced natively by Redis TTL)?
+ *   (c) has the session's own idle-TTL'd status key vanished from the runtime
+ *       store (idle cap, enforced by its expiry column)?
  * The first true condition encountered wins, and — for (b)/(c) — the
  * store LATCHES the terminal state right then, so the discovery is
  * permanent rather than needing to be rediscovered on every future call.
@@ -54,7 +54,7 @@
  * method in this file ever overwrites or deletes that key once set
  * (its own TTL is the only thing that ever removes it). Every mutating
  * method checks for this key's presence BEFORE acting, and a JSON
- * "status" field elsewhere in Redis is never treated as authoritative
+ * "status" field elsewhere in the runtime store is never treated as authoritative
  * over it — so even a stale/racing write to the status key can never
  * resurrect a session whose terminal key exists.
  *
@@ -63,7 +63,7 @@
  *   tty:session:{sessionId}:core             JSON, immutable after create.
  *                                             TTL = maxSessionDurationMs
  *                                             (absolute session cap —
- *                                             Redis itself deletes it).
+ *                                             the runtime store expires it).
  *   tty:session:{sessionId}:status            JSON {status,lastActiveAt}.
  *                                             TTL = maxSessionIdleMs,
  *                                             refreshed on every touch.
@@ -92,7 +92,7 @@
  *                                             the last minute" naming
  *                                             exactly. TTL = same fixed
  *                                             backstop constant.
- *   tty:user:{userId}:sessions                Redis SET of sessionIds
+ *   tty:user:{userId}:sessions                Runtime SET of sessionIds
  *                                             owned by userId. No TTL
  *                                             (durable index); staleness
  *                                             is corrected lazily by
@@ -101,7 +101,7 @@
  *                                             session is no longer live.
  *
  * RACE-SAFETY DESIGN CHOICE: lifecycle latches use SET NX, while the
- * per-tier concurrent-session ceiling uses a short Redis EVAL transaction
+ * per-tier concurrent-session ceiling uses a short Postgres RPC transaction
  * over the owner index, session core, and idle status keys. Usage counters
  * (active executions, queue depth) remain atomic INCR/DECR counters and are
  * clamped during cleanup, matching the soft-consistency posture used by the
@@ -109,8 +109,8 @@
  * ============================================================================
  */
 
-import type { Redis } from '@upstash/redis'
 import { VALID_TIERS, type Tier } from '@/lib/hexical/types'
+import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
 import {
   createTTYSessionId,
   type TTYSessionId,

@@ -1,8 +1,8 @@
-import { createClient } from '@supabase/supabase-js'
-import { Redis } from '@upstash/redis'
 import { NextResponse } from 'next/server'
 import { requestCorrelationId } from '@/lib/hexical/telemetry'
+import { createSupabaseRuntimeClient, createSupabaseRuntimeStore } from '@/lib/tty/supabase-runtime-store'
 import { usesDirectTTYActivation } from '@/lib/tty/tty-execution-mode'
+import type { TTYRuntimeStore } from '@/lib/tty/tty-runtime-store'
 import { TTYWorkerHeartbeatService } from '@/lib/tty/tty-worker-heartbeat'
 import { ttyPendingExecutionIndexKey } from '@/lib/tty/tty-worker-keys'
 import { TTYWorkerRegistry } from '@/lib/tty/tty-worker-registry'
@@ -86,7 +86,7 @@ function providerStatus(provider: AiProvider): HealthResult {
   }
 }
 
-async function checkTTYWorkers(redis: Redis): Promise<TTYWorkerHealthResult> {
+async function checkTTYWorkers(runtimeStore: TTYRuntimeStore): Promise<TTYWorkerHealthResult> {
   if (usesDirectTTYActivation()) {
     return {
       status: 'healthy',
@@ -100,8 +100,8 @@ async function checkTTYWorkers(redis: Redis): Promise<TTYWorkerHealthResult> {
     }
   }
 
-  const registry = new TTYWorkerRegistry(redis)
-  const heartbeat = new TTYWorkerHeartbeatService(redis, registry)
+  const registry = new TTYWorkerRegistry(runtimeStore)
+  const heartbeat = new TTYWorkerHeartbeatService(runtimeStore, registry)
   const workers = await registry.listWorkers()
   const health = await Promise.all(
     workers.map(async (worker) => ({
@@ -129,9 +129,9 @@ async function checkTTYWorkers(redis: Redis): Promise<TTYWorkerHealthResult> {
   }
 }
 
-async function checkPendingQueue(redis: Redis): Promise<QueueHealthResult> {
+async function checkPendingQueue(runtimeStore: TTYRuntimeStore): Promise<QueueHealthResult> {
   const startedAt = Date.now()
-  const pending = await redis.smembers(ttyPendingExecutionIndexKey())
+  const pending = await runtimeStore.smembers(ttyPendingExecutionIndexKey())
   return {
     status: 'healthy',
     latencyMs: Date.now() - startedAt,
@@ -141,40 +141,31 @@ async function checkPendingQueue(redis: Redis): Promise<QueueHealthResult> {
 
 export async function GET(request: Request) {
   const requestId = requestCorrelationId(request)
-  if (!hasEnv(['UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN'])) {
+  if (!hasEnv(['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'])) {
     return NextResponse.json(
       {
         requestId,
         status: 'unhealthy',
         checkedAt: new Date().toISOString(),
-        redis: {
+        runtimeBackend: {
           status: 'unhealthy',
           configured: false,
-          message: 'Redis env missing',
+          message: 'Supabase runtime environment is missing',
         },
       },
       { status: 503, headers: responseHeaders() },
     )
   }
 
-  const redis = new Redis({
-    url: process.env.UPSTASH_REDIS_REST_URL!,
-    token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-  })
+  const runtimeStore = createSupabaseRuntimeStore()
 
-  const [redisHealth, supabaseHealth, queueCheck, ttyWorkerCheck] = await Promise.all([
+  const [runtimeHealth, supabaseHealth, queueCheck, ttyWorkerCheck] = await Promise.all([
     safeCheck(async () => {
-      await redis.ping()
-      return { status: 'healthy' as const }
+      await runtimeStore.ping()
+      return { status: 'healthy' as const, configured: true, message: 'Supabase Postgres runtime store is reachable.' }
     }),
     safeCheck(async () => {
-      if (!hasEnv(['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'])) {
-        throw new Error('Supabase env missing')
-      }
-
-      const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
-
-      const { error } = await supabase.from('usage_events').select('id', { head: true }).limit(1)
+      const { error } = await createSupabaseRuntimeClient().from('profiles').select('user_id', { head: true }).limit(1)
 
       if (error) {
         throw error
@@ -182,12 +173,12 @@ export async function GET(request: Request) {
       return { status: 'healthy' as const }
     }, 5_000),
     safeCheck(
-      () => checkPendingQueue(redis),
+      () => checkPendingQueue(runtimeStore),
       1_500,
       () => ({ status: 'unhealthy', pendingCount: 0 }),
     ),
     safeCheck(
-      () => checkTTYWorkers(redis),
+      () => checkTTYWorkers(runtimeStore),
       1_500,
       () => ({
         status: 'unhealthy',
@@ -210,7 +201,7 @@ export async function GET(request: Request) {
   }
 
   const allStatuses = [
-    redisHealth.status,
+    runtimeHealth.status,
     supabaseHealth.status,
     queueHealth.status,
     ttyWorkerHealth.status,
@@ -226,7 +217,15 @@ export async function GET(request: Request) {
       requestId,
       status,
       checkedAt: new Date().toISOString(),
-      redis: redisHealth,
+      runtimeBackend: {
+        ...runtimeHealth,
+        backend: 'supabase_postgres_realtime',
+      },
+      redis: {
+        status: 'healthy',
+        configured: false,
+        message: 'Disabled for Runtime OS; no Redis calls are made by the runtime plane.',
+      },
       supabase: supabaseHealth,
       queue: queueHealth,
       ttyWorker: ttyWorkerHealth,

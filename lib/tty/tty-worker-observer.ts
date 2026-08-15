@@ -1,6 +1,6 @@
-import type { Redis } from '@upstash/redis'
 import type { TTYLeasedJob, TTYRecoverableJob } from './tty-execution-lease'
 import type { TTYTerminalExecutionState } from './tty-execution-state'
+import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
 import { appendTTYWorkerAuditEvent, type TTYWorkerAuditSink } from './tty-worker-audit'
 import {
   ttyExecutionJobKey,

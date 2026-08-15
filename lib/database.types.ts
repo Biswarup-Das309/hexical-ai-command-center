@@ -135,9 +135,85 @@ export type Database = {
         }
         Relationships: []
       }
+      hexical_runtime_kv: {
+        Row: { key: string; value: Json; expires_at: string | null; updated_at: string }
+        Insert: { key: string; value: Json; expires_at?: string | null; updated_at?: string }
+        Update: { key?: string; value?: Json; expires_at?: string | null; updated_at?: string }
+        Relationships: []
+      }
+      hexical_runtime_hashes: {
+        Row: { key: string; field: string; value: string; expires_at: string | null; updated_at: string }
+        Insert: { key: string; field: string; value: string; expires_at?: string | null; updated_at?: string }
+        Update: { key?: string; field?: string; value?: string; expires_at?: string | null; updated_at?: string }
+        Relationships: []
+      }
+      hexical_runtime_set_members: {
+        Row: { key: string; member: string; created_at: string }
+        Insert: { key: string; member: string; created_at?: string }
+        Update: { key?: string; member?: string; created_at?: string }
+        Relationships: []
+      }
+      hexical_runtime_sorted_members: {
+        Row: { key: string; member: string; score: number; created_at: string }
+        Insert: { key: string; member: string; score: number; created_at?: string }
+        Update: { key?: string; member?: string; score?: number; created_at?: string }
+        Relationships: []
+      }
+      hexical_runtime_stream_entries: {
+        Row: {
+          stream_key: string
+          stream_sequence: number
+          stream_id: string
+          fields: Json
+          expires_at: string | null
+          created_at: string
+        }
+        Insert: {
+          stream_key: string
+          stream_sequence: number
+          stream_id: string
+          fields: Json
+          expires_at?: string | null
+          created_at?: string
+        }
+        Update: {
+          stream_key?: string
+          stream_sequence?: number
+          stream_id?: string
+          fields?: Json
+          expires_at?: string | null
+          created_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: Record<string, never>
-    Functions: Record<string, never>
+    Functions: {
+      hexical_runtime_set_value: {
+        Args: { p_key: string; p_value: Json; p_ttl_seconds: number | null; p_nx: boolean }
+        Returns: string | null
+      }
+      hexical_runtime_delete_keys: {
+        Args: { p_keys: string[] }
+        Returns: number
+      }
+      hexical_runtime_increment_value: {
+        Args: { p_key: string; p_delta: number }
+        Returns: number
+      }
+      hexical_runtime_expire_key: {
+        Args: { p_key: string; p_ttl_seconds: number }
+        Returns: number
+      }
+      hexical_runtime_append_stream: {
+        Args: { p_stream_key: string; p_fields: Json }
+        Returns: string
+      }
+      hexical_runtime_eval: {
+        Args: { p_operation: string; p_keys: string[]; p_args: string[] }
+        Returns: Json
+      }
+    }
     Enums: Record<string, never>
     CompositeTypes: Record<string, never>
   }

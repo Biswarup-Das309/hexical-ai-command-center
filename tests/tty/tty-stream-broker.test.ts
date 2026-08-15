@@ -8,6 +8,54 @@ function ids() {
   return { executionId: createTTYExecutionId(), sessionId: createTTYSessionId() }
 }
 
+class RealtimeStreamStore {
+  private sequence = 0
+  private readonly rows: Array<[string, Record<string, unknown>]> = []
+  private readonly subscribers = new Map<string, Set<(payload: { streamId: string; fields: unknown }) => void>>()
+
+  async incr(): Promise<number> {
+    this.sequence += 1
+    return this.sequence
+  }
+
+  async xadd(): Promise<string> {
+    this.sequence += 1
+    return `${this.sequence}-0`
+  }
+
+  async eval(_script: string, keys: string[], args: string[]): Promise<number> {
+    this.sequence += 1
+    const streamKey = keys[0] as string
+    const fields = {
+      eventId: args[0],
+      timestamp: args[1],
+      executionId: args[2],
+      sessionId: args[3],
+      type: args[4],
+      payload: args[5],
+      sequence: String(this.sequence),
+    }
+    const streamId = `${this.sequence}-0`
+    this.rows.push([streamId, fields])
+    for (const callback of this.subscribers.get(streamKey) ?? []) callback({ streamId, fields })
+    return this.sequence
+  }
+
+  async xrange(): Promise<unknown> {
+    return this.rows
+  }
+
+  async subscribeToStream(
+    streamKey: string,
+    callback: (payload: { streamId: string; fields: unknown }) => void,
+  ): Promise<() => void> {
+    const callbacks = this.subscribers.get(streamKey) ?? new Set()
+    callbacks.add(callback)
+    this.subscribers.set(streamKey, callbacks)
+    return () => callbacks.delete(callback)
+  }
+}
+
 test('broker preserves per-execution ordering for concurrent publishers', async () => {
   const broker = new TTYStreamBroker(null)
   const { executionId, sessionId } = ids()
@@ -131,6 +179,20 @@ test('a Redis-backed subscriber receives events published by another broker inst
   await new Promise((resolve) => setTimeout(resolve, 120))
   subscription.unsubscribe()
   viewer.close()
+  assert.deepEqual(received, [1])
+})
+
+test('a Supabase Realtime-backed subscriber receives events without a polling timer', async () => {
+  const store = new RealtimeStreamStore()
+  const producer = new TTYStreamBroker(store)
+  const viewer = new TTYStreamBroker(store)
+  const { executionId, sessionId } = ids()
+  const received: number[] = []
+  const subscription = await viewer.subscribe(executionId, (event) => received.push(event.sequence))
+  assert.equal(Reflect.get(viewer, 'pollers').size, 0)
+  await producer.publish({ executionId, sessionId, type: 'stdout', payload: { text: 'realtime', byteLength: 8 } })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  subscription.unsubscribe()
   assert.deepEqual(received, [1])
 })
 

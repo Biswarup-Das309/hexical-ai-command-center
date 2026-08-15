@@ -1,5 +1,5 @@
-import type { Redis } from '@upstash/redis'
 import { normalizeTTYRedisStreamEntries, normalizeTTYRedisStreamFields } from './tty-redis-stream'
+import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
 import type { TTYExecutionId, TTYSessionId } from './tty-types'
 import { ttyWorkerAuditStreamKey } from './tty-worker-keys'
 import { parseTTYWorkerId, type TTYLeaseId, type TTYWorkerId, type TTYWorkerMetadataValue } from './tty-worker-types'

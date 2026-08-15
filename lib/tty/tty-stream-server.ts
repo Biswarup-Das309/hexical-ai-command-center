@@ -1,6 +1,6 @@
 import 'server-only'
 
-import { Redis } from '@upstash/redis'
+import { createSupabaseRuntimeStore } from './supabase-runtime-store'
 import { isTTYExecutionState, type TTYExecutionStateRecord } from './tty-execution-state'
 import { createTTYSessionStore } from './tty-session-store'
 import { TTYSSEManager } from './tty-sse-manager'
@@ -10,18 +10,11 @@ import type { TTYExecutionId, TTYSessionId } from './tty-types'
 import { ttyExecutionJobKey, ttyExecutionStateKey } from './tty-worker-keys'
 
 interface TTYStreamServerRuntime {
-  readonly redis: Redis
+  readonly redis: TTYStreamRedis
   readonly manager: TTYSSEManager
 }
 
 let runtime: TTYStreamServerRuntime | null = null
-
-function createRedis(): Redis {
-  const url = process.env.UPSTASH_REDIS_REST_URL
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN
-  if (!url || !token) throw new Error('TTY stream Redis configuration is missing.')
-  return new Redis({ url, token })
-}
 
 function parseExecutionState(raw: unknown): TTYExecutionStateRecord | null {
   try {
@@ -54,7 +47,7 @@ function parseQueuedExecutionSessionId(raw: unknown): TTYSessionId | null {
 }
 
 function createRuntime(): TTYStreamServerRuntime {
-  const redis = createRedis()
+  const redis = createSupabaseRuntimeStore()
   const store = createTTYSessionStore(redis)
   const broker = new TTYStreamBroker(redis as unknown as TTYStreamRedis)
   const authorizer = new TTYStreamAuthorizer({

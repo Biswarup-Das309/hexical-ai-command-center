@@ -8,7 +8,6 @@
  */
 
 import { join } from 'node:path'
-import type { Redis } from '@upstash/redis'
 import { log, withSpan } from '@/lib/hexical/telemetry'
 import { TTYExecutionLeaseManager, type TTYLeasedJob, type TTYLeaseRenewResult } from './tty-execution-lease'
 import { TTY_EXECUTION_HISTORY_RETENTION_SECONDS } from './tty-execution-retention'
@@ -36,6 +35,7 @@ import {
 } from './tty-policy'
 import { TTYProcessRuntime, type TTYProcessExit, type TTYProcessHandle } from './tty-process-runtime'
 import { TTYResourceGuard, type TTYResourceReservation } from './tty-resource-guard'
+import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
 import { TTYSessionStore } from './tty-session-store'
 import type { TTYExecutionId, TTYExecutionKind, TTYSessionId } from './tty-types'
 import { appendTTYWorkerAuditEvent, type TTYWorkerAuditSink } from './tty-worker-audit'

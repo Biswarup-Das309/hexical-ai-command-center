@@ -1,7 +1,7 @@
 import 'server-only'
 
-import { Redis } from '@upstash/redis'
 import { log } from '@/lib/hexical/telemetry'
+import { createSupabaseRuntimeStore } from './supabase-runtime-store'
 import { recordActivationLatency, recordActivationTimeout } from './tty-activation-metrics'
 import { TTYExecutionCoordinator, type TTYExecutionCoordinatorFailureReason } from './tty-execution-coordinator'
 import { TTYExecutionLeaseManager } from './tty-execution-lease'
@@ -41,13 +41,6 @@ interface TTYExecutionActivationRuntime {
 
 let runtime: TTYExecutionActivationRuntime | null = null
 
-function requiredRedis(): Redis {
-  const url = process.env.UPSTASH_REDIS_REST_URL
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN
-  if (!url || !token) throw new Error('TTY execution Redis configuration is missing.')
-  return new Redis({ url, token })
-}
-
 function positiveInteger(value: string | undefined, fallback: number): number {
   if (value === undefined || value.trim() === '') return fallback
   const parsed = Number(value)
@@ -67,7 +60,7 @@ function workerContext(): TTYWorkerAuthContext {
 }
 
 function createRuntime(): TTYExecutionActivationRuntime {
-  const redis = requiredRedis()
+  const redis = createSupabaseRuntimeStore()
   const sessionStore = createTTYSessionStore(redis)
   const context = workerContext()
   const streamBroker = new TTYStreamBroker(redis as unknown as TTYStreamRedis)

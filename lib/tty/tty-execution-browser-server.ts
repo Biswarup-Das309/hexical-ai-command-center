@@ -1,18 +1,11 @@
 import 'server-only'
 
-import { Redis } from '@upstash/redis'
+import { createSupabaseRuntimeStore } from './supabase-runtime-store'
 import { TTYExecutionApi } from './tty-execution-api'
 import { isTTYExecutionState, type TTYExecutionStateRecord } from './tty-execution-state'
 import { TTYOutputStreamManager } from './tty-output-stream'
 import { createTTYSessionStore } from './tty-session-store'
 import { ttyExecutionStateKey } from './tty-worker-keys'
-
-function createRedis(): Redis {
-  const url = process.env.UPSTASH_REDIS_REST_URL
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN
-  if (!url || !token) throw new Error('TTY execution Redis configuration is missing.')
-  return new Redis({ url, token })
-}
 
 function parseExecutionState(raw: unknown): TTYExecutionStateRecord | null {
   try {
@@ -31,7 +24,7 @@ function parseExecutionState(raw: unknown): TTYExecutionStateRecord | null {
 }
 
 export function createTTYExecutionBrowserApiForRequest(): TTYExecutionApi {
-  const redis = createRedis()
+  const redis = createSupabaseRuntimeStore()
   return new TTYExecutionApi({
     getState: async (executionId) => parseExecutionState(await redis.get<unknown>(ttyExecutionStateKey(executionId))),
     outputStream: new TTYOutputStreamManager(redis),

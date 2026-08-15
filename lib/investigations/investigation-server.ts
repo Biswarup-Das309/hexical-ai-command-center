@@ -1,7 +1,7 @@
 import 'server-only'
 
 import { auth } from '@clerk/nextjs/server'
-import { Redis } from '@upstash/redis'
+import { createSupabaseRuntimeStore } from '@/lib/tty/supabase-runtime-store'
 import { activateTTYExecution } from '@/lib/tty/tty-execution-activator-server'
 import { createTTYAdmissionApiForRequest } from '@/lib/tty/tty-execution-admission-server'
 import { TTYExecutionApi } from '@/lib/tty/tty-execution-api'
@@ -9,6 +9,7 @@ import { usesDirectTTYActivation } from '@/lib/tty/tty-execution-mode'
 import { isTTYExecutionState, type TTYExecutionStateRecord } from '@/lib/tty/tty-execution-state'
 import { createTTYLifecycleApiForRequest } from '@/lib/tty/tty-lifecycle-server'
 import { TTYOutputStreamManager } from '@/lib/tty/tty-output-stream'
+import type { TTYRuntimeStore } from '@/lib/tty/tty-runtime-store'
 import { createTTYSessionStore } from '@/lib/tty/tty-session-store'
 import { ttyExecutionStateKey } from '@/lib/tty/tty-worker-keys'
 import {
@@ -22,14 +23,11 @@ import { InvestigationStore, type InvestigationRedis } from './investigation-sto
 
 const investigationLogger = createInvestigationLogger()
 
-export function createRedis(): Redis {
-  const url = process.env.UPSTASH_REDIS_REST_URL
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN
-  if (!url || !token) throw new Error('Investigation Redis configuration is missing.')
-  return new Redis({ url, token })
+export function createRuntimeStore(): TTYRuntimeStore {
+  return createSupabaseRuntimeStore()
 }
 
-export function createInvestigationRedis(redis: Redis): InvestigationRedis {
+export function createInvestigationRedis(redis: TTYRuntimeStore): InvestigationRedis {
   return {
     get: <T>(key: string) => redis.get<T>(key),
     set: (key, value, options) => (options?.nx ? redis.set(key, value, { nx: true }) : redis.set(key, value)),
@@ -43,7 +41,7 @@ export function createInvestigationRedis(redis: Redis): InvestigationRedis {
       min: number,
       max: number,
       options: { readonly rev?: boolean; readonly offset: number; readonly count: number },
-    ) => redis.zrange<T>(key, min, max, options),
+    ) => redis.zrange(key, min, max, options).then((value) => value as T),
     zrem: (key, member) => redis.zrem(key, member),
     xadd: (key, id, fields) => redis.xadd(key, id, fields),
     xrange: (key, start, end, count) =>
@@ -68,7 +66,7 @@ function parseExecutionState(raw: unknown): TTYExecutionStateRecord | null {
 }
 
 export function createInvestigationApiForRequest() {
-  const redis = createRedis()
+  const redis = createRuntimeStore()
   const store = new InvestigationStore(createInvestigationRedis(redis))
   const sessionStore = createTTYSessionStore(redis)
   const executionApi = new TTYExecutionApi({
@@ -98,7 +96,7 @@ export function createInvestigationApiForRequest() {
 }
 
 export function createInvestigationSessionApiForRequest() {
-  const store = new InvestigationStore(createInvestigationRedis(createRedis()))
+  const store = new InvestigationStore(createInvestigationRedis(createRuntimeStore()))
   const lifecycle = createTTYLifecycleApiForRequest()
   return createInvestigationSessionApi({
     authenticate: async () => (await auth()).userId ?? null,
@@ -111,7 +109,7 @@ export function createInvestigationSessionApiForRequest() {
 }
 
 export function createInvestigationExecutionApiForRequest() {
-  const redis = createRedis()
+  const redis = createRuntimeStore()
   return createInvestigationExecutionApi({
     authenticate: async () => (await auth()).userId ?? null,
     getStore: () => new InvestigationStore(createInvestigationRedis(redis)),

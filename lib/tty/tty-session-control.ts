@@ -1,6 +1,6 @@
 /** Durable, owner-authenticated web-to-worker control plane for PTY sessions. */
 
-import type { Redis } from '@upstash/redis'
+import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
 import type { TTYSessionId } from './tty-types'
 import { ttySessionControlGroup, ttySessionControlStreamKey } from './tty-worker-keys'
 
@@ -64,8 +64,10 @@ function validCommand(command: TTYSessionControlCommand): boolean {
 }
 
 async function ensureControlGroup(redis: Redis, streamKey: string, group: string): Promise<void> {
+  if (redis.subscribeToStream) return
+  const legacy = redis as Required<Pick<Redis, 'xgroup'>>
   try {
-    await redis.xgroup(streamKey, {
+    await legacy.xgroup(streamKey, {
       type: 'CREATE',
       group,
       // Redis stream IDs require the `<milliseconds>-<sequence>` form.
@@ -207,6 +209,7 @@ export class TTYSessionControlConsumer {
   private polling = false
   private started = false
   private reclaimCursor = '0-0'
+  private realtimeCleanup: (() => void) | null = null
 
   constructor(
     private readonly redis: Redis,
@@ -223,6 +226,28 @@ export class TTYSessionControlConsumer {
 
   async start(): Promise<void> {
     if (this.started) return
+    if (this.redis.subscribeToStream) {
+      this.started = true
+      try {
+        const historical = parseReadResponse(await this.redis.xrange(this.streamKey, '-', '+', 10_000))
+        for (const streamId of historical.invalidIds) await this.deliverInvalid(streamId)
+        for (const entry of historical.entries) await this.deliver(entry)
+        this.realtimeCleanup = await this.redis.subscribeToStream(this.streamKey, (payload) => {
+          void this.deliver(parseEntry([payload.streamId, payload.fields])).catch(() => undefined)
+        })
+      } catch (error) {
+        this.started = false
+        this.realtimeCleanup?.()
+        this.realtimeCleanup = null
+        throw new Error(
+          `TTY realtime control subscription failed for ${this.streamKey}: ${controlErrorMessage(error)}`,
+          {
+            cause: error,
+          },
+        )
+      }
+      return
+    }
     try {
       await ensureControlGroup(this.redis, this.streamKey, this.group)
     } catch (error) {
@@ -246,17 +271,21 @@ export class TTYSessionControlConsumer {
 
   async stop(): Promise<void> {
     this.started = false
+    this.realtimeCleanup?.()
+    this.realtimeCleanup = null
     if (this.timer !== null) clearInterval(this.timer)
     this.timer = null
   }
 
   async pollOnce(): Promise<number> {
     if (!this.started || this.polling) return 0
+    if (this.redis.subscribeToStream) return 0
+    const legacy = this.redis as Required<Pick<Redis, 'xautoclaim' | 'xreadgroup' | 'xack'>>
     this.polling = true
     try {
       let reclaimed: unknown
       try {
-        reclaimed = await this.redis.xautoclaim(
+        reclaimed = await legacy.xautoclaim(
           this.streamKey,
           this.group,
           this.consumer,
@@ -273,7 +302,7 @@ export class TTYSessionControlConsumer {
       if (Array.isArray(reclaimed) && typeof reclaimed[0] === 'string') this.reclaimCursor = reclaimed[0]
       let fresh: unknown
       try {
-        fresh = await this.redis.xreadgroup(this.group, this.consumer, this.streamKey, '>', {
+        fresh = await legacy.xreadgroup(this.group, this.consumer, this.streamKey, '>', {
           count: this.batchSize,
         })
       } catch (error) {
@@ -287,7 +316,7 @@ export class TTYSessionControlConsumer {
       let processed = 0
       for (const streamId of invalidIds) {
         try {
-          await this.redis.xack(this.streamKey, this.group, streamId)
+          await legacy.xack(this.streamKey, this.group, streamId)
         } catch (error) {
           throw new Error(
             `xack failed for ${this.streamKey}/${this.group}/${streamId}: ${controlErrorMessage(error)}`,
@@ -300,7 +329,7 @@ export class TTYSessionControlConsumer {
       for (const entry of entries) {
         try {
           await this.handler.handle(entry)
-          await this.redis.xack(this.streamKey, this.group, entry.streamId)
+          await legacy.xack(this.streamKey, this.group, entry.streamId)
           processed += 1
         } catch {
           // Leave the entry in the pending list. A later worker will reclaim it
@@ -310,6 +339,28 @@ export class TTYSessionControlConsumer {
       return processed
     } finally {
       this.polling = false
+    }
+  }
+
+  private async deliverInvalid(streamId: string): Promise<void> {
+    if (this.redis.subscribeToStream) return
+    const legacy = this.redis as Required<Pick<Redis, 'xack'>>
+    await legacy.xack(this.streamKey, this.group, streamId)
+  }
+
+  private async deliver(entry: TTYSessionControlEntry | null): Promise<void> {
+    if (!entry) return
+    const receiptKey = `tty:control:receipt:${entry.commandId}`
+    const accepted = await this.redis.set(receiptKey, entry.streamId, {
+      nx: true,
+      ex: CONTROL_STREAM_RETENTION_SECONDS,
+    })
+    if (accepted === null) return
+    try {
+      await this.handler.handle(entry)
+    } catch (error) {
+      await this.redis.del(receiptKey)
+      throw error
     }
   }
 }

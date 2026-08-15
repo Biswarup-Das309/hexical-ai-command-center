@@ -1,10 +1,12 @@
-import { Redis } from '@upstash/redis'
+import { createSupabaseRuntimeStore } from '../lib/tty/supabase-runtime-store'
 import { TTYExecutionCoordinator } from '../lib/tty/tty-execution-coordinator'
 import { TTYExecutionLeaseManager } from '../lib/tty/tty-execution-lease'
 import { TTYPersistentProcessRuntime } from '../lib/tty/tty-persistent-process-runtime'
 import { TTYPersistentRecoveryService } from '../lib/tty/tty-persistent-recovery-service'
 import { TTYPersistentSessionManager } from '../lib/tty/tty-persistent-session-manager'
+import { normalizeTTYRedisStreamEntries, normalizeTTYRedisStreamFields } from '../lib/tty/tty-redis-stream'
 import { TTYResourceGuard } from '../lib/tty/tty-resource-guard'
+import type { TTYRuntimeStore } from '../lib/tty/tty-runtime-store'
 import { TTYSessionControlConsumer } from '../lib/tty/tty-session-control'
 import { TTYSessionControlRouter } from '../lib/tty/tty-session-control-router'
 import { createTTYSessionStore } from '../lib/tty/tty-session-store'
@@ -22,6 +24,7 @@ import { TTYWorkerHeartbeatService } from '../lib/tty/tty-worker-heartbeat'
 import {
   ttyExecutionJobKey,
   ttyPendingExecutionIndexKey,
+  ttyPendingExecutionStreamKey,
   ttyWorkerSessionControlGroup,
   ttyWorkerSessionControlStreamKey,
 } from '../lib/tty/tty-worker-keys'
@@ -61,13 +64,24 @@ function workerLogger(level: 'info' | 'warn' | 'error', event: string, fields: R
   else console.info(entry)
 }
 
-class RedisPendingExecutionQueue implements PendingExecutionQueue {
-  constructor(private readonly redis: Redis) {}
+class SupabasePendingExecutionQueue implements PendingExecutionQueue {
+  private readonly pending = new Set<string>()
+  private readonly seenCursors = new Set<string>()
+  private initialized = false
+
+  constructor(private readonly redis: TTYRuntimeStore) {}
 
   async listPendingExecutionIds(limit: number): Promise<readonly string[]> {
     const requestedLimit = Math.max(0, Math.floor(limit))
     if (requestedLimit === 0) return []
-    const ids = [...new Set((await this.redis.smembers(ttyPendingExecutionIndexKey())).map((id) => String(id).trim()))]
+    if (!this.initialized) {
+      this.initialized = true
+      const initialIds = [
+        ...new Set((await this.redis.smembers(ttyPendingExecutionIndexKey())).map((id) => String(id).trim())),
+      ]
+      for (const id of initialIds) this.pending.add(id)
+    }
+    const ids = [...this.pending]
       .filter(Boolean)
       // Reconcile a bounded window on every poll. This prevents an unbounded
       // stale Redis set from turning the worker into a hot loop while still
@@ -97,13 +111,39 @@ class RedisPendingExecutionQueue implements PendingExecutionQueue {
     )
     if (stale.length > 0) {
       await this.redis.srem(ttyPendingExecutionIndexKey(), ...stale)
+      for (const executionId of stale) this.pending.delete(executionId)
       workerLogger('info', 'stale_pending_executions_pruned', { count: stale.length })
     }
     return queued.slice(0, requestedLimit)
   }
+
+  async subscribe(
+    onPendingExecutionIds: (executionIds: readonly string[]) => Promise<void> | void,
+  ): Promise<() => void> {
+    if (!this.redis.subscribeToStream) return () => undefined
+    const deliver = (cursor: string, fields: unknown) => {
+      if (this.seenCursors.has(cursor)) return
+      this.seenCursors.add(cursor)
+      const parsed = normalizeTTYRedisStreamFields(fields)
+      const executionId = typeof parsed?.executionId === 'string' ? parsed.executionId : null
+      if (!executionId) return
+      this.pending.add(executionId)
+      void onPendingExecutionIds([executionId])
+    }
+    const cleanup = await this.redis.subscribeToStream(ttyPendingExecutionStreamKey(), (payload) => {
+      deliver(payload.streamId, payload.fields)
+    })
+    const historical = normalizeTTYRedisStreamEntries(
+      await this.redis.xrange(ttyPendingExecutionStreamKey(), '-', '+', 10_000),
+    )
+    for (const entry of historical) {
+      if (typeof entry[0] === 'string') deliver(entry[0], entry[1])
+    }
+    return cleanup
+  }
 }
 
-async function resolveSessionId(redis: Redis, executionId: TTYExecutionId): Promise<TTYSessionId | null> {
+async function resolveSessionId(redis: TTYRuntimeStore, executionId: TTYExecutionId): Promise<TTYSessionId | null> {
   try {
     const raw = await redis.get<unknown>(ttyExecutionJobKey(executionId))
     const parsed: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw
@@ -137,10 +177,7 @@ function workerContext(
 }
 
 async function main(): Promise<void> {
-  const redis = new Redis({
-    url: requiredEnv('UPSTASH_REDIS_REST_URL'),
-    token: requiredEnv('UPSTASH_REDIS_REST_TOKEN'),
-  })
+  const redis = createSupabaseRuntimeStore()
   const workerId = createTTYWorkerId(requiredEnv('TTY_EXECUTION_WORKER_ID'))
   const secret = requiredEnv('TTY_WORKER_AUTH_SECRET')
   const version = process.env.HEXICAL_WORKER_VERSION?.trim() || DEFAULT_VERSION
@@ -239,7 +276,7 @@ async function main(): Promise<void> {
     resolveSessionId: (executionId) => resolveSessionId(redis, executionId),
   })
   const poller = createTTYWorkerPoller({
-    queue: new RedisPendingExecutionQueue(redis),
+    queue: new SupabasePendingExecutionQueue(redis),
     onPendingExecutionIds: (executionIds) => executor.handlePendingExecutionIds(executionIds),
     baseIntervalMs: positiveInteger('TTY_WORKER_POLL_INTERVAL_MS', 1_000),
     maxIntervalMs: positiveInteger('TTY_WORKER_MAX_POLL_INTERVAL_MS', 15_000),

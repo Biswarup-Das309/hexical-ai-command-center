@@ -1,6 +1,6 @@
-import type { Redis } from '@upstash/redis'
 import { TTY_EXECUTION_HISTORY_RETENTION_SECONDS } from './tty-execution-retention'
 import { createQueuedTTYExecutionState } from './tty-execution-state'
+import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
 import {
   createTTYExecutionId,
   type InternalTTYSession,
@@ -119,6 +119,7 @@ const JOB_TTL_SECONDS = 24 * 60 * 60
 const IDEMPOTENCY_TTL_SECONDS = 10 * 60
 
 const RESERVE_JOB_SCRIPT = `
+-- hexical:tty-execution-admission-reserve
 local existing = redis.call('GET', KEYS[1])
 if existing then return {2, existing} end
 if redis.call('EXISTS', KEYS[6]) == 1 or redis.call('EXISTS', KEYS[7]) == 0 or redis.call('EXISTS', KEYS[8]) == 0 then return {0, 'session_terminated'} end

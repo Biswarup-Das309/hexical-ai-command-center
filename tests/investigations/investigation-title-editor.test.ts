@@ -96,7 +96,9 @@ test('runtime transcript recovery rebinds a missing persisted session through in
   assert.match(transcript, /cause\.code === 'SESSION_NOT_FOUND' \|\| cause\.code === 'SESSION_NOT_ACTIVE'/)
   assert.match(transcript, /onSessionUnavailableRef\.current\(\)/)
   assert.match(transcript, /recoveryAttemptRef\.current = false/)
-  assert.match(transcript, /body\.hasMore && body\.events\.length > 0 && nextCursor !== after/)
+  assert.match(transcript, /new EventSource\(/)
+  assert.match(transcript, /transcript\/stream/)
+  assert.match(transcript, /connectStreamRef\.current\?\.\(\)/)
   assert.match(workspace, /onRecoverSession=\{async \(\) => \{[\s\S]*await workspace\.ensureSession\(\)/)
 })
 

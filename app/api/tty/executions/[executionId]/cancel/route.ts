@@ -1,6 +1,6 @@
 import { auth } from '@clerk/nextjs/server'
-import { Redis } from '@upstash/redis'
 import { z } from 'zod'
+import { createSupabaseRuntimeStore } from '@/lib/tty/supabase-runtime-store'
 import { cancelTTYExecution } from '@/lib/tty/tty-execution-activator-server'
 import { createTTYSessionStore } from '@/lib/tty/tty-session-store'
 
@@ -30,12 +30,7 @@ export async function POST(request: Request, context: { params: Promise<{ execut
   if (!parsed.success)
     return json({ ok: false, code: 'INVALID_INPUT', message: 'A valid session id is required.' }, 400)
 
-  const url = process.env.UPSTASH_REDIS_REST_URL
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN
-  if (!url || !token)
-    return json({ ok: false, code: 'INTERNAL_ERROR', message: 'Execution cancellation is not configured.' }, 500)
-
-  const session = await createTTYSessionStore(new Redis({ url, token })).getSession(
+  const session = await createTTYSessionStore(createSupabaseRuntimeStore()).getSession(
     parsed.data.sessionId as never,
     userId,
   )

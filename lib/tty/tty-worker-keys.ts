@@ -1,4 +1,4 @@
-/** Central Redis key schema for the trusted TTY worker plane. */
+/** Central runtime key schema for the trusted TTY worker plane. */
 
 import type { TTYExecutionId, TTYSessionId } from './tty-types'
 import type { TTYWorkerId } from './tty-worker-types'
@@ -33,7 +33,7 @@ export function ttyWorkerActiveLeaseIndexKey(): string {
   return 'tty:workers:active-lease-index'
 }
 
-/** Append-only Redis Stream containing structured worker-plane events. */
+/** Append-only runtime stream containing structured worker-plane events. */
 export function ttyWorkerAuditStreamKey(): string {
   return 'tty:workers:audit'
 }
@@ -86,6 +86,11 @@ export function ttyExecutionActiveIndexKey(): string {
 /** Set of execution IDs admitted and waiting for a worker claim. */
 export function ttyPendingExecutionIndexKey(): string {
   return 'tty:executions:pending'
+}
+
+/** Supabase Realtime-backed notification stream for newly queued work. */
+export function ttyPendingExecutionStreamKey(): string {
+  return 'tty:executions:pending-events'
 }
 
 /** Durable web-to-worker control stream for persistent terminal sessions. */

@@ -1,5 +1,5 @@
-import type { Redis } from '@upstash/redis'
 import { hasAuthenticatedTTYLeaseCapability } from './tty-execution-admission'
+import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
 import type { TTYExecutionId, TTYExecutionKind, TTYSessionId } from './tty-types'
 import {
   ttyExecutionJobKey,

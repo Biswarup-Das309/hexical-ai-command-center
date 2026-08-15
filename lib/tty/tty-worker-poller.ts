@@ -9,6 +9,8 @@ export const TTY_WORKER_POLLER_DEFAULTS = Object.freeze({
 
 export interface PendingExecutionQueue {
   listPendingExecutionIds(limit: number): Promise<readonly string[]>
+  /** Realtime wake-up path. Queues without it retain the deterministic test poller. */
+  subscribe?(onPendingExecutionIds: (executionIds: readonly string[]) => Promise<void> | void): Promise<() => void>
 }
 
 export class InMemoryPendingExecutionQueue implements PendingExecutionQueue {
@@ -105,6 +107,7 @@ export class TTYWorkerPoller {
   private pollInFlight: Promise<void> | null = null
   private startPromise: Promise<TTYWorkerPollerStatus> | null = null
   private stopPromise: Promise<TTYWorkerPollerStatus> | null = null
+  private realtimeCleanup: (() => void) | null = null
   private lastPollAt: string | null = null
   private consecutiveIdlePolls = 0
   private currentIntervalMs: number
@@ -192,7 +195,14 @@ export class TTYWorkerPoller {
     await this.pollOnce()
     if (this.active) {
       this.state = 'running'
-      this.scheduleNextPoll()
+      if (this.dependencies.queue.subscribe) {
+        this.realtimeCleanup = await this.dependencies.queue.subscribe(async (executionIds) => {
+          if (!this.active || executionIds.length === 0 || !this.dependencies.onPendingExecutionIds) return
+          await this.dependencies.onPendingExecutionIds(executionIds)
+        })
+      } else {
+        this.scheduleNextPoll()
+      }
     }
     return this.getStatus()
   }
@@ -201,6 +211,8 @@ export class TTYWorkerPoller {
     if (this.startPromise !== null) await this.startPromise.catch(() => undefined)
     if (this.pollInFlight !== null) await this.pollInFlight.catch(() => undefined)
     this.clearScheduledPoll()
+    this.realtimeCleanup?.()
+    this.realtimeCleanup = null
     this.state = 'stopped'
     this.logger.info('polling_shutdown', {
       pollsPerformed: this.pollsPerformed,

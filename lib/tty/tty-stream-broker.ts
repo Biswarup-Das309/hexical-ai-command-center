@@ -1,4 +1,4 @@
-/** Ordered live-stream broker with bounded hot replay and Redis recovery. */
+/** Ordered live-stream broker with bounded hot replay and Supabase recovery. */
 
 import { isTTYExecutionState, isTerminalTTYExecutionState, type TTYTerminalExecutionState } from './tty-execution-state'
 import type { TTYOutputEvent } from './tty-output-stream'
@@ -24,6 +24,10 @@ export interface TTYStreamRedis {
     key: string,
     options: { readonly strategy: 'MAXLEN'; readonly threshold: number; readonly exactness?: '~' | '=' },
   ): Promise<unknown>
+  subscribeToStream?(
+    streamKey: string,
+    callback: (payload: { readonly streamId: string; readonly fields: unknown }) => void,
+  ): Promise<() => void>
 }
 
 export interface TTYStreamBrokerOptions {
@@ -232,6 +236,7 @@ export class TTYStreamBroker {
   private readonly redisPollIntervalMs: number
   private readonly now: () => Date
   private readonly pollers = new Map<TTYExecutionId, ReturnType<typeof setInterval>>()
+  private readonly realtimeSubscriptions = new Map<TTYExecutionId, Promise<() => void>>()
 
   constructor(
     private readonly redis: TTYStreamRedis | null,
@@ -306,7 +311,7 @@ export class TTYStreamBroker {
       const buffer = this.bufferFor(executionId)
       buffer.lastNotifiedSequence = Math.max(buffer.lastNotifiedSequence, replay.maxSequence ?? 0)
       buffer.subscribers.set(id, subscriber)
-      this.startPoller(executionId)
+      await this.startPoller(executionId)
       let active = true
       return {
         id,
@@ -335,12 +340,14 @@ export class TTYStreamBroker {
       const poller = this.pollers.get(executionId)
       if (poller !== undefined) clearInterval(poller)
       this.pollers.delete(executionId)
+      void this.stopRealtimeSubscription(executionId)
       return
     }
     this.buffers.clear()
     this.localSequences.clear()
     for (const poller of this.pollers.values()) clearInterval(poller)
     this.pollers.clear()
+    for (const executionId of this.realtimeSubscriptions.keys()) void this.stopRealtimeSubscription(executionId)
   }
 
   private bufferFor(executionId: TTYExecutionId): ExecutionBuffer {
@@ -358,17 +365,56 @@ export class TTYStreamBroker {
       const poller = this.pollers.get(executionId)
       if (poller !== undefined) clearInterval(poller)
       this.pollers.delete(executionId)
+      void this.stopRealtimeSubscription(executionId)
     }
   }
 
-  private startPoller(executionId: TTYExecutionId): void {
+  private async startPoller(executionId: TTYExecutionId): Promise<void> {
     if (!this.redis || this.pollers.has(executionId)) return
+    if (this.redis.subscribeToStream && !this.realtimeSubscriptions.has(executionId)) {
+      const subscription = this.redis.subscribeToStream(ttyExecutionLiveStreamKey(executionId), (payload) => {
+        void this.serialized(executionId, async () => {
+          const event = parseRedisEvent([payload.streamId, payload.fields])
+          if (event) this.notifyPersistedEvent(executionId, event)
+        })
+      })
+      this.realtimeSubscriptions.set(executionId, subscription)
+      return
+    }
+    if (this.redis.subscribeToStream) return
     const poller = setInterval(() => {
       void this.pollRedis(executionId)
     }, this.redisPollIntervalMs)
     if (typeof (poller as unknown as { unref?: () => void }).unref === 'function')
       (poller as unknown as { unref: () => void }).unref()
     this.pollers.set(executionId, poller)
+  }
+
+  private async stopRealtimeSubscription(executionId: TTYExecutionId): Promise<void> {
+    const subscription = this.realtimeSubscriptions.get(executionId)
+    if (!subscription) return
+    this.realtimeSubscriptions.delete(executionId)
+    try {
+      ;(await subscription)()
+    } catch {
+      // Realtime cleanup is best effort during request/worker shutdown.
+    }
+  }
+
+  private notifyPersistedEvent(executionId: TTYExecutionId, event: TTYStreamEvent): void {
+    const buffer = this.buffers.get(executionId)
+    if (!buffer || event.sequence <= buffer.lastNotifiedSequence) return
+    buffer.events.push(event)
+    while (buffer.events.length > this.maxBufferedEvents) buffer.events.shift()
+    if (event.type === 'completion') buffer.completed = true
+    buffer.lastNotifiedSequence = event.sequence
+    for (const subscriber of buffer.subscribers.values()) {
+      try {
+        subscriber(event)
+      } catch {
+        // A broken viewer must never interrupt realtime delivery.
+      }
+    }
   }
 
   private async pollRedis(executionId: TTYExecutionId): Promise<void> {
@@ -380,17 +426,7 @@ export class TTYStreamBroker {
     if (replay.status === 'unavailable') return
     for (const event of replay.events) {
       if (event.sequence <= buffer.lastNotifiedSequence) continue
-      buffer.events.push(event)
-      while (buffer.events.length > this.maxBufferedEvents) buffer.events.shift()
-      if (event.type === 'completion') buffer.completed = true
-      buffer.lastNotifiedSequence = event.sequence
-      for (const subscriber of buffer.subscribers.values()) {
-        try {
-          subscriber(event)
-        } catch {
-          // A broken viewer must never interrupt cross-instance delivery.
-        }
-      }
+      this.notifyPersistedEvent(executionId, event)
     }
   }
 
