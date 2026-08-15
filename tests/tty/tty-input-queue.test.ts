@@ -5,13 +5,14 @@ import { createTTYInputQueue } from '../../lib/tty/tty-input-queue'
 test('PTY input queue preserves xterm keystroke order', async () => {
   const delivered: string[] = []
   const queue = createTTYInputQueue(async (data) => {
-    await new Promise((resolve) => setTimeout(resolve, data === 'e' ? 10 : 0))
+    await new Promise((resolve) => setTimeout(resolve, 10))
     delivered.push(data)
   })
 
   await Promise.all([...'echo HELLO\\r'].map((character) => queue.enqueue(character)))
 
   assert.equal(delivered.join(''), 'echo HELLO\\r')
+  assert.equal(delivered.length, 1)
 })
 
 test('PTY input queue continues after a failed write', async () => {
