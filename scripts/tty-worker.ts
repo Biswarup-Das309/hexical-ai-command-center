@@ -302,28 +302,53 @@ async function main(): Promise<void> {
     recovery: persistentRecovery,
   })
 
-  await persistentSessionManager.start()
-  await daemon.start()
-  await globalSessionControl.start()
-  await workerSessionControl.start()
-  await executor.start()
-  workerLogger('info', 'worker_ready', { workerId, version, ptyBackend: 'tmux' })
-
   let shuttingDown = false
-  const shutdown = async (signal: 'SIGINT' | 'SIGTERM') => {
-    if (shuttingDown) return
+  let shutdownPromise: Promise<void> | null = null
+  let resolveStartupPhase!: () => void
+  const startupPhase = new Promise<void>((resolve) => {
+    resolveStartupPhase = resolve
+  })
+
+  // Install the process-level handler before any asynchronous startup. The
+  // daemon also observes signals once registered, but this early handler is
+  // what prevents a SIGTERM during startup from allowing the remaining
+  // startup steps to run after the daemon has already stopped.
+  const shutdown = (signal: 'SIGINT' | 'SIGTERM'): Promise<void> => {
+    if (shutdownPromise !== null) return shutdownPromise
     shuttingDown = true
     workerLogger('info', 'worker_shutdown_started', { workerId, signal })
-    await globalSessionControl.stop()
-    await workerSessionControl.stop()
-    await executor.stop()
-    await daemon.stop(signal)
-    await persistentSessionManager.stop()
-    workerLogger('info', 'worker_shutdown_completed', { workerId, signal })
-    process.exit(0)
+    shutdownPromise = (async () => {
+      await startupPhase
+      await globalSessionControl.stop()
+      await workerSessionControl.stop()
+      await executor.stop()
+      await daemon.stop(signal)
+      await persistentSessionManager.stop()
+      workerLogger('info', 'worker_shutdown_completed', { workerId, signal })
+      process.exit(0)
+    })()
+    return shutdownPromise
   }
   process.once('SIGINT', () => void shutdown('SIGINT'))
   process.once('SIGTERM', () => void shutdown('SIGTERM'))
+
+  try {
+    await persistentSessionManager.start()
+    if (shuttingDown) return
+    await daemon.start()
+    if (shuttingDown) return
+    await globalSessionControl.start()
+    if (shuttingDown) return
+    await workerSessionControl.start()
+    if (shuttingDown) return
+    await executor.start()
+    if (shuttingDown) return
+    workerLogger('info', 'worker_ready', { workerId, version, ptyBackend: 'tmux' })
+  } finally {
+    resolveStartupPhase()
+  }
+
+  if (shutdownPromise !== null) await shutdownPromise
 }
 
 main().catch((error) => {
