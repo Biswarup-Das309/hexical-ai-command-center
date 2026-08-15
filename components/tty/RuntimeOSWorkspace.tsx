@@ -106,6 +106,11 @@ export function RuntimeOSWorkspace({
   const activeSessionId = activeTabId ?? primarySessionId
   const activeTab = tabs.find((tab) => tab.id === activeSessionId) ?? null
   const activeTabIsPrimary = activeTab?.primary === true || activeSessionId === primarySessionId
+  // A session failure can belong to the previous persisted session. Once the
+  // investigation has rebound to a live session, that old diagnostic must not
+  // mask a healthy transcript or tell the operator that the active shell is
+  // missing.
+  const visibleSessionError = activeSessionId ? null : sessionError
   const terminalReady = terminalReadySessionId === activeSessionId
   const recoverActiveSession = useCallback((): Promise<void> => {
     const inFlight = recoveryInFlightRef.current
@@ -403,12 +408,12 @@ export function RuntimeOSWorkspace({
         {tabs.length === 0 && <span className="font-mono text-[10px] text-zinc-600">No attached terminals</span>}
       </nav>
 
-      {(sessionError || transcript.error || controlError || executionError) && (
+      {(visibleSessionError || transcript.error || controlError || executionError) && (
         <div
           role="alert"
           className="border-b border-rose-400/20 bg-rose-400/[0.04] px-4 py-2 font-mono text-[10px] text-rose-300"
         >
-          {sessionError || transcript.error || controlError || executionError}
+          {visibleSessionError || transcript.error || controlError || executionError}
         </div>
       )}
 

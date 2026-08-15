@@ -100,6 +100,13 @@ test('runtime transcript recovery rebinds a missing persisted session through in
   assert.match(workspace, /onRecoverSession=\{async \(\) => \{[\s\S]*await workspace\.ensureSession\(\)/)
 })
 
+test('runtime hides a stale session error after recovery binds a live session', async () => {
+  const runtime = await source('components/tty/RuntimeOSWorkspace.tsx')
+
+  assert.match(runtime, /const visibleSessionError = activeSessionId \? null : sessionError/)
+  assert.match(runtime, /visibleSessionError \|\| transcript\.error \|\| controlError \|\| executionError/)
+})
+
 test('stream recovery does not reconnect merely because the parent callback identity changed', async () => {
   const stream = await source('hooks/useTTYExecutionStream.ts')
 
