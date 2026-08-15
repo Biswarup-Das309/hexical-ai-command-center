@@ -179,7 +179,7 @@ export async function GET(request: Request) {
     ),
     safeCheck(
       () => checkTTYWorkers(runtimeStore),
-      1_500,
+      5_000,
       () => ({
         status: 'unhealthy',
         mode: (usesDirectTTYActivation() ? 'direct' : 'worker') as TTYWorkerHealthResult['mode'],
