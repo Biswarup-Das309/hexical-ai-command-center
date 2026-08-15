@@ -34,7 +34,7 @@ export interface TTYWorkerDaemonRecovery {
 }
 
 export interface TTYWorkerDaemonDependencies {
-  readonly registry: Pick<TTYWorkerRegistry, 'registerWorker'>
+  readonly registry: Pick<TTYWorkerRegistry, 'registerWorker'> & Partial<Pick<TTYWorkerRegistry, 'releaseWorker'>>
   readonly authenticator: Pick<TTYWorkerAuthenticator, 'authenticateWorker'>
   readonly heartbeat: Pick<TTYWorkerHeartbeatService, 'recordHeartbeat'>
   /** Recovery completes its immediate scan before the worker is marked ready. */
@@ -94,6 +94,7 @@ export class TTYWorkerDaemon {
   private lastError: string | null = null
   private heartbeatTimer: unknown = null
   private heartbeatInFlight = false
+  private registrationOwned = false
   private startPromise: Promise<TTYWorkerDaemonStatus> | null = null
   private stopPromise: Promise<TTYWorkerDaemonStatus> | null = null
   private startupCancelled = false
@@ -163,6 +164,7 @@ export class TTYWorkerDaemon {
       const registration = await this.dependencies.registry.registerWorker(this.dependencies.registration)
       this.assertStartupActive()
       if (!registration.registered) throw new Error(`Worker registration failed: ${registration.reason}`)
+      this.registrationOwned = true
       this.logger.info('worker_registered', { workerId: this.workerId })
 
       const authentication = await this.dependencies.authenticator.authenticateWorker(
@@ -193,6 +195,7 @@ export class TTYWorkerDaemon {
     } catch (error) {
       this.clearHeartbeatResources()
       await this.stopRecovery()
+      await this.releaseRegistration()
       this.authenticated = false
       if (error instanceof TTYWorkerDaemonStartupCancelled) {
         this.state = 'stopped'
@@ -210,6 +213,7 @@ export class TTYWorkerDaemon {
   private async stopInternal(reason: 'manual' | 'SIGINT' | 'SIGTERM'): Promise<TTYWorkerDaemonStatus> {
     this.clearHeartbeatResources()
     await this.stopRecovery()
+    await this.releaseRegistration()
     this.authenticated = false
     this.state = 'stopped'
     this.logger.info('daemon_stopped', { workerId: this.workerId, reason, heartbeatSequence: this.heartbeatSequence })
@@ -261,6 +265,28 @@ export class TTYWorkerDaemon {
       this.logger.warn('recovery_shutdown_failed', {
         workerId: this.workerId,
         errorCode: error instanceof Error && error.name.length > 0 ? error.name : 'unknown_error',
+      })
+    }
+  }
+
+  private async releaseRegistration(): Promise<void> {
+    if (!this.registrationOwned) return
+    this.registrationOwned = false
+    const releaseWorker = this.dependencies.registry.releaseWorker
+    if (!releaseWorker) return
+    try {
+      const result = await releaseWorker.call(
+        this.dependencies.registry,
+        this.workerId,
+        this.dependencies.registration.identity,
+      )
+      if (!result.released) {
+        this.logger.warn('worker_release_failed', { workerId: this.workerId, reason: result.reason })
+      }
+    } catch (error) {
+      this.logger.warn('worker_release_failed', {
+        workerId: this.workerId,
+        reason: errorMessage(error),
       })
     }
   }

@@ -64,6 +64,10 @@ export type TTYWorkerStateResult =
   | { readonly changed: true; readonly worker: TTYWorkerMetadata }
   | { readonly changed: false; readonly reason: TTYWorkerRegistryFailure }
 
+export type TTYWorkerReleaseResult =
+  | { readonly released: true }
+  | { readonly released: false; readonly reason: 'unknown_worker' | 'identity_mismatch' | 'internal_error' }
+
 interface RegistryDependencies {
   readonly now?: () => Date
 }
@@ -358,6 +362,30 @@ export class TTYWorkerRegistry {
       return workers.filter((worker): worker is TTYWorkerMetadata => worker !== null)
     } catch {
       return []
+    }
+  }
+
+  /**
+   * Release this installation's registration during a graceful shutdown.
+   * The identity check prevents an older process from deleting a newer
+   * process that reused the same stable worker id.
+   */
+  async releaseWorker(workerId: TTYWorkerId, identity: string): Promise<TTYWorkerReleaseResult> {
+    if (parseTTYWorkerId(workerId) === null || identity.trim().length === 0)
+      return { released: false, reason: 'unknown_worker' }
+    try {
+      const worker = await this.getWorker(workerId)
+      if (worker === null) return { released: false, reason: 'unknown_worker' }
+      if (worker.identity !== identity) return { released: false, reason: 'identity_mismatch' }
+      await this.redis.del(
+        ttyWorkerMetadataKey(workerId),
+        ttyWorkerHeartbeatKey(workerId),
+        ttyWorkerHealthKey(workerId),
+      )
+      await this.redis.srem(ttyWorkerRegistryKey(), workerId)
+      return { released: true }
+    } catch {
+      return { released: false, reason: 'internal_error' }
     }
   }
 

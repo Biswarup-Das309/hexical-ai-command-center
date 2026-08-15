@@ -108,6 +108,7 @@ function createHarness(
       | { readonly authenticated: true; readonly context: TTYWorkerAuthContext }
     >
     readonly heartbeat?: (sequence: number, now: string) => Promise<TTYWorkerHeartbeatResult>
+    readonly release?: () => Promise<{ readonly released: true }>
     readonly recovery?: { readonly start: () => Promise<unknown>; readonly stop: () => Promise<unknown> }
   } = {},
 ) {
@@ -131,6 +132,10 @@ function createHarness(
       registerWorker: async () => {
         events.push('register')
         return { registered: true, worker: {} as never }
+      },
+      releaseWorker: async () => {
+        events.push('release')
+        return options.release?.() ?? { released: true }
       },
     },
     authenticator: {
@@ -175,6 +180,23 @@ test('starts by registering, authenticating, and heartbeating without executing 
   assert.ok(harness.logger.entries.some((entry) => entry.event === 'daemon_started'))
 
   await harness.daemon.stop()
+  assert.equal(harness.events.at(-1), 'release')
+})
+
+test('graceful shutdown releases only the worker registration owned by this daemon', async () => {
+  let releaseCalls = 0
+  const harness = createHarness({
+    release: async () => {
+      releaseCalls += 1
+      return { released: true }
+    },
+  })
+
+  await harness.daemon.start()
+  await harness.daemon.stop('SIGTERM')
+
+  assert.equal(releaseCalls, 1)
+  assert.equal(harness.daemon.getStatus().state, 'stopped')
 })
 
 test('recovery completes its restart scan before readiness and stops with the daemon', async () => {
