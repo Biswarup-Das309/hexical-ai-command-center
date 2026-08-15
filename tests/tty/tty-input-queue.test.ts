@@ -15,6 +15,21 @@ test('PTY input queue preserves xterm keystroke order', async () => {
   assert.equal(delivered.length, 1)
 })
 
+test('PTY input queue batches human typing and flushes a completed command immediately', async () => {
+  const delivered: string[] = []
+  const queue = createTTYInputQueue(async (data) => {
+    delivered.push(data)
+  })
+
+  const first = queue.enqueue('echo ')
+  await new Promise((resolve) => setTimeout(resolve, 25))
+  const second = queue.enqueue('HELLO')
+  const third = queue.enqueue('\r')
+  await Promise.all([first, second, third])
+
+  assert.deepEqual(delivered, ['echo HELLO\r'])
+})
+
 test('PTY input queue continues after a failed write', async () => {
   const delivered: string[] = []
   let attempts = 0
