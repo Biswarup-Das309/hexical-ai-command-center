@@ -1,0 +1,22 @@
+[Unit]
+Description=Hexical Runtime OS Supabase PTY worker
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=biswarup
+Group=biswarup
+WorkingDirectory=/opt/hexical-ai-command-center
+Environment=HOME=/home/biswarup
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/opt/hexical-ai-command-center/scripts/start-tty-worker-linux.sh
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=45
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
