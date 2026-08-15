@@ -47,7 +47,14 @@ async function waitForOutput(getOutput: () => string, marker: string): Promise<v
 function cwdValues(output: string): string[] {
   return [...output.matchAll(/HEXICAL_RUNTIME_OS_CWD=([^\r\n]+)/g)]
     .map((match) => stripTerminalControls(match[1]).trim())
-    .filter((value) => value.length > 0 && value !== '%CD%')
+    .filter(
+      (value) =>
+        value.length > 0 &&
+        value !== '%CD%' &&
+        !value.includes('%s') &&
+        !value.includes('$PWD') &&
+        !value.includes('\\n'),
+    )
 }
 
 function stripTerminalControls(value: string): string {
