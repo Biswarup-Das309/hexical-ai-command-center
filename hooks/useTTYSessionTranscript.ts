@@ -199,6 +199,8 @@ export function useTTYSessionTranscript(
         .then(() => {
           if (generation === generationRef.current && activeSessionId === sessionIdRef.current) {
             recoveryAttemptRef.current = false
+            setError(null)
+            setConnectionState('connecting')
           }
         })
         .catch((repairCause) => {

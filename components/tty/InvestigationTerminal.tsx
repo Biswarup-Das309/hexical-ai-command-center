@@ -153,6 +153,7 @@ export const InvestigationTerminal = forwardRef<InvestigationTerminalHandle, Inv
       <TerminalContainer
         ref={mountRef}
         {...terminalContainerProps}
+        onPointerDownCapture={() => terminalRef.current?.focus()}
         status={
           containerStatus ??
           (terminalError ? (

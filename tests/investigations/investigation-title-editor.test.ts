@@ -96,10 +96,23 @@ test('runtime transcript recovery rebinds a missing persisted session through in
   assert.match(transcript, /cause\.code === 'SESSION_NOT_FOUND' \|\| cause\.code === 'SESSION_NOT_ACTIVE'/)
   assert.match(transcript, /onSessionUnavailableRef\.current\(\)/)
   assert.match(transcript, /recoveryAttemptRef\.current = false/)
+  assert.match(transcript, /setError\(null\)/)
+  assert.match(transcript, /setConnectionState\('connecting'\)/)
   assert.match(transcript, /new EventSource\(/)
   assert.match(transcript, /transcript\/stream/)
   assert.match(transcript, /connectStreamRef\.current\?\.\(\)/)
   assert.match(workspace, /onRecoverSession=\{async \(\) => \{[\s\S]*await workspace\.ensureSession\(\)/)
+})
+
+test('runtime terminal explicitly focuses the PTY when the visible terminal is clicked', async () => {
+  const [terminal, container] = await Promise.all([
+    source('components/tty/InvestigationTerminal.tsx'),
+    source('components/tty/TerminalContainer.tsx'),
+  ])
+
+  assert.match(terminal, /onPointerDownCapture=\{\(\) => terminalRef\.current\?\.focus\(\)\}/)
+  assert.match(container, /onPointerDownCapture\?: \(\) => void/)
+  assert.match(container, /onPointerDownCapture=\{onPointerDownCapture\}/)
 })
 
 test('runtime hides a stale session error after recovery binds a live session', async () => {

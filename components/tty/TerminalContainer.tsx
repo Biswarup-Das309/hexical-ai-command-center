@@ -8,16 +8,18 @@ export interface TerminalContainerProps {
   readonly toolbar?: ReactNode
   readonly children?: ReactNode
   readonly className?: string
+  readonly onPointerDownCapture?: () => void
 }
 
 export const TerminalContainer = forwardRef<HTMLDivElement, TerminalContainerProps>(function TerminalContainer(
-  { title = 'LIVE EXECUTION', status, toolbar, children, className = '' },
+  { title = 'LIVE EXECUTION', status, toolbar, children, className = '', onPointerDownCapture },
   ref,
 ) {
   return (
     <section
       className={`hud-frame glass flex min-h-0 flex-col overflow-hidden rounded-lg ${className}`}
       aria-label={title}
+      onPointerDownCapture={onPointerDownCapture}
     >
       <header className="flex min-h-10 items-center justify-between gap-3 border-b border-white/10 bg-black/20 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
