@@ -11,7 +11,7 @@ import { createTTYLifecycleApiForRequest } from '@/lib/tty/tty-lifecycle-server'
 import { TTYOutputStreamManager } from '@/lib/tty/tty-output-stream'
 import type { TTYRuntimeStore } from '@/lib/tty/tty-runtime-store'
 import { createTTYSessionStore } from '@/lib/tty/tty-session-store'
-import { ttyExecutionStateKey } from '@/lib/tty/tty-worker-keys'
+import { ttyExecutionStateKey, ttySessionRuntimeHistoryKey, ttySessionRuntimeKey } from '@/lib/tty/tty-worker-keys'
 import {
   createInvestigationApi,
   createInvestigationExecutionApi,
@@ -96,13 +96,30 @@ export function createInvestigationApiForRequest() {
 }
 
 export function createInvestigationSessionApiForRequest() {
-  const store = new InvestigationStore(createInvestigationRedis(createRuntimeStore()))
+  const runtime = createRuntimeStore()
+  const store = new InvestigationStore(createInvestigationRedis(runtime))
   const lifecycle = createTTYLifecycleApiForRequest()
   return createInvestigationSessionApi({
     authenticate: async () => (await auth()).userId ?? null,
     getStore: () => store,
     createTTYSession: (request) => lifecycle.create(request),
     getTTYSession: (request, sessionId) => lifecycle.get(request, sessionId as never),
+    isTTYSessionUsable: async (sessionId, ownerUserId) => {
+      const history = await runtime.get<unknown>(ttySessionRuntimeHistoryKey(sessionId as never))
+      // A brand-new session has not been opened by a worker yet. Keep it
+      // reusable so ensure() remains idempotent during that short handoff.
+      if (history === null) return true
+      const lease = await runtime.get<unknown>(ttySessionRuntimeKey(sessionId as never))
+      if (typeof lease !== 'object' || lease === null) return false
+      const record = lease as Record<string, unknown>
+      return (
+        record.state === 'active' &&
+        record.sessionId === sessionId &&
+        record.ownerUserId === ownerUserId &&
+        typeof record.workerId === 'string' &&
+        typeof record.runtimeId === 'string'
+      )
+    },
     terminateTTYSession: (request, sessionId) => lifecycle.terminate(request, sessionId as never),
     logger: investigationLogger,
   })

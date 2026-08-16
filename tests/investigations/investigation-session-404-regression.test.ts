@@ -96,6 +96,7 @@ function sessionApiFixture(redis: InvestigationRedis) {
   let user: string | null = OWNER
   let sessionCounter = 0
   const activeSessions = new Map<string, 'active' | 'terminated'>()
+  const usableSessions = new Map<string, boolean>()
   const workspaceApi = createInvestigationApi({ authenticate: async () => user, getStore: () => store })
   const sessionApi = createInvestigationSessionApi({
     authenticate: async () => user,
@@ -104,6 +105,7 @@ function sessionApiFixture(redis: InvestigationRedis) {
       sessionCounter += 1
       const sessionId = `00000000-0000-4000-8000-${String(sessionCounter).padStart(12, '0')}`
       activeSessions.set(sessionId, 'active')
+      usableSessions.set(sessionId, true)
       return new Response(JSON.stringify({ ok: true, session: { sessionId, status: 'active' } }), { status: 201 })
     },
     getTTYSession: async (_request, sessionId) => {
@@ -114,6 +116,7 @@ function sessionApiFixture(redis: InvestigationRedis) {
         })
       return new Response(JSON.stringify({ ok: true, session: { sessionId, status } }), { status: 200 })
     },
+    isTTYSessionUsable: async (sessionId) => usableSessions.get(sessionId) === true,
     terminateTTYSession: async (_request, sessionId) => {
       activeSessions.set(sessionId, 'terminated')
       return new Response(JSON.stringify({ ok: true, sessionId }), { status: 200 })
@@ -146,6 +149,9 @@ function sessionApiFixture(redis: InvestigationRedis) {
     },
     expireExternally(sessionId: string) {
       activeSessions.delete(sessionId)
+    },
+    markUnusable(sessionId: string) {
+      usableSessions.set(sessionId, false)
     },
   }
 }
@@ -215,6 +221,21 @@ test('stale session index: a ttySessionId pointing at a session the TTY store no
     (await fixture.store.get(OWNER, id as InvestigationId))?.investigation.ttySessionId,
     repairedBody.sessionId,
   )
+})
+
+test('active but unusable session index: ensure() replaces a session whose worker runtime disappeared', async () => {
+  const fixture = sessionApiFixture(new FakeInvestigationRedis())
+  const created = await read(
+    await fixture.workspaceApi.create(request('POST', '/api/investigations', { title: 'Unusable runtime case' })),
+  )
+  const id = String((created.investigation as Record<string, unknown>).investigationId)
+  const first = await read(await fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id))
+
+  fixture.markUnusable(String(first.sessionId))
+  const repaired = await fixture.sessionApi.ensure(request('POST', `/api/investigations/${id}/session`), id)
+  assert.equal(repaired.status, 201)
+  const repairedBody = await read(repaired)
+  assert.notEqual(repairedBody.sessionId, first.sessionId)
 })
 
 test('concurrent session creation: parallel ensure() calls converge on exactly one persisted session', async () => {

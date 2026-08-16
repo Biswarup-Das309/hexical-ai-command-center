@@ -520,6 +520,13 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
           await this.fence(managed, 'session_terminal', 'terminate')
           continue
         }
+        if (this.runtime.hasPersistentSession) {
+          const persistentShellRemains = await this.runtime.hasPersistentSession(managed.sessionId).catch(() => false)
+          if (!persistentShellRemains) {
+            await this.fence(managed, 'runtime_shell_unavailable', 'terminate')
+            continue
+          }
+        }
         const renewed = await this.renewLease(managed).catch(() => false)
         if (!renewed) await this.fence(managed, 'runtime_lease_lost', 'detach')
         else await this.sampleProcessTelemetry(managed)

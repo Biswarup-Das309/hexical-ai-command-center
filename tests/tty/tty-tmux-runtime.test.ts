@@ -80,10 +80,12 @@ test('tmux runtime reattaches a second worker to the same persistent shell rathe
   const rootDir = join(tmpdir(), `hexical-tmux-runtime-${Math.random().toString(16).slice(2)}`)
   const firstRuntime = new TTYTmuxRuntime(adapter, { rootDir })
   const first = await firstRuntime.createSession({ sessionId, ownerUserId: 'user-one', workerId: workerA })
+  assert.equal(await firstRuntime.hasPersistentSession(sessionId), true)
   const output: string[] = []
   first.onData((data) => output.push(data))
   first.write('cd /workspace\n')
   await first.detach()
+  assert.equal(await firstRuntime.hasPersistentSession(sessionId), true)
 
   const recoveredRuntime = new TTYTmuxRuntime(adapter, { rootDir })
   const recovered = await recoveredRuntime.recoverSession({ sessionId, ownerUserId: 'user-one', workerId: workerB })
@@ -98,6 +100,7 @@ test('tmux runtime reattaches a second worker to the same persistent shell rathe
   assert.deepEqual(output, ['terminal:cd /workspace\n'])
 
   await recovered?.terminate()
+  assert.equal(await recoveredRuntime.hasPersistentSession(sessionId), false)
   assert.equal(adapter.killCalls.length, 1)
 })
 

@@ -198,6 +198,10 @@ async function main(): Promise<void> {
     PATH: requiredEnv('TTY_PTY_PATH'),
     TERM: 'xterm-256color',
     LANG: process.env.TTY_PTY_LANG?.trim() || 'C.UTF-8',
+    ...(process.env.HOME?.trim() ? { HOME: process.env.HOME.trim() } : {}),
+    ...(process.env.USER?.trim() ? { USER: process.env.USER.trim() } : {}),
+    ...(process.env.LOGNAME?.trim() ? { LOGNAME: process.env.LOGNAME.trim() } : {}),
+    ...(process.env.TMUX_TMPDIR?.trim() ? { TMUX_TMPDIR: process.env.TMUX_TMPDIR.trim() } : {}),
   }
   const tmuxAdapter = await createNodePtyTmuxAdapter({ adminEnv: ptyEnvironment })
   const tmuxRuntime = new TTYTmuxRuntime(tmuxAdapter, {

@@ -84,6 +84,8 @@ export interface InvestigationApiDependencies {
 export interface InvestigationSessionApiDependencies extends InvestigationApiDependencies {
   readonly createTTYSession: (request: Request) => Promise<Response>
   readonly getTTYSession: (request: Request, sessionId: string) => Promise<Response>
+  /** Confirms that an active durable session still has a worker-owned runtime. */
+  readonly isTTYSessionUsable?: (sessionId: string, ownerUserId: string) => Promise<boolean>
   readonly terminateTTYSession: (request: Request, sessionId: string) => Promise<Response>
 }
 
@@ -427,21 +429,45 @@ export function createInvestigationSessionApi(dependencies: InvestigationSession
           const existingBody: unknown = await existingResponse.json().catch(() => null)
           const existing = sessionFromResponse(existingBody)
           if (existingResponse.ok && existing?.status === 'active') {
-            logger.info('investigation.session_ensure_reused', {
+            let usable = true
+            if (dependencies.isTTYSessionUsable) {
+              try {
+                usable = await dependencies.isTTYSessionUsable(existing.sessionId, user)
+              } catch (error) {
+                logger.error('investigation.session_ensure_runtime_probe_failed', {
+                  requestId,
+                  investigationId,
+                  userId: user,
+                  sessionId: existing.sessionId,
+                  message: error instanceof Error ? error.message : String(error),
+                })
+                return failure(503, 'SESSION_UNAVAILABLE', 'The execution session could not be restored.')
+              }
+            }
+            if (usable) {
+              logger.info('investigation.session_ensure_reused', {
+                requestId,
+                investigationId,
+                userId: user,
+                sessionId: existing.sessionId,
+              })
+              return json(
+                {
+                  ok: true,
+                  investigation: publicRecord(hydration.investigation),
+                  sessionId: existing.sessionId,
+                  reused: true,
+                },
+                200,
+              )
+            }
+            logger.warn('investigation.session_ensure_unusable_reference_repaired', {
               requestId,
               investigationId,
               userId: user,
               sessionId: existing.sessionId,
             })
-            return json(
-              {
-                ok: true,
-                investigation: publicRecord(hydration.investigation),
-                sessionId: existing.sessionId,
-                reused: true,
-              },
-              200,
-            )
+            await store.clearSession(user, investigationId)
           }
           if (existingResponse.status >= 500) {
             logger.error('investigation.session_ensure_restore_failed', {

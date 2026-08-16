@@ -217,6 +217,16 @@ export class TTYTmuxRuntime {
     return this.handleFor(internal)
   }
 
+  /**
+   * The node-pty object represents only this worker's tmux attach client.
+   * Its exit is therefore not proof that the authoritative tmux shell exited.
+   * The session manager uses this probe before deciding whether to detach or
+   * permanently terminate the durable shell.
+   */
+  async hasPersistentSession(sessionId: TTYSessionId): Promise<boolean> {
+    return this.adapter.hasServer(tmuxName(sessionId))
+  }
+
   listSessions(ownerUserId: string): readonly TTYPersistentSessionMetadata[] {
     return Object.freeze(
       [...this.sessions.values()]

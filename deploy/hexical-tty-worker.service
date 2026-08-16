@@ -10,13 +10,17 @@ Group=biswarup
 WorkingDirectory=/opt/hexical-ai-command-center
 Environment=HOME=/home/biswarup
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=TMUX_TMPDIR=/var/lib/hexical-tty-worker/tmux
+StateDirectory=hexical-tty-worker
+ExecStartPre=/usr/bin/mkdir -p /var/lib/hexical-tty-worker/tmux
 ExecStart=/opt/hexical-ai-command-center/scripts/start-tty-worker-linux.sh
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
+KillMode=process
+UMask=0077
 TimeoutStopSec=45
 NoNewPrivileges=true
-PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
