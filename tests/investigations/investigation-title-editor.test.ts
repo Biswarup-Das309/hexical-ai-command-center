@@ -104,7 +104,10 @@ test('runtime transcript recovery rebinds a missing persisted session through in
   assert.match(transcript, /runtime_shell_unavailable/)
   assert.match(transcript, /runtime_recovery_unavailable/)
   assert.match(transcript, /session_authority_unavailable/)
-  assert.match(workspace, /onRecoverSession=\{async \(\) => \{[\s\S]*await workspace\.ensureSession\(\)/)
+  assert.match(
+    workspace,
+    /onRecoverSession=\{async \(\) => \{[\s\S]*await workspace\.terminateSession\(\)[\s\S]*await workspace\.ensureSession\(\)/,
+  )
 })
 
 test('runtime command admission rebinds after the worker fences a dead shell', async () => {
