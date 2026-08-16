@@ -98,6 +98,29 @@ test('persistent recovery skips local, unexpired, and completed records without 
   assert.equal(attachCalls, 0)
 })
 
+test('persistent recovery can adopt an expired record left by the previous process with the same worker identity', async () => {
+  let adoptionCalls = 0
+  const service = new TTYPersistentRecoveryService(
+    workerId,
+    {
+      listActiveExecutionRecords: async () => [record({ workerId })],
+      recoverExecution: async () => null,
+    },
+    {
+      adoptPersistent: async () => {
+        adoptionCalls += 1
+        return { adopted: true, job: undefined as never }
+      },
+    },
+    { adoptSameWorkerRecords: true },
+  )
+
+  const result = await service.recoverNow()
+
+  assert.deepEqual(result, { scanned: 1, adopted: 1, attached: 0, skipped: 0, failed: 0 })
+  assert.equal(adoptionCalls, 1)
+})
+
 test('persistent recovery hands the adopted PTY handle to the coordinator without redispatching', async () => {
   const coordinatorCalls: Array<{ executionId: TTYExecutionId; handle: unknown }> = []
   let attachCalls = 0

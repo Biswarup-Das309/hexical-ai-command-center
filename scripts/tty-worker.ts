@@ -265,6 +265,7 @@ async function main(): Promise<void> {
   })
   const persistentRecovery = new TTYPersistentRecoveryService(workerId, persistentSessionManager, leaseManager, {
     scanIntervalMs: positiveInteger('TTY_PERSISTENT_RECOVERY_SCAN_INTERVAL_MS', 5_000),
+    adoptSameWorkerRecords: true,
     coordinator,
     processRuntime,
     logger: {

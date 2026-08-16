@@ -17,6 +17,13 @@ export interface TTYPersistentRecoveryServiceLogger {
 
 export interface TTYPersistentRecoveryServiceOptions {
   readonly scanIntervalMs?: number
+  /**
+   * Worker identity is stable across process restarts. Production enables
+   * this so an expired lease owned by the previous process can be adopted.
+   * The default remains strict for callers that use identity as an
+   * in-process ownership guard.
+   */
+  readonly adoptSameWorkerRecords?: boolean
   readonly setInterval?: (handler: () => void, timeoutMs: number) => unknown
   readonly clearInterval?: (handle: unknown) => void
   readonly logger?: TTYPersistentRecoveryServiceLogger
@@ -53,6 +60,7 @@ export class TTYPersistentRecoveryService {
   private readonly setTimer: (handler: () => void, timeoutMs: number) => unknown
   private readonly clearTimer: (handle: unknown) => void
   private readonly logger: TTYPersistentRecoveryServiceLogger
+  private readonly adoptSameWorkerRecords: boolean
   private readonly coordinator: TTYPersistentRecoveryServiceOptions['coordinator']
   private readonly processRuntime: TTYPersistentRecoveryServiceOptions['processRuntime']
   private timer: unknown = null
@@ -68,6 +76,7 @@ export class TTYPersistentRecoveryService {
     const scanIntervalMs = options.scanIntervalMs ?? DEFAULT_SCAN_INTERVAL_MS
     if (!validInterval(scanIntervalMs)) throw new Error('Invalid persistent recovery scan interval.')
     this.scanIntervalMs = scanIntervalMs
+    this.adoptSameWorkerRecords = options.adoptSameWorkerRecords ?? false
     this.setTimer = options.setInterval ?? ((handler, timeoutMs) => setInterval(handler, timeoutMs))
     this.clearTimer = options.clearInterval ?? ((handle) => clearInterval(handle as ReturnType<typeof setInterval>))
     this.logger = options.logger ?? NOOP_LOGGER
@@ -114,7 +123,7 @@ export class TTYPersistentRecoveryService {
   private async recoverRecord(
     record: TTYPersistentExecutionRecord,
   ): Promise<'adopted' | 'attached' | 'skipped' | 'failed'> {
-    if (record.workerId === this.workerId) return 'skipped'
+    if (record.workerId === this.workerId && !this.adoptSameWorkerRecords) return 'skipped'
     try {
       const adopted = await this.leases.adoptPersistent(record.executionId, record.sessionId)
       if (!adopted.adopted) {

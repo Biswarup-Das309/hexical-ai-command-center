@@ -51,6 +51,8 @@ export interface TTYTmuxAdapter {
   hasServer(tmuxSessionName: string): Promise<boolean>
   createServer(input: TTYTmuxServerInput): Promise<void>
   attach(input: TTYTmuxAttachInput): TTYPersistentPty
+  /** Detach one node-pty tmux client without sending a hangup to the shell. */
+  readonly detachClient?: (tmuxSessionName: string, clientPid: number) => Promise<boolean>
   /** Idempotently keeps tmux pane output flowing to the durable journal. */
   readonly enableOutputJournal?: (tmuxSessionName: string, outputJournal: string) => Promise<void>
   /** Returns the authoritative tmux pane PID, not the node-pty attach client. */
@@ -422,7 +424,10 @@ export class TTYTmuxRuntime {
     let operation!: Promise<void>
     operation = (async () => {
       if (internal.metadata.state === 'active') {
-        internal.pty.kill()
+        const detached = this.adapter.detachClient
+          ? await this.adapter.detachClient(internal.tmuxSessionName, internal.pty.pid).catch(() => false)
+          : false
+        if (!detached) internal.pty.kill()
         const exited = await Promise.race([
           internal.exitPromise.then(() => true),
           new Promise<boolean>((resolveTimer) => setTimeout(() => resolveTimer(false), this.terminationWaitMs)),
@@ -560,6 +565,22 @@ export async function createNodePtyTmuxAdapter(
         env: input.env,
       }
       return nodePty.spawn('tmux', ['attach-session', '-t', input.tmuxSessionName], options)
+    },
+    async detachClient(tmuxSessionName, clientPid) {
+      const clients = await runTmuxCommand(
+        ['list-clients', '-F', '#{client_pid}\t#{client_tty}\t#{session_name}', '-t', tmuxSessionName],
+        '/',
+        adminEnv,
+      )
+      const client = clients.stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .map((line) => line.split('\t'))
+        .find(([pid]) => pid === String(clientPid))
+      const target = client?.[1]
+      if (!target) return false
+      const result = await runTmuxCommand(['detach-client', '-t', target], '/', adminEnv)
+      return result.code === 0
     },
     async killServer(tmuxSessionName) {
       const result = await runTmuxCommand(['kill-session', '-t', tmuxSessionName], '/', adminEnv)
