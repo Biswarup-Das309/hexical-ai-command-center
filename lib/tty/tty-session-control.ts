@@ -210,6 +210,12 @@ export class TTYSessionControlConsumer {
   private started = false
   private reclaimCursor = '0-0'
   private realtimeCleanup: (() => void) | null = null
+  /**
+   * Realtime callbacks can arrive concurrently.  PTY input is intentionally
+   * emitted as small writes, so preserve FIFO order within each session while
+   * allowing unrelated sessions to progress independently.
+   */
+  private readonly realtimeSessionTails = new Map<string, Promise<void>>()
 
   constructor(
     private readonly redis: Redis,
@@ -233,7 +239,19 @@ export class TTYSessionControlConsumer {
         for (const streamId of historical.invalidIds) await this.deliverInvalid(streamId)
         for (const entry of historical.entries) await this.deliver(entry)
         this.realtimeCleanup = await this.redis.subscribeToStream(this.streamKey, (payload) => {
-          void this.deliver(parseEntry([payload.streamId, payload.fields])).catch(() => undefined)
+          const entry = parseEntry([payload.streamId, payload.fields])
+          if (!entry) return
+          const previous = this.realtimeSessionTails.get(entry.sessionId) ?? Promise.resolve()
+          const current = previous
+            .catch(() => undefined)
+            .then(() => this.deliver(entry))
+            .catch(() => undefined)
+          this.realtimeSessionTails.set(entry.sessionId, current)
+          void current.finally(() => {
+            if (this.realtimeSessionTails.get(entry.sessionId) === current) {
+              this.realtimeSessionTails.delete(entry.sessionId)
+            }
+          })
         })
       } catch (error) {
         this.started = false
@@ -273,6 +291,7 @@ export class TTYSessionControlConsumer {
     this.started = false
     this.realtimeCleanup?.()
     this.realtimeCleanup = null
+    this.realtimeSessionTails.clear()
     if (this.timer !== null) clearInterval(this.timer)
     this.timer = null
   }

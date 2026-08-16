@@ -51,6 +51,39 @@ class ControlRedisFake {
   }
 }
 
+class RealtimeControlRedisFake {
+  private readonly values = new Map<string, string>()
+  private callback: ((payload: { streamId: string; fields: unknown }) => void) | null = null
+
+  async xrange(): Promise<unknown[]> {
+    return []
+  }
+
+  async subscribeToStream(
+    _streamKey: string,
+    callback: (payload: { streamId: string; fields: unknown }) => void,
+  ): Promise<() => void> {
+    this.callback = callback
+    return () => {
+      this.callback = null
+    }
+  }
+
+  async set(key: string, value: string): Promise<string | null> {
+    if (this.values.has(key)) return null
+    this.values.set(key, value)
+    return 'OK'
+  }
+
+  async del(key: string): Promise<number> {
+    return this.values.delete(key) ? 1 : 0
+  }
+
+  emit(streamId: string, fields: Record<string, unknown>): void {
+    this.callback?.({ streamId, fields })
+  }
+}
+
 const sessionId = '00000000-0000-4000-8000-000000009101' as TTYSessionId
 
 test('control publisher creates one durable consumer group and appends a bounded command', async () => {
@@ -169,4 +202,45 @@ test('consumer labels Redis stream startup failures with the affected stream and
     message:
       /TTY control stream poll failed for tty:sessions:control\/tty-session-workers-v1: xautoclaim failed for tty:sessions:control\/tty-session-workers-v1: ERR invalid stream id/,
   })
+})
+
+test('Realtime control delivery preserves FIFO order for one PTY session', async () => {
+  const redis = new RealtimeControlRedisFake()
+  const handled: string[] = []
+  let releaseFirst: () => void = () => undefined
+  const firstStarted = new Promise<void>((resolve) => {
+    releaseFirst = resolve
+  })
+  const consumer = new TTYSessionControlConsumer(redis as never, 'worker-realtime-order-test', {
+    handle: async (command) => {
+      handled.push(command.commandId)
+      if (command.commandId === 'first') await firstStarted
+    },
+  })
+
+  await consumer.start()
+  redis.emit('1-0', {
+    commandId: 'first',
+    sessionId,
+    ownerUserId: 'user-one',
+    type: 'write',
+    data: 'e',
+    timestamp: '2026-08-11T10:00:00.000Z',
+  })
+  redis.emit('2-0', {
+    commandId: 'second',
+    sessionId,
+    ownerUserId: 'user-one',
+    type: 'write',
+    data: 'ENTER',
+    timestamp: '2026-08-11T10:00:00.001Z',
+  })
+
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.deepEqual(handled, ['first'])
+  releaseFirst()
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  await consumer.stop()
+
+  assert.deepEqual(handled, ['first', 'second'])
 })
