@@ -49,15 +49,27 @@ interface AdmittedSessionExecutionResponse {
   readonly job: { readonly executionId: string }
 }
 
+class RuntimeRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code: string | null,
+  ) {
+    super(message)
+    this.name = 'RuntimeRequestError'
+  }
+}
+
 async function runtimeRequest<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, cache: 'no-store' })
   const body: unknown = await response.json().catch(() => null)
   if (!response.ok) {
+    const code =
+      typeof body === 'object' && body !== null && 'code' in body && typeof body.code === 'string' ? body.code : null
     const message =
       typeof body === 'object' && body !== null && 'message' in body && typeof body.message === 'string'
         ? body.message
         : 'The runtime request failed.'
-    throw new Error(message)
+    throw new RuntimeRequestError(message, code)
   }
   return body as T
 }
@@ -315,6 +327,13 @@ export function RuntimeOSWorkspace({
       }
       setCommand('')
     } catch (cause) {
+      if (
+        cause instanceof RuntimeRequestError &&
+        (cause.code === 'SESSION_NOT_FOUND' || cause.code === 'SESSION_NOT_ACTIVE')
+      ) {
+        await recoverActiveSession().catch(() => undefined)
+        return
+      }
       setControlError(cause instanceof Error ? cause.message : 'The command could not be admitted.')
     } finally {
       setBusy(null)

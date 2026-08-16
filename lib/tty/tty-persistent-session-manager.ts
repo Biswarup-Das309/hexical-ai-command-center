@@ -722,7 +722,22 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
 
   private async ensureAttached(session: InternalTTYSession): Promise<ManagedSession | null> {
     const local = this.managed.get(session.sessionId)
-    if (local !== undefined) return local
+    if (local !== undefined) {
+      // A durable session record and a local attach are not sufficient proof
+      // that the authoritative tmux shell still exists.  The shell can
+      // disappear between worker restart recovery and the next browser
+      // command.  Fence it before dispatch so the coordinator fails fast and
+      // the browser can bind a replacement session instead of waiting for an
+      // execution timeout with zero output.
+      if (this.runtime.hasPersistentSession) {
+        const persistentShellRemains = await this.runtime.hasPersistentSession(session.sessionId).catch(() => false)
+        if (!persistentShellRemains) {
+          await this.fence(local, 'runtime_shell_unavailable', 'terminate')
+          return null
+        }
+      }
+      return local
+    }
 
     const historyRaw = await this.redis.get<unknown>(ttySessionRuntimeHistoryKey(session.sessionId))
     const history = historyRaw === null ? null : parseRuntimeHistory(historyRaw)

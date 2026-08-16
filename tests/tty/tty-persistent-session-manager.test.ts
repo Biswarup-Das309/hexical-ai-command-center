@@ -293,6 +293,36 @@ test('persistent session manager fences an active PTY when its Redis lease disap
   await fixture.manager.stop()
 })
 
+test('persistent session manager fences a locally attached session before dispatch when tmux disappears', async () => {
+  const fixture = createFixture()
+  await fixture.manager.start()
+  await fixture.manager.handle(command('open'))
+
+  const runtime = (
+    fixture.manager as unknown as { runtime: { hasPersistentSession?: (id: TTYSessionId) => Promise<boolean> } }
+  ).runtime
+  runtime.hasPersistentSession = async () => false
+
+  await assert.rejects(
+    fixture.manager.startExecution({
+      executionId: '00000000-0000-4000-8000-000000009305' as TTYExecutionId,
+      sessionId,
+      ownerUserId: 'user-one',
+      argv: ['echo', 'stale-shell'],
+    }),
+    /Persistent TTY shell could not be attached/,
+  )
+  assert.equal(fixture.store.terminationReasons.includes('resource_limit_exceeded'), true)
+  assert.equal(fixture.manager.activeSessionIds().length, 0)
+  const replay = await fixture.transcript.read(sessionId)
+  assert.equal(
+    replay.some((event) => event.type === 'system' && event.data.event === 'runtime_shell_unavailable'),
+    true,
+  )
+
+  await fixture.manager.stop()
+})
+
 test('persistent session manager demultiplexes one admitted command from shell echo and keeps the PTY reusable', async () => {
   const redis = new WorkerRedisMock()
   const factory = new FramedFactory()

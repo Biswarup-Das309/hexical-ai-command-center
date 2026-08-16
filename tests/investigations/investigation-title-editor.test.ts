@@ -101,7 +101,18 @@ test('runtime transcript recovery rebinds a missing persisted session through in
   assert.match(transcript, /new EventSource\(/)
   assert.match(transcript, /transcript\/stream/)
   assert.match(transcript, /connectStreamRef\.current\?\.\(\)/)
+  assert.match(transcript, /runtime_shell_unavailable/)
+  assert.match(transcript, /runtime_recovery_unavailable/)
+  assert.match(transcript, /session_authority_unavailable/)
   assert.match(workspace, /onRecoverSession=\{async \(\) => \{[\s\S]*await workspace\.ensureSession\(\)/)
+})
+
+test('runtime command admission rebinds after the worker fences a dead shell', async () => {
+  const runtime = await source('components/tty/RuntimeOSWorkspace.tsx')
+
+  assert.match(runtime, /class RuntimeRequestError extends Error/)
+  assert.match(runtime, /cause\.code === 'SESSION_NOT_FOUND' \|\| cause\.code === 'SESSION_NOT_ACTIVE'/)
+  assert.match(runtime, /await recoverActiveSession\(\)\.catch\(\(\) => undefined\)/)
 })
 
 test('runtime terminal explicitly focuses the PTY when the visible terminal is clicked', async () => {

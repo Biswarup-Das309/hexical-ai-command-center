@@ -38,6 +38,17 @@ function messageFromBody(body: unknown, fallback: string): string {
   return fallback
 }
 
+function runtimeSessionBecameUnavailable(event: TTYSessionTranscriptEvent): boolean {
+  if (event.type !== 'system') return false
+  const eventName = event.data.event
+  return (
+    eventName === 'runtime_recovery_unavailable' ||
+    eventName === 'runtime_shell_unavailable' ||
+    eventName === 'pty_exited' ||
+    eventName === 'session_authority_unavailable'
+  )
+}
+
 async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, cache: 'no-store' })
   const body: unknown = await response.json().catch(() => null)
@@ -137,48 +148,6 @@ export function useTTYSessionTranscript(
     streamReconnectTimerRef.current = null
   }, [])
 
-  const connectStream = useCallback(() => {
-    const activeSessionId = sessionIdRef.current
-    const generation = generationRef.current
-    if (!activeSessionId || !startedRef.current) return
-    stopStream()
-    const query = new URLSearchParams({ limit: String(REPLAY_LIMIT) })
-    if (cursorRef.current) query.set('after', cursorRef.current)
-    const source = new EventSource(
-      `/api/tty/sessions/${encodeURIComponent(activeSessionId)}/transcript/stream?${query.toString()}`,
-    )
-    streamRef.current = source
-    source.onopen = () => {
-      if (generation === generationRef.current && activeSessionId === sessionIdRef.current) {
-        setConnectionState('open')
-        setError(null)
-      }
-    }
-    source.addEventListener('transcript', (message) => {
-      if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
-      try {
-        const parsed = JSON.parse((message as MessageEvent<string>).data) as { event?: TTYSessionTranscriptEvent }
-        const event = parsed.event
-        if (!event) return
-        setEvents((current) => mergeEvents(current, [event]))
-        setReplayCursor(event.cursor)
-      } catch {
-        setError('The runtime transcript returned an invalid event.')
-      }
-    })
-    source.onerror = () => {
-      source.close()
-      if (streamRef.current === source) streamRef.current = null
-      if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
-      setConnectionState('reconnecting')
-      setError('The runtime transcript stream was interrupted. Reconnecting from durable replay.')
-      streamReconnectTimerRef.current = setTimeout(() => connectStreamRef.current?.(), 1_000)
-    }
-  }, [setReplayCursor, stopStream])
-  useEffect(() => {
-    connectStreamRef.current = connectStream
-  }, [connectStream])
-
   const recoverMissingSession = useCallback(
     (cause: unknown, generation: number, activeSessionId: string): boolean => {
       if (
@@ -217,6 +186,55 @@ export function useTTYSessionTranscript(
     },
     [stopStream],
   )
+
+  const connectStream = useCallback(() => {
+    const activeSessionId = sessionIdRef.current
+    const generation = generationRef.current
+    if (!activeSessionId || !startedRef.current) return
+    stopStream()
+    const query = new URLSearchParams({ limit: String(REPLAY_LIMIT) })
+    if (cursorRef.current) query.set('after', cursorRef.current)
+    const source = new EventSource(
+      `/api/tty/sessions/${encodeURIComponent(activeSessionId)}/transcript/stream?${query.toString()}`,
+    )
+    streamRef.current = source
+    source.onopen = () => {
+      if (generation === generationRef.current && activeSessionId === sessionIdRef.current) {
+        setConnectionState('open')
+        setError(null)
+      }
+    }
+    source.addEventListener('transcript', (message) => {
+      if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
+      try {
+        const parsed = JSON.parse((message as MessageEvent<string>).data) as { event?: TTYSessionTranscriptEvent }
+        const event = parsed.event
+        if (!event) return
+        setEvents((current) => mergeEvents(current, [event]))
+        setReplayCursor(event.cursor)
+        if (runtimeSessionBecameUnavailable(event)) {
+          recoverMissingSession(
+            new RuntimeSessionRequestError('The persistent runtime shell is unavailable.', 'SESSION_NOT_ACTIVE'),
+            generation,
+            activeSessionId,
+          )
+        }
+      } catch {
+        setError('The runtime transcript returned an invalid event.')
+      }
+    })
+    source.onerror = () => {
+      source.close()
+      if (streamRef.current === source) streamRef.current = null
+      if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
+      setConnectionState('reconnecting')
+      setError('The runtime transcript stream was interrupted. Reconnecting from durable replay.')
+      streamReconnectTimerRef.current = setTimeout(() => connectStreamRef.current?.(), 1_000)
+    }
+  }, [recoverMissingSession, setReplayCursor, stopStream])
+  useEffect(() => {
+    connectStreamRef.current = connectStream
+  }, [connectStream])
 
   const reconnect = useCallback(() => {
     if (!sessionId) return
