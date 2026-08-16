@@ -234,6 +234,7 @@ export function RuntimeOSWorkspace({
   useEffect(() => {
     renderedSequenceRef.current = 0
     terminalRef.current?.clear()
+    setControlError(null)
   }, [activeSessionId])
 
   const renderableEvents = useMemo(

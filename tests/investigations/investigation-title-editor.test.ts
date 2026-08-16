@@ -133,6 +133,7 @@ test('runtime hides a stale session error after recovery binds a live session', 
   const runtime = await source('components/tty/RuntimeOSWorkspace.tsx')
 
   assert.match(runtime, /const visibleSessionError = activeSessionId \? null : sessionError/)
+  assert.match(runtime, /terminalRef\.current\?\.clear\(\)\s*setControlError\(null\)/)
   assert.match(runtime, /visibleSessionError \|\| transcript\.error \|\| controlError \|\| executionError/)
 })
 
