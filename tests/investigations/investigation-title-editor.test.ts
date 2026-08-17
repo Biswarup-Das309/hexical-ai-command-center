@@ -129,6 +129,13 @@ test('runtime terminal explicitly focuses the PTY when the visible terminal is c
   assert.match(container, /onPointerDownCapture=\{onPointerDownCapture\}/)
 })
 
+test('runtime terminal does not clear live transcript output on parent rerenders', async () => {
+  const terminal = await source('components/tty/InvestigationTerminal.tsx')
+
+  assert.match(terminal, /const EMPTY_EVENTS: readonly TTYStreamEvent\[\] = \[\]/)
+  assert.match(terminal, /events = EMPTY_EVENTS/)
+})
+
 test('runtime hides a stale session error after recovery binds a live session', async () => {
   const runtime = await source('components/tty/RuntimeOSWorkspace.tsx')
 

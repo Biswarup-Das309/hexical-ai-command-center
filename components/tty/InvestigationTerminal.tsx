@@ -26,9 +26,15 @@ export interface InvestigationTerminalProps extends Omit<TerminalContainerProps,
   readonly onResize?: (geometry: { readonly cols: number; readonly rows: number }) => void
 }
 
+// Keep the omitted event list referentially stable. Runtime OS renders its
+// durable transcript directly through the terminal handle; a fresh default
+// array on every parent render would retrigger the replay renderer with an
+// empty list and clear newly-arrived live output.
+const EMPTY_EVENTS: readonly TTYStreamEvent[] = []
+
 export const InvestigationTerminal = forwardRef<InvestigationTerminalHandle, InvestigationTerminalProps>(
   function InvestigationTerminal(
-    { initialText, autoFocus = true, events = [], onReady, onInput, onResize, ...containerProps },
+    { initialText, autoFocus = true, events = EMPTY_EVENTS, onReady, onInput, onResize, ...containerProps },
     ref,
   ) {
     const { status: containerStatus, ...terminalContainerProps } = containerProps
