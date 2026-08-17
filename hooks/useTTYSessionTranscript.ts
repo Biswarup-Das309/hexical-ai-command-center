@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { recordTTYBrowserInputLatency } from '@/lib/tty/tty-input-latency'
 import { createTTYInputQueue } from '@/lib/tty/tty-input-queue'
 import type { TTYSessionTranscriptEvent } from '@/lib/tty/tty-session-transcript'
 
@@ -171,14 +172,16 @@ export function useTTYSessionTranscript(
     async (data: string) => {
       if (!data) return
       if (!writeQueueRef.current) {
-        writeQueueRef.current = createTTYInputQueue((nextData, batch) =>
-          control({
-            type: 'write',
-            data: nextData,
-            inputEventId: batch.inputEventId,
-            inputSequence: batch.sequence,
-            browserTimestampMs: batch.browserTimestampMs,
-          }),
+        writeQueueRef.current = createTTYInputQueue(
+          (nextData, batch) =>
+            control({
+              type: 'write',
+              data: nextData,
+              inputEventId: batch.inputEventId,
+              inputSequence: batch.sequence,
+              browserTimestampMs: batch.browserTimestampMs,
+            }),
+          { onBatch: recordTTYBrowserInputLatency },
         )
       }
       await writeQueueRef.current.enqueue(data)

@@ -120,7 +120,12 @@ async function authenticatedUserId(dependencies: TTYLifecycleApiDependencies): P
 function creationFailure(result: TTYSessionCreationPolicyResult): Response | null {
   if (result.evaluation.decision === 'allow') return null
   const reason = result.evaluation.reason ?? 'internal_error'
-  const status = reason === 'concurrency_limit_exceeded' ? 429 : reason === 'input_rejected' ? 400 : 403
+  const status =
+    reason === 'concurrency_limit_exceeded' || reason === 'session_capacity_exceeded'
+      ? 429
+      : reason === 'input_rejected'
+      ? 400
+      : 403
   return failure(reason, status)
 }
 
@@ -165,7 +170,7 @@ export function createTTYLifecycleApi(dependencies: TTYLifecycleApiDependencies)
         const session = await store.createSession({ principal, limits: policy.limits })
         return json({ ok: true, session: toBrowserSafeSession(session) }, 201)
       } catch (error) {
-        if (error instanceof TTYSessionCapacityError) return failure('concurrency_limit_exceeded', 429)
+        if (error instanceof TTYSessionCapacityError) return failure('session_capacity_exceeded', 429)
         console.error('[tty-lifecycle] create failed', error)
         return internalError()
       }

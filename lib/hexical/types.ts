@@ -265,14 +265,20 @@ export const PLAN_FEATURES: Record<Tier, readonly string[]> = {
   pro: ['core_heuristics', 'interactive_topology', 'pdf_export', 'swarm_intelligence', 'advanced_terminal'],
 }
 
-/** Server-side Execution Sandbox resource ceilings. Non-Pro tiers have no
- * lifecycle access because they do not carry the advanced_terminal feature. */
+/** Server-side Runtime OS resource ceilings.
+ *
+ * Runtime OS remains a Pro capability. The session ceiling is calibrated from
+ * the current dedicated Linux worker baseline (12 CPUs, roughly 7 GB free
+ * memory, and an 8-idle-tmux-session stress check) rather than from the UI's
+ * historical three-tab layout. Execution concurrency is still guarded
+ * independently by the worker resource guard.
+ */
 export const TTY_RESOURCE_LIMITS = {
   free: null,
   go: null,
   plus: null,
   pro: {
-    maxConcurrentSessions: 3,
+    maxConcurrentSessions: 8,
     maxConcurrentExecutionsPerSession: 4,
     maxExecutionsPerMinute: 60,
     maxExecutionDurationMs: 30_000,

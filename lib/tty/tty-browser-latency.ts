@@ -30,6 +30,11 @@ function snapshot(): TTYBrowserLatencySnapshot {
   })
 }
 
+function expose(): void {
+  if (typeof window === 'undefined') return
+  ;(window as Window & { __hexicalTTYLatency?: () => TTYBrowserLatencySnapshot }).__hexicalTTYLatency = snapshot
+}
+
 /**
  * Stores timing-only samples in the browser for an operator benchmark.  No
  * terminal bytes, command text, or credentials are retained.
@@ -46,11 +51,11 @@ export function recordTTYBrowserOutputLatency(sample: TTYBrowserOutputLatencySam
     return
   samples.push(Object.freeze({ ...sample }))
   if (samples.length > MAX_SAMPLES) samples.splice(0, samples.length - MAX_SAMPLES)
-  if (typeof window !== 'undefined') {
-    ;(window as Window & { __hexicalTTYLatency?: () => TTYBrowserLatencySnapshot }).__hexicalTTYLatency = snapshot
-  }
+  expose()
 }
 
 export function getTTYBrowserLatencySnapshot(): TTYBrowserLatencySnapshot {
   return snapshot()
 }
+
+expose()

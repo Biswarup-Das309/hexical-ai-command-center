@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { denialReasonToFailure } from './tty-policy'
 import { publishTTYSessionControl, type TTYSessionControlType } from './tty-session-control'
 import type { TTYSessionTranscriptManager } from './tty-session-transcript'
+import { summarizeTTYTranscript } from './tty-transcript-diagnostics'
 import type { InternalTTYSession, TTYSessionId } from './tty-types'
 
 const SESSION_ID_SCHEMA = z.string().uuid()
@@ -32,6 +33,7 @@ const CURSOR_PATTERN = /^\d+-\d+$/
 const MAX_BODY_BYTES = 72 * 1024
 const DEFAULT_REPLAY_LIMIT = 500
 const MAX_REPLAY_LIMIT = 2_000
+const MAX_DIAGNOSTIC_EVENTS = 10_000
 const HEADERS = {
   'Cache-Control': 'no-store, no-cache, must-revalidate',
   Pragma: 'no-cache',
@@ -48,7 +50,7 @@ export interface TTYSessionRuntimeStore {
 export interface TTYSessionRuntimeApiDependencies {
   readonly authenticate: () => Promise<string | null>
   readonly store: TTYSessionRuntimeStore
-  readonly transcript: Pick<TTYSessionTranscriptManager, 'replay'>
+  readonly transcript: Pick<TTYSessionTranscriptManager, 'replay'> & Partial<Pick<TTYSessionTranscriptManager, 'read'>>
   /** Server adapter binds the runtime store; this API never exposes it to callers. */
   readonly publish: (command: Parameters<typeof publishTTYSessionControl>[1]) => Promise<string>
 }
@@ -189,6 +191,33 @@ export function createTTYSessionRuntimeApi(dependencies: TTYSessionRuntimeApiDep
             cursor: events.at(-1)?.cursor ?? after,
             hasMore,
             sessionState: session.status,
+          },
+          200,
+        )
+      } catch {
+        return failure('internal_error', 503)
+      }
+    },
+
+    async diagnostics(request: Request, rawSessionId: string): Promise<Response> {
+      try {
+        const userId = await owner(dependencies)
+        if (userId === null) return failure('unauthenticated', 401)
+        const sessionId = parseSessionId(rawSessionId)
+        if (sessionId === null) return failure('input_rejected', 400)
+        const session = await dependencies.store.getSession(sessionId, userId)
+        if (session === null) return failure('session_not_found', 404)
+
+        const events = dependencies.transcript.read
+          ? await dependencies.transcript.read(sessionId, { count: MAX_DIAGNOSTIC_EVENTS + 1 })
+          : await dependencies.transcript.replay(sessionId, { count: MAX_DIAGNOSTIC_EVENTS + 1 })
+        const complete = events.length <= MAX_DIAGNOSTIC_EVENTS
+        const sampledEvents = complete ? events : events.slice(0, MAX_DIAGNOSTIC_EVENTS)
+        return json(
+          {
+            ok: true,
+            sessionId,
+            diagnostics: summarizeTTYTranscript(sampledEvents, complete),
           },
           200,
         )

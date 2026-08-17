@@ -225,6 +225,7 @@ const DENIAL_REASON_TO_FAILURE_CODE: Record<TTYPolicyDenialReason, TTYFailureCod
   unauthenticated: 'UNAUTHENTICATED',
   session_not_found: 'SESSION_NOT_FOUND',
   session_terminated: 'SESSION_TERMINATED',
+  session_capacity_exceeded: 'SESSION_CAPACITY_EXCEEDED',
   concurrency_limit_exceeded: 'CONCURRENCY_LIMIT_EXCEEDED',
   rate_limited: 'RATE_LIMITED',
   queue_full: 'QUEUE_FULL',
@@ -242,6 +243,7 @@ export const FAILURE_CODE_MESSAGES: Record<TTYFailureCode, string> = {
   UNAUTHENTICATED: 'Your session could not be verified. Please sign in again.',
   SESSION_NOT_FOUND: 'This sandbox session could not be found.',
   SESSION_TERMINATED: 'This sandbox session is no longer accepting commands.',
+  SESSION_CAPACITY_EXCEEDED: 'Runtime OS capacity is full. Close an idle terminal before opening another one.',
   RATE_LIMITED: 'Rate limit reached. Please wait a moment and retry.',
   CONCURRENCY_LIMIT_EXCEEDED: 'Too many concurrent operations for this session.',
   QUEUE_FULL: 'The execution queue is full. Please retry shortly.',
@@ -367,7 +369,7 @@ export function evaluateSessionCreationPolicy(input: TTYSessionCreationPolicyInp
   }
 
   if (typeof currentActiveSessionCount === 'number' && currentActiveSessionCount >= limits.maxConcurrentSessions) {
-    return denySessionCreation('concurrency_limit_exceeded', limits)
+    return denySessionCreation('session_capacity_exceeded', limits)
   }
 
   if (!isValidSessionCreateRequestShape(request)) {

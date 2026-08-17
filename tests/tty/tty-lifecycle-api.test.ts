@@ -170,6 +170,18 @@ test('creates trusted server-owned state and exposes only the browser-safe proje
   assert.deepEqual(session.limits, resolveTTYResourceLimits('pro'))
 })
 
+test('uses the measured Pro terminal capacity and reports session capacity separately from execution concurrency', async () => {
+  const fixture = createFixture()
+  assert.equal(resolveTTYResourceLimits('pro')?.maxConcurrentSessions, 8)
+  for (let index = 0; index < 8; index += 1) await createSession(fixture)
+
+  const response = await fixture.api.create(request('POST', '{}'))
+  const body = await payload(response)
+  assert.equal(response.status, 429)
+  assert.equal(body.code, 'SESSION_CAPACITY_EXCEEDED')
+  assert.match(String(body.message), /capacity/i)
+})
+
 test("lists only the authenticated owner's live terminal sessions for browser restart recovery", async () => {
   const fixture = createFixture()
   const first = await createSession(fixture)

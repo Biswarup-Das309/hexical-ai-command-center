@@ -192,3 +192,37 @@ test('session transcript replay paginates without gaps, duplicates, or false con
   assert.deepEqual(received, ['first\n', 'second\n', 'third\n'])
   assert.equal(new Set(cursors).size, cursors.length)
 })
+
+test('owner-authenticated transcript diagnostics expose aggregate integrity and PTY timing only', async () => {
+  const testFixture = fixture()
+  await testFixture.transcript.appendOutput({
+    sessionId,
+    text: 'first\n',
+    telemetry: { workerReceivedTimestampMs: 100, ptyOutputTimestampMs: 104 },
+  })
+  await testFixture.transcript.appendOutput({ sessionId, text: 'second\n' })
+
+  const response = await testFixture.api.diagnostics(
+    new Request(`https://hexical.test/api/tty/sessions/${sessionId}/diagnostics`),
+    sessionId,
+  )
+  const body = (await response.json()) as {
+    diagnostics: {
+      complete: boolean
+      eventCount: number
+      uniqueEventCount: number
+      duplicateEventCount: number
+      outputBytes: number
+      outputWorkerToPty: { p50Ms: number }
+    }
+  }
+
+  assert.equal(response.status, 200)
+  assert.equal(body.diagnostics.complete, true)
+  assert.equal(body.diagnostics.eventCount, 2)
+  assert.equal(body.diagnostics.uniqueEventCount, 2)
+  assert.equal(body.diagnostics.duplicateEventCount, 0)
+  assert.equal(body.diagnostics.outputBytes, 13)
+  assert.equal(body.diagnostics.outputWorkerToPty.p50Ms, 4)
+  assert.equal('data' in body.diagnostics, false)
+})
