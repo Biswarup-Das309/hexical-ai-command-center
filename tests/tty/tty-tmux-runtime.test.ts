@@ -54,6 +54,7 @@ class FakeTmuxAdapter implements TTYTmuxAdapter {
   readonly servers = new Set<string>()
   readonly createCalls: string[] = []
   readonly attachCalls: string[] = []
+  readonly journalCalls: Array<{ name: string; path: string }> = []
   readonly killCalls: string[] = []
   readonly detachClientCalls: Array<{ name: string; pid: number }> = []
   readonly ptys: FakePty[] = []
@@ -72,6 +73,10 @@ class FakeTmuxAdapter implements TTYTmuxAdapter {
     const pty = new FakePty(this.ptys.length + 1)
     this.ptys.push(pty)
     return pty
+  }
+
+  async enableOutputJournal(name: string, path: string): Promise<void> {
+    this.journalCalls.push({ name, path })
   }
 
   async detachClient(name: string, pid: number): Promise<boolean> {
@@ -105,6 +110,11 @@ test('tmux runtime reattaches a second worker to the same persistent shell rathe
 
   assert.equal(adapter.createCalls.length, 1)
   assert.equal(adapter.attachCalls.length, 2)
+  assert.equal(adapter.journalCalls.length, 2)
+  assert.deepEqual(
+    adapter.journalCalls.map(({ name }) => name),
+    ['hexical_00000000000040008000000000009401', 'hexical_00000000000040008000000000009401'],
+  )
   assert.equal(adapter.killCalls.length, 0)
   assert.deepEqual(adapter.detachClientCalls, [{ name: 'hexical_00000000000040008000000000009401', pid: 1 }])
   assert.deepEqual(adapter.ptys[0]?.writes, ['cd /workspace\n'])

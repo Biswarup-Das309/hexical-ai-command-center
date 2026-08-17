@@ -541,7 +541,10 @@ export async function createNodePtyTmuxAdapter(
     },
     async enableOutputJournal(tmuxSessionName, outputJournal) {
       const result = await runTmuxCommand(
-        ['pipe-pane', '-o', '-t', `${tmuxSessionName}:0.0`, `cat >> ${shellQuote(outputJournal)}`],
+        // Rebind the pipe on every worker attach. A previous worker can leave
+        // tmux holding a stale pipe after its process exits; -o would keep
+        // that dead pipe and silently drop output for the replacement worker.
+        ['pipe-pane', '-t', `${tmuxSessionName}:0.0`, `cat >> ${shellQuote(outputJournal)}`],
         '/',
         adminEnv,
       )
