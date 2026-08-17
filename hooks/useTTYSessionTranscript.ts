@@ -18,6 +18,11 @@ interface UseTTYSessionTranscriptResult {
   readonly reconnect: () => void
 }
 
+interface UseTTYSessionTranscriptOptions {
+  /** Called as soon as a new transcript event reaches the browser stream. */
+  readonly onEvent?: (event: TTYSessionTranscriptEvent, timing: { readonly browserReceivedTimestampMs: number }) => void
+}
+
 class RuntimeSessionRequestError extends Error {
   constructor(
     message: string,
@@ -30,6 +35,7 @@ class RuntimeSessionRequestError extends Error {
 
 const TOUCH_INTERVAL_MS = 15_000
 const REPLAY_LIMIT = 2_000
+const TRANSCRIPT_STATE_FLUSH_MS = 16
 
 function messageFromBody(body: unknown, fallback: string): string {
   if (typeof body === 'object' && body !== null && 'message' in body && typeof body.message === 'string') {
@@ -79,6 +85,7 @@ function mergeEvents(
 export function useTTYSessionTranscript(
   sessionId: string | null,
   onSessionUnavailable?: () => Promise<void> | void,
+  options: UseTTYSessionTranscriptOptions = {},
 ): UseTTYSessionTranscriptResult {
   const [events, setEvents] = useState<readonly TTYSessionTranscriptEvent[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
@@ -96,15 +103,53 @@ export function useTTYSessionTranscript(
   const onSessionUnavailableRef = useRef(onSessionUnavailable)
   const recoveryAttemptRef = useRef(false)
   const writeQueueRef = useRef<ReturnType<typeof createTTYInputQueue> | null>(null)
+  const eventsRef = useRef<readonly TTYSessionTranscriptEvent[]>([])
+  const eventKeysRef = useRef(new Set<string>())
+  const transcriptStateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const onEventRef = useRef(options.onEvent)
 
   useEffect(() => {
     onSessionUnavailableRef.current = onSessionUnavailable
   }, [onSessionUnavailable])
 
-  const setReplayCursor = useCallback((next: string | null) => {
-    cursorRef.current = next
-    setCursor(next)
+  useEffect(() => {
+    onEventRef.current = options.onEvent
+  }, [options.onEvent])
+
+  const scheduleTranscriptStateFlush = useCallback(() => {
+    if (transcriptStateFlushTimerRef.current !== null) return
+    transcriptStateFlushTimerRef.current = setTimeout(() => {
+      transcriptStateFlushTimerRef.current = null
+      setEvents(eventsRef.current)
+      setCursor(cursorRef.current)
+    }, TRANSCRIPT_STATE_FLUSH_MS)
   }, [])
+
+  const acceptTranscriptEvent = useCallback(
+    (event: TTYSessionTranscriptEvent): boolean => {
+      const key = event.eventId || event.cursor
+      if (eventKeysRef.current.has(key)) return false
+      eventKeysRef.current.add(key)
+      eventsRef.current = mergeEvents(eventsRef.current, [event])
+      if (eventKeysRef.current.size > 12_000) {
+        const retainedKeys = new Set(eventsRef.current.map((candidate) => candidate.eventId || candidate.cursor))
+        eventKeysRef.current.clear()
+        for (const retainedKey of retainedKeys) eventKeysRef.current.add(retainedKey)
+      }
+      onEventRef.current?.(event, { browserReceivedTimestampMs: Date.now() })
+      scheduleTranscriptStateFlush()
+      return true
+    },
+    [scheduleTranscriptStateFlush],
+  )
+
+  const setReplayCursor = useCallback(
+    (next: string | null) => {
+      cursorRef.current = next
+      scheduleTranscriptStateFlush()
+    },
+    [scheduleTranscriptStateFlush],
+  )
 
   const control = useCallback(
     async (body: Record<string, unknown>) => {
@@ -126,7 +171,15 @@ export function useTTYSessionTranscript(
     async (data: string) => {
       if (!data) return
       if (!writeQueueRef.current) {
-        writeQueueRef.current = createTTYInputQueue((nextData) => control({ type: 'write', data: nextData }))
+        writeQueueRef.current = createTTYInputQueue((nextData, batch) =>
+          control({
+            type: 'write',
+            data: nextData,
+            inputEventId: batch.inputEventId,
+            inputSequence: batch.sequence,
+            browserTimestampMs: batch.browserTimestampMs,
+          }),
+        )
       }
       await writeQueueRef.current.enqueue(data)
     },
@@ -210,7 +263,7 @@ export function useTTYSessionTranscript(
         const parsed = JSON.parse((message as MessageEvent<string>).data) as { event?: TTYSessionTranscriptEvent }
         const event = parsed.event
         if (!event) return
-        setEvents((current) => mergeEvents(current, [event]))
+        acceptTranscriptEvent(event)
         setReplayCursor(event.cursor)
         if (runtimeSessionBecameUnavailable(event)) {
           recoverMissingSession(
@@ -231,7 +284,7 @@ export function useTTYSessionTranscript(
       setError('The runtime transcript stream was interrupted. Reconnecting from durable replay.')
       streamReconnectTimerRef.current = setTimeout(() => connectStreamRef.current?.(), 1_000)
     }
-  }, [recoverMissingSession, setReplayCursor, stopStream])
+  }, [acceptTranscriptEvent, recoverMissingSession, setReplayCursor, stopStream])
   useEffect(() => {
     connectStreamRef.current = connectStream
   }, [connectStream])
@@ -263,6 +316,10 @@ export function useTTYSessionTranscript(
     recoveryAttemptRef.current = false
     writeQueueRef.current?.reset()
     writeQueueRef.current = null
+    if (transcriptStateFlushTimerRef.current !== null) clearTimeout(transcriptStateFlushTimerRef.current)
+    transcriptStateFlushTimerRef.current = null
+    eventsRef.current = []
+    eventKeysRef.current.clear()
     stopStream()
     if (touchTimerRef.current !== null) clearInterval(touchTimerRef.current)
     touchTimerRef.current = null

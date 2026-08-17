@@ -220,7 +220,7 @@ async function main(): Promise<void> {
     {
       leaseTtlMs: positiveInteger('TTY_PTY_LEASE_TTL_MS', 30_000),
       heartbeatIntervalMs: positiveInteger('TTY_PTY_HEARTBEAT_INTERVAL_MS', 5_000),
-      journalPollIntervalMs: positiveInteger('TTY_PTY_JOURNAL_POLL_INTERVAL_MS', 100),
+      journalPollIntervalMs: positiveInteger('TTY_PTY_JOURNAL_POLL_INTERVAL_MS', 16),
       telemetryIntervalMs: positiveInteger('TTY_PTY_TELEMETRY_INTERVAL_MS', 5_000),
       executionOutput,
     },

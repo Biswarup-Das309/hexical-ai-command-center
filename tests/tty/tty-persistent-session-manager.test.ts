@@ -229,6 +229,35 @@ test('persistent session manager binds durable control to one PTY and transcript
   await fixture.manager.stop()
 })
 
+test('persistent session manager writes interactive stdin before durable session touch', async () => {
+  const fixture = createFixture()
+  await fixture.manager.start()
+  await fixture.manager.handle(command('open', { commandId: 'open-fast-path' }))
+
+  let releaseTouch!: () => void
+  let touchStarted!: () => void
+  const touchGate = new Promise<void>((resolve) => {
+    releaseTouch = resolve
+  })
+  const touchStartedSignal = new Promise<void>((resolve) => {
+    touchStarted = resolve
+  })
+  const originalTouch = fixture.store.touchSession.bind(fixture.store)
+  fixture.store.touchSession = async (...args) => {
+    touchStarted()
+    await touchGate
+    return originalTouch(...args)
+  }
+
+  const writePromise = fixture.manager.handle(command('write', { commandId: 'write-fast-path', data: 'pwd\r' }))
+  await touchStartedSignal
+  assert.deepEqual(fixture.factory.ptys[0]?.writes, ['pwd\r'])
+  releaseTouch()
+  await writePromise
+  await fixture.manager.flush(sessionId)
+  await fixture.manager.stop()
+})
+
 test('persistent session manager fences the PTY when output exceeds the session budget', async () => {
   const fixture = createFixture(8)
   await fixture.manager.start()

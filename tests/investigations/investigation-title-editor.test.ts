@@ -90,7 +90,7 @@ test('runtime transcript recovery rebinds a missing persisted session through in
     source('components/workspace/PersistentInvestigationWorkspace.tsx'),
   ])
 
-  assert.match(runtime, /useTTYSessionTranscript\(activeSessionId, recoverActiveSession\)/)
+  assert.match(runtime, /useTTYSessionTranscript\(activeSessionId, recoverActiveSession, \{/)
   assert.match(runtime, /tab\.id === staleSessionId \? \{ \.\.\.tab, id: nextId \} : tab/)
   assert.match(runtime, /method: 'POST'/)
   assert.match(transcript, /cause\.code === 'SESSION_NOT_FOUND' \|\| cause\.code === 'SESSION_NOT_ACTIVE'/)

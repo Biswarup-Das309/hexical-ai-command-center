@@ -85,17 +85,29 @@ function request(body: unknown): Request {
 
 test('session control authenticates ownership, touches the live session, and queues bounded PTY stdin', async () => {
   const testFixture = fixture()
-  const response = await testFixture.api.control(request({ type: 'write', data: 'cd project\n' }), sessionId)
+  const response = await testFixture.api.control(
+    request({
+      type: 'write',
+      data: 'cd project\n',
+      inputEventId: 'input-event-1',
+      inputSequence: 7,
+      browserTimestampMs: 1_700_000_000_000,
+    }),
+    sessionId,
+  )
   const body = (await response.json()) as Record<string, unknown>
 
   assert.equal(response.status, 202)
   assert.equal(body.ok, true)
-  assert.equal(testFixture.store.touches, 1)
+  assert.equal(testFixture.store.touches, 0)
   assert.equal(testFixture.published.length, 1)
   assert.equal(testFixture.published[0]?.sessionId, sessionId)
   assert.equal(testFixture.published[0]?.ownerUserId, owner)
   assert.equal(testFixture.published[0]?.type, 'write')
   assert.equal(testFixture.published[0]?.data, 'cd project\n')
+  assert.equal(testFixture.published[0]?.inputEventId, 'input-event-1')
+  assert.equal(testFixture.published[0]?.inputSequence, 7)
+  assert.equal(testFixture.published[0]?.browserTimestampMs, 1_700_000_000_000)
   assert.equal(typeof testFixture.published[0]?.commandId, 'string')
 })
 

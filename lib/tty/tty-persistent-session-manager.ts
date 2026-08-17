@@ -425,7 +425,10 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
     this.leaseTtlMs = options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS
     this.maxCompletedCommands = options.maxCompletedCommandsPerSession ?? MAX_COMPLETED_COMMANDS_PER_SESSION
-    this.journalPollIntervalMs = options.journalPollIntervalMs ?? 100
+    // Journal-backed tmux output is the durable recovery source.  Poll it at
+    // a terminal-sized cadence so interactive echo does not inherit a 100ms
+    // floor, while transcript writes remain asynchronous behind outputTail.
+    this.journalPollIntervalMs = options.journalPollIntervalMs ?? 16
     this.telemetryIntervalMs = options.telemetryIntervalMs ?? 5_000
     if (
       !isPositiveInteger(this.leaseTtlMs) ||
@@ -463,6 +466,20 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
   async handle(command: TTYSessionControlEntry): Promise<void> {
     if (!this.started) throw new Error('Persistent TTY session manager is not started.')
     if (this.wasCompleted(command.sessionId, command.commandId)) return
+
+    // An already attached session is the interactive hot path.  The control
+    // stream has already crossed the authenticated server boundary, and the
+    // worker lease/heartbeat is the authority for this local attachment.  Do
+    // not make the PTY wait for another Postgres read before accepting a byte.
+    // The durable session touch and stdin telemetry are queued after the write.
+    if (command.type === 'write') {
+      const local = this.managed.get(command.sessionId)
+      if (local && local.ownerUserId === command.ownerUserId && !local.fenced && local.cleanupPromise === null) {
+        this.writeAttached(command, local)
+        this.remember(command.sessionId, command.commandId)
+        return
+      }
+    }
 
     const session = await this.sessions.getSession(command.sessionId, command.ownerUserId)
     if (session === null) {
@@ -655,30 +672,47 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
   }
 
   private async write(command: TTYSessionControlEntry, session: InternalTTYSession): Promise<void> {
-    const touched = await this.sessions.touchSession(command.sessionId, command.ownerUserId)
-    if (touched === null) {
-      await this.appendSystem(command.sessionId, 'control_rejected', {
-        commandId: command.commandId,
-        reason: 'session_unavailable',
-      })
-      return
-    }
-    const managed = await this.ensureAttached(touched)
+    const managed = await this.ensureAttached(session)
     if (managed === null) return
+    this.writeAttached(command, managed)
+  }
+
+  /**
+   * Writes to the live PTY before any transcript, touch, or analytics work.
+   * The queued metadata remains durable and ordered through outputTail, but it
+   * cannot add database latency to interactive shell echo.
+   */
+  private writeAttached(command: TTYSessionControlEntry, managed: ManagedSession): void {
     managed.outputBytesSinceInput = 0
     const data = command.data ?? ''
+    const workerReceivedAtMs = this.now().getTime()
     const inputMetadata = {
       commandId: command.commandId,
       byteLength: Buffer.byteLength(data, 'utf8'),
+      ...(command.inputEventId ? { inputEventId: command.inputEventId } : {}),
+      ...(command.inputSequence !== undefined ? { inputSequence: command.inputSequence } : {}),
+      ...(command.browserTimestampMs !== undefined ? { browserTimestampMs: command.browserTimestampMs } : {}),
+      workerReceivedAtMs,
     }
-    await this.appendSystem(command.sessionId, 'stdin_dispatching', inputMetadata)
     try {
       managed.handle.write(data)
     } catch (error) {
-      await this.appendSystem(command.sessionId, 'stdin_write_failed', inputMetadata)
+      void this.appendSystem(command.sessionId, 'stdin_write_failed', inputMetadata).catch(() => undefined)
       throw error
     }
-    await this.appendSystem(command.sessionId, 'stdin_accepted', inputMetadata)
+    const ptyWriteAtMs = this.now().getTime()
+    this.queueTranscript(managed, async () => {
+      const touched = await this.sessions.touchSession(command.sessionId, command.ownerUserId)
+      if (touched === null) {
+        await this.appendSystem(command.sessionId, 'control_rejected', {
+          commandId: command.commandId,
+          reason: 'session_unavailable_after_pty_write',
+        })
+        return
+      }
+      await this.appendSystem(command.sessionId, 'stdin_dispatching', { ...inputMetadata, ptyWriteAtMs })
+      await this.appendSystem(command.sessionId, 'stdin_accepted', { ...inputMetadata, ptyWriteAtMs })
+    })
   }
 
   private async resize(command: TTYSessionControlEntry, session: InternalTTYSession): Promise<void> {
@@ -868,13 +902,14 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
       managed.bufferedOutput.push(data)
       return
     }
+    const outputTimestampMs = this.now().getTime()
     let outputIndex = 0
     for (const event of managed.protocol.push(data)) {
       const execution = managed.activeExecution
       if (event.type === 'output') {
         const eventId = eventIdBase ? `${eventIdBase}:${outputIndex}` : undefined
         outputIndex += 1
-        this.enqueueOutput(managed, event.text, execution?.metadata.executionId, eventId)
+        this.enqueueOutput(managed, event.text, execution?.metadata.executionId, eventId, outputTimestampMs)
         if (execution?.started && !execution.completed) this.emitExecutionOutput(execution, event.text)
         continue
       }
@@ -883,7 +918,7 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
         // our protocol. Only the per-execution random marker is private.
         const eventId = eventIdBase ? `${eventIdBase}:${outputIndex}` : undefined
         outputIndex += 1
-        this.enqueueOutput(managed, event.raw, undefined, eventId)
+        this.enqueueOutput(managed, event.raw, undefined, eventId, outputTimestampMs)
         continue
       }
       if (event.type === 'started') {
@@ -1131,7 +1166,13 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
     )
   }
 
-  private enqueueOutput(managed: ManagedSession, data: string, executionId?: TTYExecutionId, eventId?: string): void {
+  private enqueueOutput(
+    managed: ManagedSession,
+    data: string,
+    executionId?: TTYExecutionId,
+    eventId?: string,
+    outputTimestampMs?: number,
+  ): void {
     if (managed.outputLimitReached || data.length === 0) return
     const byteLength = Buffer.byteLength(data, 'utf8')
     if (managed.outputBytesSinceInput + byteLength > managed.maxOutputBytes) {
@@ -1158,6 +1199,14 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
         text: data,
         ...(executionId ? { executionId } : {}),
         ...(eventId ? { eventId } : {}),
+        ...(outputTimestampMs === undefined
+          ? {}
+          : {
+              telemetry: {
+                workerReceivedTimestampMs: outputTimestampMs,
+                ptyOutputTimestampMs: outputTimestampMs,
+              },
+            }),
       })
       if (executionId && this.executionOutput) {
         for (const event of events) {

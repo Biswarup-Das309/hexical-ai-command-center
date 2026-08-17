@@ -4,6 +4,7 @@ import { Cable, CircleStop, History, Plus, RefreshCw, Send, TerminalSquare, X } 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTTYExecutionStream } from '@/hooks/useTTYExecutionStream'
 import { useTTYSessionTranscript } from '@/hooks/useTTYSessionTranscript'
+import { recordTTYBrowserOutputLatency } from '@/lib/tty/tty-browser-latency'
 import type { TTYExecutionState } from '@/lib/tty/tty-execution-state'
 import type { TTYSessionTranscriptEvent } from '@/lib/tty/tty-session-transcript'
 import { ExecutionHistory, type TTYExecutionHistoryEntry } from './ExecutionHistory'
@@ -160,7 +161,32 @@ export function RuntimeOSWorkspace({
     recoveryInFlightRef.current = operation
     return operation
   }, [activeSessionId, activeTabIsPrimary, onRecoverSession])
-  const transcript = useTTYSessionTranscript(activeSessionId, recoverActiveSession)
+  const writeTranscriptEvent = useCallback(
+    (event: TTYSessionTranscriptEvent, timing: { readonly browserReceivedTimestampMs: number }) => {
+      if (event.type !== 'stdout') return
+      const text = transcriptText(event)
+      const terminal = terminalRef.current
+      if (!terminal || !text || event.sequence <= renderedSequenceRef.current) return
+      // The PTY emulator is the live rendering boundary.  Transcript React
+      // state is still updated for replay, counters, and recovery, but it is not
+      // on the critical output-to-screen path.
+      terminal.write(text)
+      renderedSequenceRef.current = event.sequence
+      const workerReceivedTimestampMs = event.data.workerReceivedTimestampMs
+      const ptyOutputTimestampMs = event.data.ptyOutputTimestampMs
+      if (typeof workerReceivedTimestampMs === 'number' && typeof ptyOutputTimestampMs === 'number')
+        recordTTYBrowserOutputLatency({
+          workerReceivedTimestampMs,
+          ptyOutputTimestampMs,
+          browserReceivedTimestampMs: timing.browserReceivedTimestampMs,
+          renderTimestampMs: Date.now(),
+        })
+    },
+    [],
+  )
+  const transcript = useTTYSessionTranscript(activeSessionId, recoverActiveSession, {
+    onEvent: writeTranscriptEvent,
+  })
   const observedExecutionId = activeTabIsPrimary ? selectedExecutionId : lastTabExecutionId
   const executionStream = useTTYExecutionStream({
     executionId: observedExecutionId,

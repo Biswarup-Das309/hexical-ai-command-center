@@ -16,6 +16,10 @@ export interface TTYSessionControlCommand {
   readonly ownerUserId: string
   readonly type: TTYSessionControlType
   readonly data?: string
+  /** Browser-safe input tracing metadata; terminal contents remain in data only. */
+  readonly inputEventId?: string
+  readonly inputSequence?: number
+  readonly browserTimestampMs?: number
   readonly columns?: number
   readonly rows?: number
   readonly timestamp: string
@@ -58,7 +62,15 @@ function validCommand(command: TTYSessionControlCommand): boolean {
   )
     return false
   if (command.type === 'write')
-    return typeof command.data === 'string' && Buffer.byteLength(command.data, 'utf8') <= MAX_COMMAND_BYTES
+    return (
+      typeof command.data === 'string' &&
+      Buffer.byteLength(command.data, 'utf8') <= MAX_COMMAND_BYTES &&
+      (command.inputEventId === undefined || validText(command.inputEventId, 128)) &&
+      (command.inputSequence === undefined ||
+        (Number.isSafeInteger(command.inputSequence) && command.inputSequence >= 1)) &&
+      (command.browserTimestampMs === undefined ||
+        (Number.isSafeInteger(command.browserTimestampMs) && command.browserTimestampMs > 0))
+    )
   if (command.type === 'resize') return validDimensions(command.columns, command.rows)
   return command.data === undefined && command.columns === undefined && command.rows === undefined
 }
@@ -108,6 +120,11 @@ export async function publishTTYSessionControl(
     type: normalized.type,
     timestamp: normalized.timestamp,
     ...(normalized.data !== undefined ? { data: normalized.data } : {}),
+    ...(normalized.inputEventId !== undefined ? { inputEventId: normalized.inputEventId } : {}),
+    ...(normalized.inputSequence !== undefined ? { inputSequence: String(normalized.inputSequence) } : {}),
+    ...(normalized.browserTimestampMs !== undefined
+      ? { browserTimestampMs: String(normalized.browserTimestampMs) }
+      : {}),
     ...(normalized.columns !== undefined ? { columns: String(normalized.columns) } : {}),
     ...(normalized.rows !== undefined ? { rows: String(normalized.rows) } : {}),
   })
@@ -147,6 +164,9 @@ function parseEntry(value: unknown): TTYSessionControlEntry | null {
     type: type as TTYSessionControlType,
     timestamp,
     ...(typeof fields.data === 'string' ? { data: fields.data } : {}),
+    ...(typeof fields.inputEventId === 'string' ? { inputEventId: fields.inputEventId } : {}),
+    ...(fields.inputSequence !== undefined ? { inputSequence: Number(fields.inputSequence) } : {}),
+    ...(fields.browserTimestampMs !== undefined ? { browserTimestampMs: Number(fields.browserTimestampMs) } : {}),
     ...(fields.columns !== undefined ? { columns: Number(fields.columns) } : {}),
     ...(fields.rows !== undefined ? { rows: Number(fields.rows) } : {}),
   } satisfies TTYSessionControlEntry

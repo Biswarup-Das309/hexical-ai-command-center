@@ -10,7 +10,14 @@ const SESSION_ID_SCHEMA = z.string().uuid()
 const CONTROL_SCHEMA = z.discriminatedUnion('type', [
   z.object({ type: z.literal('open'), commandId: z.string().uuid().optional() }).strict(),
   z
-    .object({ type: z.literal('write'), data: z.string().max(64 * 1024), commandId: z.string().uuid().optional() })
+    .object({
+      type: z.literal('write'),
+      data: z.string().max(64 * 1024),
+      commandId: z.string().uuid().optional(),
+      inputEventId: z.string().min(1).max(128).optional(),
+      inputSequence: z.number().int().min(1).safe().optional(),
+      browserTimestampMs: z.number().int().positive().safe().optional(),
+    })
     .strict(),
   z
     .object({
@@ -100,7 +107,15 @@ function toControlCommand(
     type: input.type as TTYSessionControlType,
     ...(input.commandId ? { commandId: input.commandId } : {}),
   }
-  if (input.type === 'write') return { ...common, type: 'write', data: input.data }
+  if (input.type === 'write')
+    return {
+      ...common,
+      type: 'write',
+      data: input.data,
+      ...(input.inputEventId ? { inputEventId: input.inputEventId } : {}),
+      ...(input.inputSequence !== undefined ? { inputSequence: input.inputSequence } : {}),
+      ...(input.browserTimestampMs !== undefined ? { browserTimestampMs: input.browserTimestampMs } : {}),
+    }
   if (input.type === 'resize') return { ...common, type: 'resize', columns: input.columns, rows: input.rows }
   return { ...common, type: 'open' }
 }
@@ -123,8 +138,14 @@ export function createTTYSessionRuntimeApi(dependencies: TTYSessionRuntimeApiDep
         const session = await dependencies.store.getSession(sessionId, userId)
         if (session === null) return failure('session_not_found', 404)
         if (!active(session)) return failure('session_terminated', 409)
-        const touched = await dependencies.store.touchSession(sessionId, userId)
-        if (touched === null || !active(touched)) return failure('session_terminated', 409)
+        // Interactive stdin is touched by the worker after the live PTY write.
+        // Avoid putting a second Postgres round trip in front of every key;
+        // the owner-scoped read above still gates admission, and the worker's
+        // lease/heartbeat remains authoritative for the attached session.
+        if (parsed.data.type !== 'write') {
+          const touched = await dependencies.store.touchSession(sessionId, userId)
+          if (touched === null || !active(touched)) return failure('session_terminated', 409)
+        }
         const commandId = parsed.data.commandId ?? crypto.randomUUID()
         const streamId = await dependencies.publish(toControlCommand(sessionId, userId, { ...parsed.data, commandId }))
         return json(

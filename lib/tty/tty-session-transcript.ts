@@ -233,6 +233,11 @@ export class TTYSessionTranscriptManager {
     readonly timestamp?: string
     readonly executionId?: string
     readonly eventId?: string
+    /** Timing-only metadata; terminal contents are never copied into telemetry. */
+    readonly telemetry?: {
+      readonly workerReceivedTimestampMs?: number
+      readonly ptyOutputTimestampMs?: number
+    }
   }): Promise<readonly TTYSessionTranscriptEvent[]> {
     if (typeof input.text !== 'string' || input.text.includes('\u0000')) throw new Error('Invalid TTY session output.')
     if (input.text.length === 0) return []
@@ -250,6 +255,12 @@ export class TTYSessionTranscriptManager {
             text,
             byteLength: Buffer.byteLength(text, 'utf8'),
             ...(input.executionId ? { executionId: input.executionId } : {}),
+            ...(input.telemetry?.workerReceivedTimestampMs !== undefined
+              ? { workerReceivedTimestampMs: input.telemetry.workerReceivedTimestampMs }
+              : {}),
+            ...(input.telemetry?.ptyOutputTimestampMs !== undefined
+              ? { ptyOutputTimestampMs: input.telemetry.ptyOutputTimestampMs }
+              : {}),
           },
         }),
       )

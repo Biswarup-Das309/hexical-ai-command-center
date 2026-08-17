@@ -53,6 +53,9 @@ function fieldsFor(command: TTYSessionControlEntry): Record<string, string> {
     type: command.type,
     timestamp: command.timestamp,
     ...(command.data !== undefined ? { data: command.data } : {}),
+    ...(command.inputEventId !== undefined ? { inputEventId: command.inputEventId } : {}),
+    ...(command.inputSequence !== undefined ? { inputSequence: String(command.inputSequence) } : {}),
+    ...(command.browserTimestampMs !== undefined ? { browserTimestampMs: String(command.browserTimestampMs) } : {}),
     ...(command.columns !== undefined ? { columns: String(command.columns) } : {}),
     ...(command.rows !== undefined ? { rows: String(command.rows) } : {}),
   }

@@ -15,19 +15,56 @@ test('PTY input queue preserves xterm keystroke order', async () => {
   assert.equal(delivered.length, 1)
 })
 
-test('PTY input queue batches human typing and flushes a completed command immediately', async () => {
+test('PTY input queue micro-batches a burst and flushes Enter immediately', async () => {
   const delivered: string[] = []
   const queue = createTTYInputQueue(async (data) => {
     delivered.push(data)
   })
 
   const first = queue.enqueue('echo ')
-  await new Promise((resolve) => setTimeout(resolve, 25))
   const second = queue.enqueue('HELLO')
   const third = queue.enqueue('\r')
   await Promise.all([first, second, third])
 
   assert.deepEqual(delivered, ['echo HELLO\r'])
+})
+
+test('PTY input queue never imposes the old 100ms printable-key delay', async () => {
+  const delivered: string[] = []
+  const startedAt = Date.now()
+  const queue = createTTYInputQueue(async (data) => {
+    delivered.push(data)
+  })
+
+  await queue.enqueue('x')
+
+  assert.deepEqual(delivered, ['x'])
+  assert.ok(Date.now() - startedAt < 100)
+})
+
+test('PTY input queue attaches monotonic batch metadata without changing bytes', async () => {
+  const batches: Array<{ data: string; sequence: number; inputEventId: string }> = []
+  const queue = createTTYInputQueue(
+    async (data, batch) => {
+      batches.push({ data, sequence: batch.sequence, inputEventId: batch.inputEventId })
+    },
+    { now: () => 1_700_000_000_000 },
+  )
+
+  await queue.enqueue('a')
+  await queue.enqueue('\u001b[A')
+
+  assert.deepEqual(
+    batches.map(({ data, sequence }) => ({ data, sequence })),
+    [
+      { data: 'a', sequence: 1 },
+      { data: '\u001b[A', sequence: 2 },
+    ],
+  )
+  assert.equal(
+    batches.every(({ inputEventId }) => inputEventId.length > 0),
+    true,
+  )
 })
 
 test('PTY input queue continues after a failed write', async () => {
