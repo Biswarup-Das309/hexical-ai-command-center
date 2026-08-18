@@ -214,6 +214,17 @@ function parseReadResponse(value: unknown): ParsedControlBatch {
   return { entries, invalidIds }
 }
 
+function realtimeStreamSequence(streamId: string): number | null {
+  const match = /^(\d+)-\d+$/.exec(streamId)
+  if (!match) return null
+  const sequence = Number(match[1])
+  return Number.isSafeInteger(sequence) && sequence > 0 ? sequence : null
+}
+
+function realtimeStreamId(sequence: number): string {
+  return `${sequence}-0`
+}
+
 export interface TTYSessionControlHandler {
   handle(command: TTYSessionControlEntry): Promise<void>
 }
@@ -241,6 +252,9 @@ export class TTYSessionControlConsumer {
   private realtimeHighWater = '0-0'
   private realtimeReplayComplete = false
   private realtimePendingEntries: TTYSessionControlEntry[] = []
+  private realtimeDeliveredSequence = 0
+  private readonly realtimePendingBySequence = new Map<number, TTYSessionControlEntry>()
+  private realtimeDrainPromise: Promise<void> | null = null
   /**
    * Realtime callbacks can arrive concurrently.  PTY input is intentionally
    * emitted as small writes, so preserve FIFO order within each session while
@@ -282,13 +296,14 @@ export class TTYSessionControlConsumer {
             this.realtimePendingEntries.push(entry)
             return
           }
-          void this.enqueueRealtimeEntry(entry).catch(() => undefined)
+          this.queueRealtimeEntry(entry)
         })
         await this.reconcileRealtime(true)
         this.realtimeReplayComplete = true
         this.realtimeCursor = this.realtimeHighWater
         const pendingEntries = this.realtimePendingEntries.splice(0)
-        await Promise.all(pendingEntries.map((entry) => this.enqueueRealtimeEntry(entry)))
+        for (const entry of pendingEntries) this.queueRealtimeEntry(entry)
+        await this.drainRealtime()
         this.realtimeCursor = this.realtimeHighWater
         this.reconciliationTimer = setInterval(() => {
           void this.reconcileRealtime(false).catch(() => undefined)
@@ -341,6 +356,9 @@ export class TTYSessionControlConsumer {
     this.realtimeHighWater = '0-0'
     this.realtimeReplayComplete = false
     this.realtimePendingEntries = []
+    this.realtimeDeliveredSequence = 0
+    this.realtimePendingBySequence.clear()
+    this.realtimeDrainPromise = null
     if (this.timer !== null) clearInterval(this.timer)
     this.timer = null
   }
@@ -354,17 +372,14 @@ export class TTYSessionControlConsumer {
     if (!this.started || this.reconciling) return
     this.reconciling = true
     try {
-      const after = initial || !this.realtimeReplayComplete ? '-' : `(${this.realtimeCursor}`
+      const after =
+        initial || !this.realtimeReplayComplete ? '-' : `(${realtimeStreamId(this.realtimeDeliveredSequence)}`
       const historical = parseReadResponse(
         await this.redis.xrange(this.streamKey, after, '+', MAX_REALTIME_RECONCILIATION_READ),
       )
       for (const streamId of historical.invalidIds) this.advanceRealtimeCursor(streamId)
-      await Promise.all(
-        historical.entries.map((entry) => {
-          this.advanceRealtimeCursor(entry.streamId)
-          return this.enqueueRealtimeEntry(entry)
-        }),
-      )
+      for (const entry of historical.entries) this.queueRealtimeEntry(entry)
+      await this.drainRealtime()
       if (this.realtimeReplayComplete) this.realtimeCursor = this.realtimeHighWater
     } finally {
       this.reconciling = false
@@ -394,6 +409,84 @@ export class TTYSessionControlConsumer {
       })
       .catch(() => undefined)
     return current
+  }
+
+  /**
+   * Supabase Realtime preserves row durability but does not promise that
+   * INSERT callbacks arrive in stream-sequence order. A later stdin batch
+   * arriving before the Enter batch can otherwise write directly into tmux
+   * and merge two shell commands. Reassemble only the affected stream gap
+   * from durable rows, then dispatch each session through its own tail so
+   * unrelated sessions remain concurrent.
+   */
+  private queueRealtimeEntry(entry: TTYSessionControlEntry): void {
+    const sequence = realtimeStreamSequence(entry.streamId)
+    if (sequence === null) {
+      void this.enqueueRealtimeEntry(entry).catch(() => undefined)
+      return
+    }
+    if (sequence <= this.realtimeDeliveredSequence) return
+    if (!this.realtimePendingBySequence.has(sequence)) this.realtimePendingBySequence.set(sequence, entry)
+    void this.drainRealtime().catch(() => undefined)
+  }
+
+  private drainRealtime(): Promise<void> {
+    if (this.realtimeDrainPromise !== null) return this.realtimeDrainPromise
+    let operation!: Promise<void>
+    operation = (async () => {
+      while (this.started && this.realtimePendingBySequence.size > 0) {
+        let sequence = this.realtimeDeliveredSequence + 1
+        let entry = this.realtimePendingBySequence.get(sequence)
+        if (!entry) {
+          const pendingSequences = [...this.realtimePendingBySequence.keys()].sort((left, right) => left - right)
+          const smallestPending = pendingSequences[0]
+          if (smallestPending === undefined) break
+
+          if (smallestPending > sequence) {
+            const recovered = parseReadResponse(
+              await this.redis.xrange(
+                this.streamKey,
+                `(${realtimeStreamId(this.realtimeDeliveredSequence)}`,
+                realtimeStreamId(smallestPending),
+                MAX_REALTIME_RECONCILIATION_READ,
+              ),
+            )
+            for (const streamId of recovered.invalidIds) this.advanceRealtimeCursor(streamId)
+            for (const recoveredEntry of recovered.entries) {
+              const recoveredSequence = realtimeStreamSequence(recoveredEntry.streamId)
+              if (
+                recoveredSequence !== null &&
+                recoveredSequence > this.realtimeDeliveredSequence &&
+                !this.realtimePendingBySequence.has(recoveredSequence)
+              )
+                this.realtimePendingBySequence.set(recoveredSequence, recoveredEntry)
+            }
+            entry = this.realtimePendingBySequence.get(sequence)
+          }
+
+          // If a durable row has already expired or was trimmed, do not
+          // strand later input forever. The control stream normally retains
+          // rows for seven days, so this is only a fail-forward guard for an
+          // actual retention gap.
+          if (!entry) {
+            sequence = smallestPending
+            entry = this.realtimePendingBySequence.get(sequence)
+          }
+        }
+        if (!entry) break
+        this.realtimePendingBySequence.delete(sequence)
+        this.realtimeDeliveredSequence = sequence
+        this.advanceRealtimeCursor(entry.streamId)
+        void this.enqueueRealtimeEntry(entry).catch(() => undefined)
+      }
+      this.realtimeCursor = this.realtimeHighWater
+    })().finally(() => {
+      if (this.realtimeDrainPromise !== operation) return
+      this.realtimeDrainPromise = null
+      if (this.started && this.realtimePendingBySequence.size > 0) void this.drainRealtime().catch(() => undefined)
+    })
+    this.realtimeDrainPromise = operation
+    return operation
   }
 
   async pollOnce(): Promise<number> {

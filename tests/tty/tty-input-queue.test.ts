@@ -29,6 +29,22 @@ test('PTY input queue micro-batches a burst and flushes Enter immediately', asyn
   assert.deepEqual(delivered, ['echo HELLO\r'])
 })
 
+test('PTY input queue preserves adjacent Enter boundaries for rapid commands', async () => {
+  const delivered: string[] = []
+  const queue = createTTYInputQueue(async (data) => {
+    delivered.push(data)
+  })
+
+  await Promise.all([
+    queue.enqueue('echo PRE_ENTER_CHECK'),
+    queue.enqueue('\r'),
+    queue.enqueue('echo SECOND_NO_REFRESH_TEST'),
+    queue.enqueue('\r'),
+  ])
+
+  assert.equal(delivered.join(''), 'echo PRE_ENTER_CHECK\recho SECOND_NO_REFRESH_TEST\r')
+})
+
 test('PTY input queue never imposes the old 100ms printable-key delay', async () => {
   const delivered: string[] = []
   const startedAt = Date.now()

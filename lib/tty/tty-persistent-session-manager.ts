@@ -751,6 +751,7 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
     const workerReceivedAtMs = this.now().getTime()
     const inputMetadata = {
       commandId: command.commandId,
+      streamId: command.streamId,
       byteLength: Buffer.byteLength(data, 'utf8'),
       ...(command.inputEventId ? { inputEventId: command.inputEventId } : {}),
       ...(command.inputSequence !== undefined ? { inputSequence: command.inputSequence } : {}),

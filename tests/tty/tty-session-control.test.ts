@@ -248,6 +248,85 @@ test('Realtime control delivery preserves FIFO order for one PTY session', async
   assert.deepEqual(handled, ['first', 'second'])
 })
 
+test('Realtime control repairs out-of-order notifications from the durable stream', async () => {
+  const redis = new RealtimeControlRedisFake()
+  const handled: string[] = []
+  const consumer = new TTYSessionControlConsumer(redis as never, 'worker-realtime-reorder-test', {
+    handle: async (command) => void handled.push(command.commandId),
+  })
+
+  await consumer.start()
+  redis.historical = [
+    [
+      '1-0',
+      {
+        commandId: 'first',
+        sessionId,
+        ownerUserId: 'user-one',
+        type: 'write',
+        data: 'echo PRE_ENTER_CHECK',
+        timestamp: '2026-08-11T10:00:00.000Z',
+      },
+    ],
+    [
+      '2-0',
+      {
+        commandId: 'second',
+        sessionId,
+        ownerUserId: 'user-one',
+        type: 'write',
+        data: '\r',
+        timestamp: '2026-08-11T10:00:00.001Z',
+      },
+    ],
+  ]
+  redis.emit('2-0', redis.historical[1]?.[1] as Record<string, unknown>)
+
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  await consumer.stop()
+
+  assert.deepEqual(handled, ['first', 'second'])
+})
+
+test('Realtime control keeps unrelated session FIFOs concurrent', async () => {
+  const redis = new RealtimeControlRedisFake()
+  const otherSessionId = '00000000-0000-4000-8000-000000009102' as TTYSessionId
+  const handled: string[] = []
+  let releaseSessionA: () => void = () => undefined
+  const sessionABlocked = new Promise<void>((resolve) => {
+    releaseSessionA = resolve
+  })
+  const consumer = new TTYSessionControlConsumer(redis as never, 'worker-realtime-independent-sessions-test', {
+    handle: async (command) => {
+      handled.push(command.commandId)
+      if (command.sessionId === sessionId && command.commandId === 'a1') await sessionABlocked
+    },
+  })
+
+  await consumer.start()
+  redis.emit('1-0', {
+    commandId: 'a1',
+    sessionId,
+    ownerUserId: 'user-one',
+    type: 'write',
+    data: 'A1',
+    timestamp: '2026-08-11T10:00:00.000Z',
+  })
+  redis.emit('2-0', {
+    commandId: 'b1',
+    sessionId: otherSessionId,
+    ownerUserId: 'user-one',
+    type: 'write',
+    data: 'B1',
+    timestamp: '2026-08-11T10:00:00.001Z',
+  })
+
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.deepEqual(handled, ['a1', 'b1'])
+  releaseSessionA()
+  await consumer.stop()
+})
+
 test('Realtime control replays a command inserted during channel startup', async () => {
   const redis = new RealtimeControlRedisFake()
   redis.historical = [
