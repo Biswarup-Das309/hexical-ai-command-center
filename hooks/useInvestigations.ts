@@ -144,6 +144,7 @@ export function useInvestigations(): UseInvestigationsResult {
       const token = await session.getToken({ template: 'supabase' })
       if (disposed || !token) return
       const supabase = createSupabaseClient(token)
+      await supabase.realtime.setAuth(token)
       const realtimeChannel = supabase.channel(`hexical-investigations-${userId}`).on(
         'postgres_changes',
         {
