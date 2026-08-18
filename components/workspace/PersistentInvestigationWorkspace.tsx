@@ -281,11 +281,9 @@ export function PersistentInvestigationWorkspace({
         onCancel={cancelExecution}
         onTerminateSession={terminateSession}
         onRecoverSession={async () => {
-          // A runtime recovery event means the persisted session reference is
-          // no longer authoritative for the PTY shell.  Clear that reference
-          // before ensureSession so idempotent session resolution cannot bind
-          // the browser back to the same dead session forever.
-          await workspace.terminateSession()
+          // ensureSession is the canonical stale-reference repair boundary:
+          // it probes the runtime lease, clears an unusable investigation
+          // attachment atomically, and creates the replacement session.
           await workspace.ensureSession()
         }}
         onNewInvestigation={onNewInvestigation ?? createInvestigation}
