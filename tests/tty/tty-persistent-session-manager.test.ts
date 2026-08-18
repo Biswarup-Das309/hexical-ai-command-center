@@ -22,6 +22,7 @@ import {
   ttySessionRuntimeHistoryKey,
   ttySessionRuntimeKey,
   ttySessionRuntimeOutputOffsetKey,
+  ttyPersistentSessionIndexKey,
 } from '../../lib/tty/tty-worker-keys'
 import type { TTYWorkerId } from '../../lib/tty/tty-worker-types'
 
@@ -536,6 +537,89 @@ test('persistent session manager checkpoints journal replay after durable output
 
   await manager.stop()
 })
+
+test('persistent session manager reattaches indexed tmux state after a worker process restart', async () => {
+  const redis = new WorkerRedisMock()
+  const store = new FakeLifecycleStore()
+  const transcript = new TTYSessionTranscriptManager(redis as never)
+  let created = 0
+  let recovered = 0
+  const runtime: TTYPersistentRuntimeBackend = {
+    createSession: async (input) => {
+      created += 1
+      return recoverableHandle(input)
+    },
+    recoverSession: async (input) => {
+      recovered += 1
+      return recoverableHandle(input)
+    },
+    getSession: () => null,
+    hasPersistentSession: async () => true,
+  }
+
+  const firstWorker = new TTYPersistentSessionManager(redis as never, runtime, store, transcript, workerId, {
+    leaseTtlMs: 1_000,
+    heartbeatIntervalMs: 100,
+  })
+  await firstWorker.start()
+  await firstWorker.handle(command('open', { commandId: 'restart-open' }))
+  assert.equal(created, 1)
+  assert.deepEqual(await redis.smembers(ttyPersistentSessionIndexKey()), [sessionId])
+
+  // A normal worker shutdown detaches node-pty but intentionally leaves the
+  // tmux shell and durable session index alive for the next process.
+  await firstWorker.stop()
+
+  const restartedWorker = new TTYPersistentSessionManager(redis as never, runtime, store, transcript, workerId, {
+    leaseTtlMs: 1_000,
+    heartbeatIntervalMs: 100,
+  })
+  await restartedWorker.start()
+
+  assert.equal(recovered, 1)
+  assert.deepEqual(restartedWorker.activeSessionIds(), [sessionId])
+  const replay = await transcript.read(sessionId)
+  assert.equal(
+    replay.some((event) => event.data.event === 'pty_recovered'),
+    true,
+  )
+  await restartedWorker.stop()
+})
+
+function recoverableHandle(
+  input: Parameters<NonNullable<TTYPersistentRuntimeBackend['createSession']>>[0],
+): TTYPersistentRuntimeHandle {
+  const dataListeners = new Set<(data: string) => void>()
+  const exitListeners = new Set<(event: { readonly exitCode: number; readonly signal?: number }) => void>()
+  return {
+    metadata: {
+      sessionId: input.sessionId,
+      ownerUserId: input.ownerUserId,
+      workerId: input.workerId,
+      pid: 9_901,
+      shell: '/bin/bash',
+      cwd: '/tmp/hexical-recovery-test',
+      startedAt: input.startedAt ?? '2026-08-11T10:00:00.000Z',
+      columns: 120,
+      rows: 40,
+      state: 'active',
+    },
+    write: () => {},
+    resize: () => {},
+    onData: (callback) => {
+      dataListeners.add(callback)
+      return () => dataListeners.delete(callback)
+    },
+    onExit: (callback) => {
+      exitListeners.add(callback)
+      return () => exitListeners.delete(callback)
+    },
+    terminate: async () => {
+      for (const callback of exitListeners) callback({ exitCode: 0 })
+    },
+    detach: async () => {},
+  }
+}
 
 function fixtureValue(redis: WorkerRedisMock, key: string): string {
   const value = redis.values.get(key)

@@ -23,6 +23,7 @@ import type { TTYSessionTranscriptData, TTYSessionTranscriptManager } from './tt
 import type { InternalTTYSession, TTYExecutionId, TTYSessionId, TTYTerminationResult } from './tty-types'
 import {
   ttyPersistentExecutionActiveIndexKey,
+  ttyPersistentSessionIndexKey,
   ttySessionActiveExecutionKey,
   ttySessionRuntimeHistoryKey,
   ttySessionRuntimeOutputOffsetKey,
@@ -413,6 +414,7 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
   private timer: unknown = null
   private started = false
   private heartbeatInFlight = false
+  private persistentRecoveryInFlight = false
 
   constructor(
     private readonly redis: Redis,
@@ -449,6 +451,7 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
   async start(): Promise<void> {
     if (this.started) return
     this.started = true
+    await this.recoverPersistentSessions()
     this.timer = this.setTimer(() => void this.heartbeatOnce(), this.heartbeatIntervalMs)
     const maybeUnref = this.timer as { unref?: () => void }
     maybeUnref.unref?.()
@@ -523,6 +526,7 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
   async heartbeatOnce(): Promise<void> {
     if (!this.started || this.heartbeatInFlight) return
     this.heartbeatInFlight = true
+    const hadManagedSessionsAtStart = this.managed.size > 0
     try {
       for (const managed of [...this.managed.values()]) {
         const currentSession = await this.sessions.getSession(managed.sessionId, managed.ownerUserId).catch(() => null)
@@ -548,8 +552,67 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
         if (!renewed) await this.fence(managed, 'runtime_lease_lost', 'detach')
         else await this.sampleProcessTelemetry(managed)
       }
+      // A lease-loss fence must remain observable for this heartbeat. Retry
+      // adoption on the next pass; startup recovery still runs immediately
+      // when the worker process begins with no local attachments.
+      if (!hadManagedSessionsAtStart) await this.recoverPersistentSessions()
     } finally {
       this.heartbeatInFlight = false
+    }
+  }
+
+  /**
+   * Rehydrates the worker-local attachment map from the durable session index.
+   * A tmux shell outlives the worker process, but node-pty listeners do not;
+   * without this pass a restarted worker can report healthy while browser
+   * input has nowhere to go. Failed claims remain indexed for the next pass so
+   * a short-lived old lease or Supabase outage cannot orphan the shell.
+   */
+  async recoverPersistentSessions(): Promise<{
+    readonly scanned: number
+    readonly attached: number
+    readonly skipped: number
+    readonly failed: number
+  }> {
+    if (!this.started || this.persistentRecoveryInFlight) return { scanned: 0, attached: 0, skipped: 0, failed: 0 }
+    this.persistentRecoveryInFlight = true
+    const counters = { scanned: 0, attached: 0, skipped: 0, failed: 0 }
+    try {
+      const sessionIds = await this.redis.smembers(ttyPersistentSessionIndexKey())
+      for (const sessionId of sessionIds as TTYSessionId[]) {
+        if (this.managed.has(sessionId)) continue
+        counters.scanned += 1
+        try {
+          const history = parseRuntimeHistory(await this.redis.get<unknown>(ttySessionRuntimeHistoryKey(sessionId)))
+          if (history === null) {
+            await this.redis.srem(ttyPersistentSessionIndexKey(), sessionId)
+            counters.skipped += 1
+            continue
+          }
+          const session = await this.sessions.getSession(sessionId, history.ownerUserId)
+          if (session === null || terminal(session)) {
+            await this.redis.srem(ttyPersistentSessionIndexKey(), sessionId)
+            counters.skipped += 1
+            continue
+          }
+          const managed = await this.ensureAttached(session)
+          if (managed === null) {
+            await this.redis.srem(ttyPersistentSessionIndexKey(), sessionId)
+            counters.skipped += 1
+          } else counters.attached += 1
+        } catch (error) {
+          counters.failed += 1
+          this.logger.warn('persistent_session_recovery_retry', {
+            workerId: this.workerId,
+            sessionId,
+            errorCode: error instanceof Error ? error.name : 'unknown_error',
+          })
+        }
+      }
+      this.logger.info('persistent_session_recovery_scan_completed', { workerId: this.workerId, ...counters })
+      return Object.freeze(counters)
+    } finally {
+      this.persistentRecoveryInFlight = false
     }
   }
 
@@ -870,6 +933,7 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
       this.managed.set(session.sessionId, managed)
       const promoted = await this.promoteLease(managed, history)
       if (!promoted) throw new Error('Persistent TTY runtime lease was lost during attachment.')
+      await this.redis.sadd(ttyPersistentSessionIndexKey(), session.sessionId)
       await this.appendSystem(session.sessionId, history === null ? 'pty_attached' : 'pty_recovered', {
         workerId: this.workerId,
         pid: handle.metadata.pid,
@@ -1302,7 +1366,10 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
       await managed.outputTail
       this.managed.delete(managed.sessionId)
       if (disposition === 'terminate')
-        await this.redis.del(ttySessionRuntimeOutputOffsetKey(managed.sessionId)).catch(() => undefined)
+        await Promise.all([
+          this.redis.del(ttySessionRuntimeOutputOffsetKey(managed.sessionId)).catch(() => 0),
+          this.redis.srem(ttyPersistentSessionIndexKey(), managed.sessionId).catch(() => 0),
+        ])
       await this.releaseLease(managed.sessionId, managed.runtimeId).catch((error) => {
         this.logger.warn('persistent_runtime_lease_release_failed', {
           sessionId: managed.sessionId,
@@ -1374,6 +1441,7 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
   private async failClosedAfterWorkerLoss(session: InternalTTYSession, reason: string): Promise<void> {
     await this.appendSystem(session.sessionId, reason)
     await this.sessions.terminateSession(session.sessionId, session.ownerUserId, 'system_shutdown')
+    await this.redis.srem(ttyPersistentSessionIndexKey(), session.sessionId).catch(() => 0)
   }
 
   private async sampleProcessTelemetry(managed: ManagedSession): Promise<void> {

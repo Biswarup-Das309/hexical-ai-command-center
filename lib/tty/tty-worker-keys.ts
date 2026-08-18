@@ -133,6 +133,11 @@ export function ttyPersistentExecutionActiveIndexKey(): string {
   return 'tty:persistent-executions:active'
 }
 
+/** Durable index of persistent PTY sessions that must be reattached after a worker restart. */
+export function ttyPersistentSessionIndexKey(): string {
+  return 'tty:persistent-sessions:active'
+}
+
 /** Append-only, browser-replayable transcript for a persistent PTY session. */
 export function ttySessionTranscriptStreamKey(sessionId: TTYSessionId): string {
   return `tty:session:${sessionId}:transcript`
