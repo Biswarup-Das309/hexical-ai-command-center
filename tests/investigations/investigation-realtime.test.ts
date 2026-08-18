@@ -1,4 +1,6 @@
 import { strict as assert } from 'node:assert'
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import test from 'node:test'
 import { applyInvestigationRealtimeChange, type PublicInvestigation } from '@/lib/investigations/investigation-realtime'
 
@@ -77,4 +79,15 @@ test('investigation Realtime accepts the runtime-KV bridge record projection', (
 
   assert.equal(next[0]?.title, 'Bridge update')
   assert.equal(next[0]?.executionCount, base.executionCount)
+})
+
+test('investigation Realtime bridge parses serialized runtime-KV records', async () => {
+  const migration = await readFile(
+    resolve(process.cwd(), 'supabase/migrations/20260818_hexical_investigation_realtime_bridge_value_fix.sql'),
+    'utf8',
+  )
+
+  assert.match(migration, /jsonb_typeof\(new\.value\) = 'string'/)
+  assert.match(migration, /\(new\.value #>> '\{\}'\)::jsonb/)
+  assert.match(migration, /hexical:investigations:record:%/)
 })

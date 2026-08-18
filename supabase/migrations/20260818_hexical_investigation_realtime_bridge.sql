@@ -50,10 +50,19 @@ security definer
 set search_path = public
 as $$
 declare
-  v_record jsonb := new.value;
-  v_investigation_id text := v_record->>'investigationId';
-  v_owner_user_id text := v_record->>'ownerUserId';
+  v_record jsonb;
+  v_investigation_id text;
+  v_owner_user_id text;
 begin
+  -- InvestigationStore preserves its existing Redis-compatible contract and
+  -- writes JSON strings into the generic JSONB KV value column.
+  v_record := case
+    when jsonb_typeof(new.value) = 'string' then (new.value #>> '{}')::jsonb
+    else new.value
+  end;
+  v_investigation_id := v_record->>'investigationId';
+  v_owner_user_id := v_record->>'ownerUserId';
+
   if new.key not like 'hexical:investigations:record:%'
     or v_investigation_id is null
     or v_owner_user_id is null
