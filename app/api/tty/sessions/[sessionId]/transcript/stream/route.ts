@@ -13,6 +13,9 @@ export const dynamic = 'force-dynamic'
 const SESSION_ID = z.string().uuid()
 const CURSOR = /^\d+-\d+$/
 const DEFAULT_LIMIT = 2_000
+// Vercel can buffer small streaming chunks until the next write. Keep the
+// heartbeat short enough that interactive PTY output is flushed promptly.
+const SSE_HEARTBEAT_INTERVAL_MS = 1_000
 
 function eventFromRealtime(
   sessionId: TTYSessionId,
@@ -122,7 +125,7 @@ export async function GET(request: Request, context: { params: Promise<{ session
           for (const event of pending) emit(event)
           keepAlive = setInterval(() => {
             if (!closed) controller.enqueue(encoder.encode(': keep-alive\n\n'))
-          }, 15_000)
+          }, SSE_HEARTBEAT_INTERVAL_MS)
           request.signal.addEventListener('abort', close, { once: true })
         } catch (error) {
           if (!closed) {
