@@ -1,6 +1,6 @@
 'use client'
 
-import { useAuth, useSession } from '@clerk/nextjs'
+import { useAuth } from '@clerk/nextjs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { applyInvestigationRealtimeChange, type PublicInvestigation } from '@/lib/investigations/investigation-realtime'
 import { createSupabaseClient } from '@/lib/supabase'
@@ -64,8 +64,7 @@ function optimisticPatch(current: PublicInvestigation, body: Record<string, unkn
 }
 
 export function useInvestigations(): UseInvestigationsResult {
-  const { isLoaded, isSignedIn, userId } = useAuth()
-  const { session } = useSession()
+  const { getToken, isLoaded, isSignedIn, userId } = useAuth()
   const [investigations, setInvestigations] = useState<readonly PublicInvestigation[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -136,13 +135,18 @@ export function useInvestigations(): UseInvestigationsResult {
   }, [refresh])
 
   useEffect(() => {
-    if (!isLoaded || !isSignedIn || !userId || !session) return
+    if (!isLoaded || !isSignedIn || !userId) return
     let disposed = false
     let channel: { unsubscribe: () => Promise<unknown> } | null = null
 
     void (async () => {
-      const token = await session.getToken({ template: 'supabase' })
-      if (disposed || !token) return
+      const token = await getToken({ template: 'supabase' })
+      if (disposed) return
+      if (!token) {
+        console.warn('[hexical] investigation realtime token unavailable')
+        void refresh()
+        return
+      }
       const supabase = createSupabaseClient(token)
       await supabase.realtime.setAuth(token)
       const realtimeChannel = supabase.channel(`hexical-investigations-${userId}`).on(
@@ -155,6 +159,7 @@ export function useInvestigations(): UseInvestigationsResult {
         },
         (payload) => {
           if (disposed) return
+          console.info('[hexical] investigation realtime event', payload.eventType)
           updateInvestigations((current) =>
             applyInvestigationRealtimeChange(current, {
               eventType: payload.eventType,
@@ -165,19 +170,25 @@ export function useInvestigations(): UseInvestigationsResult {
         },
       )
       channel = realtimeChannel
-      await realtimeChannel.subscribe((status) => {
-        if (!disposed && (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT')) void refresh()
+      await realtimeChannel.subscribe((status, error) => {
+        if (disposed) return
+        console.info('[hexical] investigation realtime status', status)
+        if (error) console.warn('[hexical] investigation realtime error', error.message)
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') void refresh()
       })
       if (disposed) await realtimeChannel.unsubscribe()
     })().catch(() => {
-      if (!disposed) void refresh()
+      if (!disposed) {
+        console.warn('[hexical] investigation realtime subscription failed')
+        void refresh()
+      }
     })
 
     return () => {
       disposed = true
       if (channel) void channel.unsubscribe()
     }
-  }, [isLoaded, isSignedIn, refresh, session, updateInvestigations, userId])
+  }, [getToken, isLoaded, isSignedIn, refresh, updateInvestigations, userId])
 
   const loadMore = useCallback(async () => {
     if (!nextCursor || paginationInFlightRef.current) return
