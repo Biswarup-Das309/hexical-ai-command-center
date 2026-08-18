@@ -12,6 +12,16 @@ type RealtimeInvestigationRow = {
   readonly tty_session_id?: unknown
 }
 
+type CamelCaseInvestigationRecord = {
+  readonly investigationId?: unknown
+  readonly title?: unknown
+  readonly description?: unknown
+  readonly status?: unknown
+  readonly createdAt?: unknown
+  readonly updatedAt?: unknown
+  readonly ttySessionId?: unknown
+}
+
 export type InvestigationRealtimeChange = {
   readonly eventType: 'INSERT' | 'UPDATE' | 'DELETE'
   readonly new: unknown
@@ -20,6 +30,22 @@ export type InvestigationRealtimeChange = {
 
 function isRealtimeRow(value: unknown): value is RealtimeInvestigationRow {
   return typeof value === 'object' && value !== null
+}
+
+function normalizeRealtimeRow(value: unknown): RealtimeInvestigationRow | null {
+  if (!isRealtimeRow(value)) return null
+  const row = value as RealtimeInvestigationRow & CamelCaseInvestigationRecord
+  if (typeof row.id === 'string') return row
+  if (typeof row.investigationId !== 'string') return null
+  return {
+    id: row.investigationId,
+    title: row.title,
+    description: row.description,
+    status: row.status,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+    tty_session_id: row.ttySessionId,
+  }
 }
 
 function rowToInvestigation(
@@ -51,8 +77,8 @@ export function applyInvestigationRealtimeChange(
   current: readonly PublicInvestigation[],
   change: InvestigationRealtimeChange,
 ): readonly PublicInvestigation[] {
-  const payload = change.eventType === 'DELETE' ? change.old : change.new
-  if (!isRealtimeRow(payload) || typeof payload.id !== 'string') return current
+  const payload = normalizeRealtimeRow(change.eventType === 'DELETE' ? change.old : change.new)
+  if (!payload || typeof payload.id !== 'string') return current
   const index = current.findIndex((item) => item.investigationId === payload.id)
   if (change.eventType === 'DELETE' || payload.status === 'deleted') {
     return index < 0 ? current : current.filter((item) => item.investigationId !== payload.id)

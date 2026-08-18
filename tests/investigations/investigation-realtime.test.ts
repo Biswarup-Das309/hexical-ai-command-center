@@ -59,3 +59,22 @@ test('investigation Realtime ignores stale duplicates and removes deleted rows',
   })
   assert.deepEqual(removed, [])
 })
+
+test('investigation Realtime accepts the runtime-KV bridge record projection', () => {
+  const next = applyInvestigationRealtimeChange([base], {
+    eventType: 'UPDATE',
+    old: null,
+    new: {
+      investigationId: base.investigationId,
+      title: 'Bridge update',
+      description: '',
+      status: 'active',
+      createdAt: base.createdAt,
+      updatedAt: '2026-08-18T00:02:00.000Z',
+      ttySessionId: null,
+    },
+  })
+
+  assert.equal(next[0]?.title, 'Bridge update')
+  assert.equal(next[0]?.executionCount, base.executionCount)
+})

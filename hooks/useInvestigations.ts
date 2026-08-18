@@ -152,19 +152,22 @@ export function useInvestigations(): UseInvestigationsResult {
       const realtimeChannel = supabase.channel(`hexical-investigations-${userId}`).on(
         'postgres_changes',
         {
-          event: '*',
+          event: 'INSERT',
           schema: 'public',
-          table: 'investigations',
+          table: 'hexical_investigation_realtime_events',
           filter: `owner_user_id=eq.${userId}`,
         },
         (payload) => {
           if (disposed) return
           console.info('[hexical] investigation realtime event', payload.eventType)
+          const bridgeRow = payload.new as { readonly event_type?: unknown; readonly record?: unknown }
+          const eventType =
+            bridgeRow.event_type === 'INSERT' || bridgeRow.event_type === 'UPDATE' ? bridgeRow.event_type : 'UPDATE'
           updateInvestigations((current) =>
             applyInvestigationRealtimeChange(current, {
-              eventType: payload.eventType,
-              old: payload.old,
-              new: payload.new,
+              eventType,
+              old: null,
+              new: bridgeRow.record,
             }),
           )
         },
@@ -174,7 +177,7 @@ export function useInvestigations(): UseInvestigationsResult {
         if (disposed) return
         console.info('[hexical] investigation realtime status', status)
         if (error) console.warn('[hexical] investigation realtime error', error.message)
-        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') void refresh()
+        if (status === 'SUBSCRIBED' || status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') void refresh()
       })
       if (disposed) await realtimeChannel.unsubscribe()
     })().catch(() => {
