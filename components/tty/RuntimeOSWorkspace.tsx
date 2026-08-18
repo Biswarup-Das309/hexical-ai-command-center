@@ -560,7 +560,7 @@ export function RuntimeOSWorkspace({
             </div>
             <ul className="space-y-1.5 font-mono text-[10px] leading-relaxed text-zinc-500">
               <li>• stdin and resize are queued to the leased worker</li>
-              <li>• transcript replays after the last Redis cursor</li>
+              <li>• transcript replays after the last durable cursor</li>
               <li>• PTY output remains session-scoped and ordered</li>
               <li>• worker reconnect never creates a replacement shell</li>
             </ul>

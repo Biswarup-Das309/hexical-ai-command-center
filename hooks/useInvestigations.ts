@@ -1,9 +1,11 @@
 'use client'
 
+import { useAuth, useSession } from '@clerk/nextjs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { InvestigationRecord } from '@/lib/investigations/investigation-types'
+import { applyInvestigationRealtimeChange, type PublicInvestigation } from '@/lib/investigations/investigation-realtime'
+import { createSupabaseClient } from '@/lib/supabase'
 
-export type PublicInvestigation = Omit<InvestigationRecord, 'ownerUserId'>
+export type { PublicInvestigation } from '@/lib/investigations/investigation-realtime'
 
 export interface UseInvestigationsResult {
   readonly investigations: readonly PublicInvestigation[]
@@ -62,6 +64,8 @@ function optimisticPatch(current: PublicInvestigation, body: Record<string, unkn
 }
 
 export function useInvestigations(): UseInvestigationsResult {
+  const { isLoaded, isSignedIn, userId } = useAuth()
+  const { session } = useSession()
   const [investigations, setInvestigations] = useState<readonly PublicInvestigation[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -130,6 +134,49 @@ export function useInvestigations(): UseInvestigationsResult {
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn || !userId || !session) return
+    let disposed = false
+    let channel: { unsubscribe: () => Promise<unknown> } | null = null
+
+    void (async () => {
+      const token = await session.getToken({ template: 'supabase' })
+      if (disposed || !token) return
+      const supabase = createSupabaseClient(token)
+      const realtimeChannel = supabase.channel(`hexical-investigations-${userId}`).on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'investigations',
+          filter: `owner_user_id=eq.${userId}`,
+        },
+        (payload) => {
+          if (disposed) return
+          updateInvestigations((current) =>
+            applyInvestigationRealtimeChange(current, {
+              eventType: payload.eventType,
+              old: payload.old,
+              new: payload.new,
+            }),
+          )
+        },
+      )
+      channel = realtimeChannel
+      await realtimeChannel.subscribe((status) => {
+        if (!disposed && (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT')) void refresh()
+      })
+      if (disposed) await realtimeChannel.unsubscribe()
+    })().catch(() => {
+      if (!disposed) void refresh()
+    })
+
+    return () => {
+      disposed = true
+      if (channel) void channel.unsubscribe()
+    }
+  }, [isLoaded, isSignedIn, refresh, session, updateInvestigations, userId])
 
   const loadMore = useCallback(async () => {
     if (!nextCursor || paginationInFlightRef.current) return
