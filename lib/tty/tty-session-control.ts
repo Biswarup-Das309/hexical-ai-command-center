@@ -7,6 +7,8 @@ import { ttySessionControlGroup, ttySessionControlStreamKey } from './tty-worker
 const MAX_COMMAND_BYTES = 64 * 1024
 const MAX_BATCH = 32
 const CONTROL_STREAM_RETENTION_SECONDS = 7 * 24 * 60 * 60
+const DEFAULT_REALTIME_RECONCILIATION_INTERVAL_MS = 5_000
+const MAX_REALTIME_RECONCILIATION_READ = 10_000
 
 export type TTYSessionControlType = 'open' | 'write' | 'resize' | 'terminate'
 
@@ -33,6 +35,8 @@ export interface TTYSessionControlConsumerOptions {
   readonly minIdleMs?: number
   readonly batchSize?: number
   readonly pollIntervalMs?: number
+  /** Durable catch-up for missed Realtime notifications; not the hot path. */
+  readonly reconciliationIntervalMs?: number
   readonly streamKey?: string
   readonly group?: string
 }
@@ -223,13 +227,20 @@ export class TTYSessionControlConsumer {
   private readonly minIdleMs: number
   private readonly batchSize: number
   private readonly pollIntervalMs: number
+  private readonly reconciliationIntervalMs: number
   private readonly streamKey: string
   private readonly group: string
   private timer: ReturnType<typeof setInterval> | null = null
+  private reconciliationTimer: ReturnType<typeof setInterval> | null = null
   private polling = false
+  private reconciling = false
   private started = false
   private reclaimCursor = '0-0'
   private realtimeCleanup: (() => void) | null = null
+  private realtimeCursor = '0-0'
+  private realtimeHighWater = '0-0'
+  private realtimeReplayComplete = false
+  private realtimePendingEntries: TTYSessionControlEntry[] = []
   /**
    * Realtime callbacks can arrive concurrently.  PTY input is intentionally
    * emitted as small writes, so preserve FIFO order within each session while
@@ -246,6 +257,10 @@ export class TTYSessionControlConsumer {
     this.minIdleMs = Math.max(1_000, Math.floor(options.minIdleMs ?? 30_000))
     this.batchSize = Math.max(1, Math.min(MAX_BATCH, Math.floor(options.batchSize ?? MAX_BATCH)))
     this.pollIntervalMs = Math.max(50, Math.min(10_000, Math.floor(options.pollIntervalMs ?? 250)))
+    this.reconciliationIntervalMs = Math.max(
+      1_000,
+      Math.min(60_000, Math.floor(options.reconciliationIntervalMs ?? DEFAULT_REALTIME_RECONCILIATION_INTERVAL_MS)),
+    )
     this.streamKey = options.streamKey ?? ttySessionControlStreamKey()
     this.group = options.group ?? ttySessionControlGroup()
   }
@@ -254,29 +269,36 @@ export class TTYSessionControlConsumer {
     if (this.started) return
     if (this.redis.subscribeToStream) {
       this.started = true
+      this.realtimeCursor = '0-0'
+      this.realtimeHighWater = '0-0'
+      this.realtimeReplayComplete = false
       try {
-        const historical = parseReadResponse(await this.redis.xrange(this.streamKey, '-', '+', 10_000))
-        for (const streamId of historical.invalidIds) await this.deliverInvalid(streamId)
-        for (const entry of historical.entries) await this.deliver(entry)
+        // Subscribe before the durable replay. Replaying first has a startup
+        // race: a command inserted between xrange() and subscribe() is lost.
         this.realtimeCleanup = await this.redis.subscribeToStream(this.streamKey, (payload) => {
           const entry = parseEntry([payload.streamId, payload.fields])
           if (!entry) return
-          const previous = this.realtimeSessionTails.get(entry.sessionId) ?? Promise.resolve()
-          const current = previous
-            .catch(() => undefined)
-            .then(() => this.deliver(entry))
-            .catch(() => undefined)
-          this.realtimeSessionTails.set(entry.sessionId, current)
-          void current.finally(() => {
-            if (this.realtimeSessionTails.get(entry.sessionId) === current) {
-              this.realtimeSessionTails.delete(entry.sessionId)
-            }
-          })
+          if (!this.realtimeReplayComplete) {
+            this.realtimePendingEntries.push(entry)
+            return
+          }
+          void this.enqueueRealtimeEntry(entry).catch(() => undefined)
         })
+        await this.reconcileRealtime(true)
+        this.realtimeReplayComplete = true
+        this.realtimeCursor = this.realtimeHighWater
+        const pendingEntries = this.realtimePendingEntries.splice(0)
+        await Promise.all(pendingEntries.map((entry) => this.enqueueRealtimeEntry(entry)))
+        this.realtimeCursor = this.realtimeHighWater
+        this.reconciliationTimer = setInterval(() => {
+          void this.reconcileRealtime(false).catch(() => undefined)
+        }, this.reconciliationIntervalMs)
       } catch (error) {
         this.started = false
         this.realtimeCleanup?.()
         this.realtimeCleanup = null
+        if (this.reconciliationTimer !== null) clearInterval(this.reconciliationTimer)
+        this.reconciliationTimer = null
         throw new Error(
           `TTY realtime control subscription failed for ${this.streamKey}: ${controlErrorMessage(error)}`,
           {
@@ -312,8 +334,66 @@ export class TTYSessionControlConsumer {
     this.realtimeCleanup?.()
     this.realtimeCleanup = null
     this.realtimeSessionTails.clear()
+    if (this.reconciliationTimer !== null) clearInterval(this.reconciliationTimer)
+    this.reconciliationTimer = null
+    this.reconciling = false
+    this.realtimeCursor = '0-0'
+    this.realtimeHighWater = '0-0'
+    this.realtimeReplayComplete = false
+    this.realtimePendingEntries = []
     if (this.timer !== null) clearInterval(this.timer)
     this.timer = null
+  }
+
+  /**
+   * Reconcile only the durable gap after the last observed cursor. Realtime
+   * remains the low-latency path; this protects against channel join races,
+   * temporary disconnects, and dropped notifications.
+   */
+  private async reconcileRealtime(initial: boolean): Promise<void> {
+    if (!this.started || this.reconciling) return
+    this.reconciling = true
+    try {
+      const after = initial || !this.realtimeReplayComplete ? '-' : `(${this.realtimeCursor}`
+      const historical = parseReadResponse(
+        await this.redis.xrange(this.streamKey, after, '+', MAX_REALTIME_RECONCILIATION_READ),
+      )
+      for (const streamId of historical.invalidIds) this.advanceRealtimeCursor(streamId)
+      await Promise.all(
+        historical.entries.map((entry) => {
+          this.advanceRealtimeCursor(entry.streamId)
+          return this.enqueueRealtimeEntry(entry)
+        }),
+      )
+      if (this.realtimeReplayComplete) this.realtimeCursor = this.realtimeHighWater
+    } finally {
+      this.reconciling = false
+    }
+  }
+
+  private advanceRealtimeCursor(streamId: string): void {
+    if (!/^\d+-\d+$/.test(streamId)) return
+    const currentSequence = Number(this.realtimeHighWater.split('-')[0])
+    const nextSequence = Number(streamId.split('-')[0])
+    if (nextSequence > currentSequence) this.realtimeHighWater = streamId
+    if (this.realtimeReplayComplete) this.realtimeCursor = this.realtimeHighWater
+  }
+
+  private enqueueRealtimeEntry(entry: TTYSessionControlEntry): Promise<void> {
+    const previous = this.realtimeSessionTails.get(entry.sessionId) ?? Promise.resolve()
+    const current = previous
+      .catch(() => undefined)
+      .then(() => this.deliver(entry))
+      .then(() => this.advanceRealtimeCursor(entry.streamId))
+    this.realtimeSessionTails.set(entry.sessionId, current)
+    void current
+      .finally(() => {
+        if (this.realtimeSessionTails.get(entry.sessionId) === current) {
+          this.realtimeSessionTails.delete(entry.sessionId)
+        }
+      })
+      .catch(() => undefined)
+    return current
   }
 
   async pollOnce(): Promise<number> {

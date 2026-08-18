@@ -54,9 +54,11 @@ class ControlRedisFake {
 class RealtimeControlRedisFake {
   private readonly values = new Map<string, string>()
   private callback: ((payload: { streamId: string; fields: unknown }) => void) | null = null
+  historical: Array<readonly [string, Record<string, unknown>]> = []
+  onSubscribe: (() => void) | null = null
 
   async xrange(): Promise<unknown[]> {
-    return []
+    return this.historical
   }
 
   async subscribeToStream(
@@ -64,6 +66,7 @@ class RealtimeControlRedisFake {
     callback: (payload: { streamId: string; fields: unknown }) => void,
   ): Promise<() => void> {
     this.callback = callback
+    this.onSubscribe?.()
     return () => {
       this.callback = null
     }
@@ -243,4 +246,43 @@ test('Realtime control delivery preserves FIFO order for one PTY session', async
   await consumer.stop()
 
   assert.deepEqual(handled, ['first', 'second'])
+})
+
+test('Realtime control replays a command inserted during channel startup', async () => {
+  const redis = new RealtimeControlRedisFake()
+  redis.historical = [
+    [
+      '1-0',
+      {
+        commandId: 'historical-open',
+        sessionId,
+        ownerUserId: 'user-one',
+        type: 'open',
+        timestamp: '2026-08-11T10:00:00.000Z',
+      },
+    ],
+  ]
+  redis.onSubscribe = () => {
+    redis.emit('2-0', {
+      commandId: 'startup-race-write',
+      sessionId,
+      ownerUserId: 'user-one',
+      type: 'write',
+      data: 'echo recovered\\n',
+      timestamp: '2026-08-11T10:00:00.001Z',
+    })
+  }
+  const handled: string[] = []
+  const consumer = new TTYSessionControlConsumer(
+    redis as never,
+    'worker-startup-race-test',
+    { handle: async (command) => void handled.push(command.commandId) },
+    { reconciliationIntervalMs: 1_000 },
+  )
+
+  await consumer.start()
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  await consumer.stop()
+
+  assert.deepEqual(handled, ['historical-open', 'startup-race-write'])
 })
