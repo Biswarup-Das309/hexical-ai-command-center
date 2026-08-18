@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { recordTTYBrowserInputLatency } from '@/lib/tty/tty-input-latency'
 import { createTTYInputQueue } from '@/lib/tty/tty-input-queue'
+import { isRecoverableTTYSessionCode } from '@/lib/tty/tty-session-recovery'
 import type { TTYSessionTranscriptEvent } from '@/lib/tty/tty-session-transcript'
 
 type TTYSessionConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'error'
@@ -22,6 +23,11 @@ interface UseTTYSessionTranscriptResult {
 interface UseTTYSessionTranscriptOptions {
   /** Called as soon as a new transcript event reaches the browser stream. */
   readonly onEvent?: (event: TTYSessionTranscriptEvent, timing: { readonly browserReceivedTimestampMs: number }) => void
+}
+
+interface TTYSessionLifecycleResponse {
+  readonly ok: true
+  readonly session: { readonly status: string }
 }
 
 class RuntimeSessionRequestError extends Error {
@@ -210,7 +216,7 @@ export function useTTYSessionTranscript(
         generation !== generationRef.current ||
         activeSessionId !== sessionIdRef.current ||
         !(cause instanceof RuntimeSessionRequestError) ||
-        !(cause.code === 'SESSION_NOT_FOUND' || cause.code === 'SESSION_NOT_ACTIVE') ||
+        !isRecoverableTTYSessionCode(cause.code) ||
         !onSessionUnavailableRef.current ||
         recoveryAttemptRef.current
       ) {
@@ -241,6 +247,25 @@ export function useTTYSessionTranscript(
       return true
     },
     [stopStream],
+  )
+
+  const probeSessionAfterStreamFailure = useCallback(
+    async (generation: number, activeSessionId: string): Promise<boolean> => {
+      try {
+        const body = await readJson<TTYSessionLifecycleResponse>(
+          `/api/tty/sessions/${encodeURIComponent(activeSessionId)}`,
+        )
+        if (body.session.status === 'active' || body.session.status === 'idle') return false
+        return recoverMissingSession(
+          new RuntimeSessionRequestError('The persistent runtime session is no longer active.', 'SESSION_NOT_ACTIVE'),
+          generation,
+          activeSessionId,
+        )
+      } catch (cause) {
+        return recoverMissingSession(cause, generation, activeSessionId)
+      }
+    },
+    [recoverMissingSession],
   )
 
   const connectStream = useCallback(() => {
@@ -285,9 +310,12 @@ export function useTTYSessionTranscript(
       if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
       setConnectionState('reconnecting')
       setError('The runtime transcript stream was interrupted. Reconnecting from durable replay.')
-      streamReconnectTimerRef.current = setTimeout(() => connectStreamRef.current?.(), 1_000)
+      void probeSessionAfterStreamFailure(generation, activeSessionId).then((recovered) => {
+        if (recovered || generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
+        streamReconnectTimerRef.current = setTimeout(() => connectStreamRef.current?.(), 1_000)
+      })
     }
-  }, [acceptTranscriptEvent, recoverMissingSession, setReplayCursor, stopStream])
+  }, [acceptTranscriptEvent, probeSessionAfterStreamFailure, setReplayCursor, stopStream])
   useEffect(() => {
     connectStreamRef.current = connectStream
   }, [connectStream])
