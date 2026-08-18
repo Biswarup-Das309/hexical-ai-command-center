@@ -279,6 +279,7 @@ interface ManagedSession {
   readonly protocol: TTYPersistentExecutionProtocolDecoder
   activeExecution: ManagedExecution | null
   outputTail: Promise<void>
+  telemetryTail: Promise<void>
   cleanupPromise: Promise<void> | null
   fencePromise: Promise<void> | null
   fenced: boolean
@@ -429,9 +430,10 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
     this.leaseTtlMs = options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS
     this.maxCompletedCommands = options.maxCompletedCommandsPerSession ?? MAX_COMPLETED_COMMANDS_PER_SESSION
-    // Journal-backed tmux output is the durable recovery source.  Poll it at
-    // a terminal-sized cadence so interactive echo does not inherit a 100ms
-    // floor, while transcript writes remain asynchronous behind outputTail.
+    // Journal-backed tmux output is the durable recovery source. Poll it at a
+    // terminal-sized cadence so interactive echo does not inherit a 100ms
+    // floor. Output and telemetry have separate tails so Supabase telemetry
+    // latency cannot delay durable terminal bytes.
     this.journalPollIntervalMs = options.journalPollIntervalMs ?? 16
     this.telemetryIntervalMs = options.telemetryIntervalMs ?? 5_000
     if (
@@ -619,7 +621,11 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
   }
 
   async flush(sessionId: TTYSessionId): Promise<void> {
-    await (this.outputTails.get(sessionId) ?? Promise.resolve())
+    const managed = this.managed.get(sessionId)
+    await Promise.all([
+      this.outputTails.get(sessionId) ?? Promise.resolve(),
+      managed?.telemetryTail ?? Promise.resolve(),
+    ])
     await (this.fenceTails.get(sessionId) ?? Promise.resolve())
   }
 
@@ -767,13 +773,12 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
       throw error
     }
     const ptyWriteAtMs = this.now().getTime()
-    // PTY bytes remain lossless and immediate, but persisting two transcript
-    // rows for every printable batch can put Supabase latency in front of the
-    // shell echo. Keep timing telemetry bounded; durable PTY output remains
-    // unthrottled.
+    // PTY bytes remain lossless and immediate. Keep timing telemetry bounded
+    // and on its own tail; durable PTY output must never wait for Supabase
+    // touch or analytics writes.
     if (ptyWriteAtMs - managed.lastInputTelemetryAtMs < INPUT_TELEMETRY_INTERVAL_MS) return
     managed.lastInputTelemetryAtMs = ptyWriteAtMs
-    this.queueTranscript(managed, async () => {
+    this.queueTelemetry(managed, async () => {
       const touched = await this.sessions.touchSession(command.sessionId, command.ownerUserId)
       if (touched === null) {
         await this.appendSystem(command.sessionId, 'control_rejected', {
@@ -932,6 +937,7 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
         protocol: new TTYPersistentExecutionProtocolDecoder(),
         activeExecution: null,
         outputTail: Promise.resolve(),
+        telemetryTail: Promise.resolve(),
         cleanupPromise: null,
         fencePromise: null,
         fenced: false,
@@ -1309,6 +1315,16 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
       void this.fence(managed, 'transcript_unavailable', 'detach')
     })
     this.outputTails.set(managed.sessionId, managed.outputTail)
+  }
+
+  private queueTelemetry(managed: ManagedSession, operation: () => Promise<void>): void {
+    const queued = managed.telemetryTail.then(operation, operation)
+    managed.telemetryTail = queued.catch((error) => {
+      this.logger.warn('persistent_input_telemetry_failed', {
+        sessionId: managed.sessionId,
+        errorCode: error instanceof Error ? error.name : 'unknown_error',
+      })
+    })
   }
 
   private async handleExit(

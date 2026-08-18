@@ -283,6 +283,35 @@ test('interactive stdin telemetry is sampled without delaying lossless PTY write
   await fixture.manager.stop()
 })
 
+test('interactive PTY output is not blocked by sampled stdin telemetry', async () => {
+  const fixture = createFixture()
+  await fixture.manager.start()
+  await fixture.manager.handle(command('open', { commandId: 'open-telemetry-tail' }))
+
+  let releaseTouch!: () => void
+  const touchGate = new Promise<void>((resolve) => {
+    releaseTouch = resolve
+  })
+  const originalTouch = fixture.store.touchSession.bind(fixture.store)
+  fixture.store.touchSession = async (...args) => {
+    await touchGate
+    return originalTouch(...args)
+  }
+
+  await fixture.manager.handle(command('write', { commandId: 'write-telemetry-tail', data: 'echo-tail\r' }))
+  await new Promise((resolve) => setTimeout(resolve, 10))
+
+  const replayBeforeTelemetryCompletes = await fixture.transcript.read(sessionId)
+  assert.equal(
+    replayBeforeTelemetryCompletes.some((event) => event.type === 'stdout' && event.data.text === 'echo:echo-tail\r'),
+    true,
+  )
+
+  releaseTouch()
+  await fixture.manager.flush(sessionId)
+  await fixture.manager.stop()
+})
+
 test('persistent session manager fences the PTY when output exceeds the session budget', async () => {
   const fixture = createFixture(8)
   await fixture.manager.start()
