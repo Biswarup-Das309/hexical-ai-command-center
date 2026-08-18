@@ -158,6 +158,11 @@ export function ttySessionRuntimeOutputOffsetKey(sessionId: TTYSessionId): strin
   return `tty:session:${sessionId}:runtime-output-offset`
 }
 
+/** Short-lived capability record for the ephemeral browser-to-worker stdin channel. */
+export function ttySessionInputChannelKey(sessionId: TTYSessionId): string {
+  return `tty:session:${sessionId}:input-channel`
+}
+
 /** Idempotency hash for execution output events sourced from a PTY transcript. */
 export function ttyExecutionOutputDedupKey(executionId: TTYExecutionId): string {
   return `tty:execution:${executionId}:output-dedup`

@@ -7,7 +7,11 @@ import { TTYPersistentSessionManager } from '../lib/tty/tty-persistent-session-m
 import { normalizeTTYRedisStreamEntries, normalizeTTYRedisStreamFields } from '../lib/tty/tty-redis-stream'
 import { TTYResourceGuard } from '../lib/tty/tty-resource-guard'
 import type { TTYRuntimeStore } from '../lib/tty/tty-runtime-store'
-import { TTYSessionControlConsumer } from '../lib/tty/tty-session-control'
+import {
+  TTYSessionControlConsumer,
+  TTYSessionInputBroadcastConsumer,
+  type TTYSessionControlHandler,
+} from '../lib/tty/tty-session-control'
 import { TTYSessionControlRouter } from '../lib/tty/tty-session-control-router'
 import { createTTYSessionStore } from '../lib/tty/tty-session-store'
 import { TTYSessionTranscriptManager } from '../lib/tty/tty-session-transcript'
@@ -226,15 +230,26 @@ async function main(): Promise<void> {
     },
   )
   const sessionControlRouter = new TTYSessionControlRouter(redis, workerId, persistentSessionManager)
+  const sessionInputBroadcast = new TTYSessionInputBroadcastConsumer(redis, sessionControlRouter)
+  const sessionControlHandler: TTYSessionControlHandler = {
+    handle: async (command) => {
+      if (command.type === 'open') await sessionInputBroadcast.subscribeSession(command.sessionId)
+      try {
+        await sessionControlRouter.handle(command)
+      } finally {
+        if (command.type === 'terminate') await sessionInputBroadcast.unsubscribeSession(command.sessionId)
+      }
+    },
+  }
   const globalSessionControl = new TTYSessionControlConsumer(
     redis,
     `${workerId}:global-session-control`,
-    sessionControlRouter,
+    sessionControlHandler,
   )
   const workerSessionControl = new TTYSessionControlConsumer(
     redis,
     `${workerId}:target-session-control`,
-    sessionControlRouter,
+    sessionControlHandler,
     {
       streamKey: ttyWorkerSessionControlStreamKey(workerId),
       group: ttyWorkerSessionControlGroup(),
@@ -326,6 +341,7 @@ async function main(): Promise<void> {
       await startupPhase
       await globalSessionControl.stop()
       await workerSessionControl.stop()
+      await sessionInputBroadcast.stop()
       await executor.stop()
       await daemon.stop(signal)
       await persistentSessionManager.stop()
@@ -341,6 +357,8 @@ async function main(): Promise<void> {
     await persistentSessionManager.start()
     if (shuttingDown) return
     await daemon.start()
+    if (shuttingDown) return
+    await sessionInputBroadcast.start()
     if (shuttingDown) return
     await globalSessionControl.start()
     if (shuttingDown) return

@@ -2,11 +2,17 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   TTYSessionControlConsumer,
+  TTYSessionInputBroadcastConsumer,
   publishTTYSessionControl,
   type TTYSessionControlEntry,
 } from '../../lib/tty/tty-session-control'
+import { TTY_SESSION_INPUT_BROADCAST_EVENT } from '../../lib/tty/tty-session-input-channel'
 import type { TTYSessionId } from '../../lib/tty/tty-types'
-import { ttySessionControlGroup, ttySessionControlStreamKey } from '../../lib/tty/tty-worker-keys'
+import {
+  ttySessionControlGroup,
+  ttySessionControlStreamKey,
+  ttySessionInputChannelKey,
+} from '../../lib/tty/tty-worker-keys'
 
 class ControlRedisFake {
   entries: Array<readonly [string, Record<string, unknown>]> = []
@@ -84,6 +90,57 @@ class RealtimeControlRedisFake {
 
   emit(streamId: string, fields: Record<string, unknown>): void {
     this.callback?.({ streamId, fields })
+  }
+}
+
+class BroadcastInputRedisFake {
+  private readonly values = new Map<string, unknown>()
+  private readonly callbacks = new Map<string, (payload: unknown) => void>()
+  readonly subscriptions = new Map<string, number>()
+
+  constructor(sessionRecords: readonly { sessionId: string; channel: string; token: string; ownerUserId: string }[]) {
+    for (const record of sessionRecords) {
+      this.values.set(ttySessionInputChannelKey(record.sessionId as TTYSessionId), {
+        ...record,
+        issuedAtMs: Date.now(),
+      })
+    }
+    this.sessionIds = sessionRecords.map((record) => record.sessionId)
+  }
+
+  private readonly sessionIds: string[]
+
+  async smembers(): Promise<string[]> {
+    return this.sessionIds
+  }
+
+  async get<T = unknown>(key: string): Promise<T | null> {
+    return (this.values.get(key) as T | undefined) ?? null
+  }
+
+  async set<T = unknown>(key: string, value: T): Promise<string> {
+    this.values.set(key, value)
+    return 'OK'
+  }
+
+  async del(key: string): Promise<number> {
+    this.values.delete(key)
+    return 1
+  }
+
+  async subscribeToBroadcast(
+    channel: string,
+    event: string,
+    callback: (payload: unknown) => void,
+  ): Promise<() => void> {
+    assert.equal(event, TTY_SESSION_INPUT_BROADCAST_EVENT)
+    this.callbacks.set(channel, callback)
+    this.subscriptions.set(channel, (this.subscriptions.get(channel) ?? 0) + 1)
+    return () => this.callbacks.delete(channel)
+  }
+
+  emit(channel: string, payload: unknown): void {
+    this.callbacks.get(channel)?.(payload)
   }
 }
 
@@ -364,4 +421,77 @@ test('Realtime control replays a command inserted during channel startup', async
   await consumer.stop()
 
   assert.deepEqual(handled, ['historical-open', 'startup-race-write'])
+})
+
+test('broadcast stdin preserves per-session byte order and ignores duplicate delivery', async () => {
+  const redis = new BroadcastInputRedisFake([
+    { sessionId, channel: 'channel-a', token: 'token-a', ownerUserId: 'user-one' },
+  ])
+  const handled: string[] = []
+  const consumer = new TTYSessionInputBroadcastConsumer(redis as never, {
+    handle: async (command) => {
+      handled.push(command.data ?? '')
+    },
+  })
+
+  await consumer.start()
+  const payload = (commandId: string, data: string, sequence: number) => ({
+    sessionId,
+    token: 'token-a',
+    commandId,
+    data,
+    inputEventId: commandId,
+    inputSequence: sequence,
+    browserTimestampMs: 1_700_000_000_000 + sequence,
+  })
+  redis.emit('channel-a', payload('input-1', 'echo PRE_ENTER_CHECK\r', 1))
+  redis.emit('channel-a', payload('input-2', 'echo SECOND_NO_REFRESH_TEST\r', 2))
+  redis.emit('channel-a', payload('input-2', 'echo SECOND_NO_REFRESH_TEST\r', 2))
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  await consumer.stop()
+
+  assert.deepEqual(handled, ['echo PRE_ENTER_CHECK\r', 'echo SECOND_NO_REFRESH_TEST\r'])
+  assert.equal(redis.subscriptions.get('channel-a'), 1)
+})
+
+test('broadcast stdin keeps unrelated session queues concurrent', async () => {
+  const otherSessionId = '00000000-0000-4000-8000-000000009103' as TTYSessionId
+  const redis = new BroadcastInputRedisFake([
+    { sessionId, channel: 'channel-a', token: 'token-a', ownerUserId: 'user-one' },
+    { sessionId: otherSessionId, channel: 'channel-b', token: 'token-b', ownerUserId: 'user-one' },
+  ])
+  const handled: string[] = []
+  let releaseA: () => void = () => undefined
+  const blockedA = new Promise<void>((resolve) => {
+    releaseA = resolve
+  })
+  const consumer = new TTYSessionInputBroadcastConsumer(redis as never, {
+    handle: async (command) => {
+      handled.push(command.data ?? '')
+      if (command.sessionId === sessionId) await blockedA
+    },
+  })
+  await consumer.start()
+  redis.emit('channel-a', {
+    sessionId,
+    token: 'token-a',
+    commandId: 'a1',
+    data: 'A1',
+    inputEventId: 'a1',
+    inputSequence: 1,
+    browserTimestampMs: 1_700_000_000_001,
+  })
+  redis.emit('channel-b', {
+    sessionId: otherSessionId,
+    token: 'token-b',
+    commandId: 'b1',
+    data: 'B1',
+    inputEventId: 'b1',
+    inputSequence: 1,
+    browserTimestampMs: 1_700_000_000_002,
+  })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.deepEqual(handled, ['A1', 'B1'])
+  releaseA()
+  await consumer.stop()
 })

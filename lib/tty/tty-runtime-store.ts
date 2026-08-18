@@ -15,6 +15,11 @@ export interface TTYRuntimeStreamSubscriptionPayload {
   readonly fields: unknown
 }
 
+export interface TTYRuntimeBroadcastPayload {
+  readonly event: string
+  readonly payload: unknown
+}
+
 export interface TTYRuntimeStore {
   get<T = unknown>(key: string): Promise<T | null>
   set<T = unknown>(key: string, value: T, options?: TTYRuntimeSetOptions): Promise<T | string | null>
@@ -47,6 +52,9 @@ export interface TTYRuntimeStore {
     streamKey: string,
     callback: (payload: TTYRuntimeStreamSubscriptionPayload) => void,
   ): Promise<() => void>
+  /** Low-latency ephemeral transport for interactive PTY stdin. */
+  broadcastToChannel?(channel: string, event: string, payload: unknown): Promise<void>
+  subscribeToBroadcast?(channel: string, event: string, callback: (payload: unknown) => void): Promise<() => void>
 }
 
 export function toRuntimeJson(value: unknown): Json {

@@ -8,10 +8,26 @@ import {
 } from './tty-runtime-store'
 
 const GLOBAL_RUNTIME_KEY = '__hexical_runtime_supabase_client__'
+const GLOBAL_BROADCAST_CHANNELS_KEY = '__hexical_runtime_supabase_broadcast_channels__'
 const MAX_STREAM_READ = 10_000
 
 type RuntimeClient = SupabaseClient<Database>
 type RuntimeStreamRow = Database['public']['Tables']['hexical_runtime_stream_entries']['Row']
+type BroadcastChannelState = {
+  readonly channel: RealtimeChannel
+  readonly ready: Promise<void>
+}
+
+function subscribeRealtimeChannel(channel: RealtimeChannel, channelName: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    channel.subscribe((status, error) => {
+      if (status === 'SUBSCRIBED') resolve()
+      else if (error) reject(error)
+      else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT')
+        reject(new Error(`Supabase realtime channel ${channelName} returned ${status}.`))
+    })
+  })
+}
 
 function requiredRuntimeEnv(name: 'NEXT_PUBLIC_SUPABASE_URL' | 'SUPABASE_SERVICE_ROLE_KEY'): string {
   const value = process.env[name]?.trim()
@@ -32,6 +48,15 @@ export function createSupabaseRuntimeClient(): RuntimeClient {
   )
   ;(globalThis as Record<string, unknown>)[GLOBAL_RUNTIME_KEY] = client
   return client
+}
+
+function broadcastChannels(): Map<string, BroadcastChannelState> {
+  const global = globalThis as Record<string, unknown>
+  const existing = global[GLOBAL_BROADCAST_CHANNELS_KEY]
+  if (existing instanceof Map) return existing as Map<string, BroadcastChannelState>
+  const channels = new Map<string, BroadcastChannelState>()
+  global[GLOBAL_BROADCAST_CHANNELS_KEY] = channels
+  return channels
 }
 
 function asNumber(value: unknown, fallback = 0): number {
@@ -312,6 +337,40 @@ export class SupabaseRuntimeStore implements TTYRuntimeStore {
       },
     )
     await channel.subscribe()
+    return () => {
+      void this.client.removeChannel(channel)
+    }
+  }
+
+  async broadcastToChannel(channelName: string, event: string, payload: unknown): Promise<void> {
+    const channels = broadcastChannels()
+    let state = channels.get(channelName)
+    if (!state) {
+      const channel = this.client.channel(channelName)
+      const ready = subscribeRealtimeChannel(channel, channelName)
+      state = { channel, ready }
+      channels.set(channelName, state)
+      void ready.catch(() => {
+        if (channels.get(channelName) === state) channels.delete(channelName)
+      })
+    }
+    await state.ready
+    const status = await state.channel.send({ type: 'broadcast', event, payload })
+    if (status !== 'ok') throw new Error(`Supabase broadcast send failed for ${channelName}: ${status}`)
+  }
+
+  async subscribeToBroadcast(
+    channelName: string,
+    event: string,
+    callback: (payload: unknown) => void,
+  ): Promise<() => void> {
+    const channel = this.client.channel(channelName).on('broadcast', { event }, ({ payload }) => callback(payload))
+    try {
+      await subscribeRealtimeChannel(channel, channelName)
+    } catch (error) {
+      await this.client.removeChannel(channel)
+      throw error
+    }
     return () => {
       void this.client.removeChannel(channel)
     }

@@ -1,10 +1,13 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { connectTTYBrowserInputChannel, type TTYBrowserInputChannel } from '@/lib/tty/tty-browser-input-channel'
 import { recordTTYBrowserInputLatency } from '@/lib/tty/tty-input-latency'
 import { createTTYInputQueue } from '@/lib/tty/tty-input-queue'
+import { createTTYSessionInputBroadcastPayload } from '@/lib/tty/tty-session-input-channel'
 import { isRecoverableTTYSessionCode } from '@/lib/tty/tty-session-recovery'
 import type { TTYSessionTranscriptEvent } from '@/lib/tty/tty-session-transcript'
+import type { TTYSessionId } from '@/lib/tty/tty-types'
 
 type TTYSessionConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'error'
 
@@ -28,6 +31,18 @@ interface UseTTYSessionTranscriptOptions {
 interface TTYSessionLifecycleResponse {
   readonly ok: true
   readonly session: { readonly status: string }
+}
+
+interface TTYSessionInputChannelResponse {
+  readonly ok: true
+  readonly channel: string
+  readonly token: string
+}
+
+interface PreparedTTYInputChannel {
+  readonly sessionId: TTYSessionId
+  readonly token: string
+  readonly channel: TTYBrowserInputChannel
 }
 
 class RuntimeSessionRequestError extends Error {
@@ -110,6 +125,7 @@ export function useTTYSessionTranscript(
   const onSessionUnavailableRef = useRef(onSessionUnavailable)
   const recoveryAttemptRef = useRef(false)
   const writeQueueRef = useRef<ReturnType<typeof createTTYInputQueue> | null>(null)
+  const inputChannelRef = useRef<PreparedTTYInputChannel | null>(null)
   const eventsRef = useRef<readonly TTYSessionTranscriptEvent[]>([])
   const eventKeysRef = useRef(new Set<string>())
   const transcriptStateFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -170,23 +186,65 @@ export function useTTYSessionTranscript(
     [sessionId],
   )
 
+  const closeInputChannel = useCallback(() => {
+    inputChannelRef.current?.channel.close()
+    inputChannelRef.current = null
+  }, [])
+
+  const prepareInputChannel = useCallback(async () => {
+    if (!sessionId) return
+    const current = inputChannelRef.current
+    if (current?.sessionId === sessionId) return
+    closeInputChannel()
+    const body = await readJson<TTYSessionInputChannelResponse>(
+      `/api/tty/sessions/${encodeURIComponent(sessionId)}/input-channel`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+    )
+    const channel = await connectTTYBrowserInputChannel(body.channel)
+    if (sessionIdRef.current !== sessionId) {
+      channel.close()
+      return
+    }
+    inputChannelRef.current = { sessionId: sessionId as TTYSessionId, token: body.token, channel }
+  }, [closeInputChannel, sessionId])
+
   const open = useCallback(async () => {
+    await prepareInputChannel().catch(() => undefined)
     await control({ type: 'open' })
-  }, [control])
+  }, [control, prepareInputChannel])
 
   const write = useCallback(
     async (data: string) => {
       if (!data) return
       if (!writeQueueRef.current) {
         writeQueueRef.current = createTTYInputQueue(
-          (nextData, batch) =>
-            control({
+          async (nextData, batch) => {
+            const prepared = inputChannelRef.current
+            if (prepared?.sessionId === sessionIdRef.current) {
+              try {
+                await prepared.channel.send(
+                  createTTYSessionInputBroadcastPayload(
+                    { sessionId: prepared.sessionId, token: prepared.token },
+                    nextData,
+                    batch,
+                  ),
+                )
+                return
+              } catch {
+                // A transient Broadcast failure falls back to the durable
+                // control route with the same idempotency key. This keeps
+                // control bytes lossless without making Postgres the hot path.
+              }
+            }
+            await control({
               type: 'write',
+              commandId: batch.inputEventId,
               data: nextData,
               inputEventId: batch.inputEventId,
               inputSequence: batch.sequence,
               browserTimestampMs: batch.browserTimestampMs,
-            }),
+            })
+          },
           { onBatch: recordTTYBrowserInputLatency },
         )
       }
@@ -347,6 +405,7 @@ export function useTTYSessionTranscript(
     recoveryAttemptRef.current = false
     writeQueueRef.current?.reset()
     writeQueueRef.current = null
+    closeInputChannel()
     if (transcriptStateFlushTimerRef.current !== null) clearTimeout(transcriptStateFlushTimerRef.current)
     transcriptStateFlushTimerRef.current = null
     eventsRef.current = []
@@ -399,7 +458,7 @@ export function useTTYSessionTranscript(
       if (touchTimerRef.current !== null) clearInterval(touchTimerRef.current)
       touchTimerRef.current = null
     }
-  }, [connectStream, open, recoverMissingSession, sessionId, setReplayCursor, stopStream])
+  }, [closeInputChannel, connectStream, open, recoverMissingSession, sessionId, setReplayCursor, stopStream])
 
   return { events, cursor, connectionState, error, reconnectCount, open, write, resize, reconnect }
 }

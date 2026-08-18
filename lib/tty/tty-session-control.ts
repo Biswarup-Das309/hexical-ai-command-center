@@ -1,8 +1,18 @@
 /** Durable, owner-authenticated web-to-worker control plane for PTY sessions. */
 
 import type { TTYRuntimeStore as Redis } from './tty-runtime-store'
+import {
+  parseTTYSessionInputBroadcastPayload,
+  TTY_SESSION_INPUT_BROADCAST_EVENT,
+  type TTYSessionInputChannelRecord,
+} from './tty-session-input-channel'
 import type { TTYSessionId } from './tty-types'
-import { ttySessionControlGroup, ttySessionControlStreamKey } from './tty-worker-keys'
+import {
+  ttyPersistentSessionIndexKey,
+  ttySessionControlGroup,
+  ttySessionControlStreamKey,
+  ttySessionInputChannelKey,
+} from './tty-worker-keys'
 
 const MAX_COMMAND_BYTES = 64 * 1024
 const MAX_BATCH = 32
@@ -567,6 +577,122 @@ export class TTYSessionControlConsumer {
       nx: true,
       ex: CONTROL_STREAM_RETENTION_SECONDS,
     })
+    if (accepted === null) return
+    try {
+      await this.handler.handle(entry)
+    } catch (error) {
+      await this.redis.del(receiptKey)
+      throw error
+    }
+  }
+}
+
+/**
+ * Ephemeral low-latency stdin delivery. Browser keystrokes use a per-session
+ * Supabase Broadcast channel, while lifecycle and fallback commands remain on
+ * the durable control stream above. The worker still applies a per-session
+ * FIFO and the same idempotency receipt used by durable commands.
+ */
+export class TTYSessionInputBroadcastConsumer {
+  private readonly subscriptions = new Map<string, () => void>()
+  private readonly sessionTails = new Map<string, Promise<void>>()
+  private readonly seenCommandIds = new Set<string>()
+  private started = false
+
+  constructor(
+    private readonly redis: Redis,
+    private readonly handler: TTYSessionControlHandler,
+  ) {}
+
+  async start(): Promise<void> {
+    if (this.started || !this.redis.subscribeToBroadcast) return
+    this.started = true
+    const sessionIds = await this.redis.smembers(ttyPersistentSessionIndexKey())
+    await Promise.all(sessionIds.map((sessionId) => this.subscribeSession(sessionId)))
+  }
+
+  async stop(): Promise<void> {
+    this.started = false
+    for (const cleanup of this.subscriptions.values()) cleanup()
+    this.subscriptions.clear()
+    this.sessionTails.clear()
+    this.seenCommandIds.clear()
+  }
+
+  async subscribeSession(sessionId: string): Promise<void> {
+    if (!this.started || !this.redis.subscribeToBroadcast || this.subscriptions.has(sessionId)) return
+    const record = await this.inputChannelRecord(sessionId)
+    if (record === null) return
+    const cleanup = await this.redis.subscribeToBroadcast(
+      record.channel,
+      TTY_SESSION_INPUT_BROADCAST_EVENT,
+      (payload) => this.queue(record, payload),
+    )
+    if (!this.started) {
+      cleanup()
+      return
+    }
+    this.subscriptions.set(sessionId, cleanup)
+  }
+
+  async unsubscribeSession(sessionId: string): Promise<void> {
+    this.subscriptions.get(sessionId)?.()
+    this.subscriptions.delete(sessionId)
+    this.sessionTails.delete(sessionId)
+  }
+
+  private async inputChannelRecord(sessionId: string): Promise<TTYSessionInputChannelRecord | null> {
+    const raw = await this.redis.get<unknown>(ttySessionInputChannelKey(sessionId as never))
+    if (typeof raw !== 'object' || raw === null) return null
+    const record = raw as Record<string, unknown>
+    if (
+      record.sessionId !== sessionId ||
+      typeof record.ownerUserId !== 'string' ||
+      typeof record.channel !== 'string' ||
+      typeof record.token !== 'string' ||
+      typeof record.issuedAtMs !== 'number'
+    )
+      return null
+    return {
+      sessionId: sessionId as TTYSessionId,
+      ownerUserId: record.ownerUserId,
+      channel: record.channel,
+      token: record.token,
+      issuedAtMs: record.issuedAtMs,
+    }
+  }
+
+  private queue(record: TTYSessionInputChannelRecord, value: unknown): void {
+    const payload = parseTTYSessionInputBroadcastPayload(value)
+    if (payload === null || payload.sessionId !== record.sessionId || payload.token !== record.token) return
+    if (this.seenCommandIds.has(payload.commandId)) return
+    this.seenCommandIds.add(payload.commandId)
+    if (this.seenCommandIds.size > 20_000) this.seenCommandIds.clear()
+    const entry: TTYSessionControlEntry = {
+      streamId: `broadcast-${payload.inputSequence}-${payload.commandId}`,
+      commandId: payload.commandId,
+      sessionId: record.sessionId,
+      ownerUserId: record.ownerUserId,
+      type: 'write',
+      data: payload.data,
+      inputEventId: payload.inputEventId,
+      inputSequence: payload.inputSequence,
+      browserTimestampMs: payload.browserTimestampMs,
+      timestamp: new Date().toISOString(),
+    }
+    const previous = this.sessionTails.get(record.sessionId) ?? Promise.resolve()
+    const current = previous.catch(() => undefined).then(() => this.deliver(entry))
+    this.sessionTails.set(record.sessionId, current)
+    void current
+      .finally(() => {
+        if (this.sessionTails.get(record.sessionId) === current) this.sessionTails.delete(record.sessionId)
+      })
+      .catch(() => undefined)
+  }
+
+  private async deliver(entry: TTYSessionControlEntry): Promise<void> {
+    const receiptKey = `tty:control:receipt:${entry.commandId}`
+    const accepted = await this.redis.set(receiptKey, entry.streamId, { nx: true, ex: 7 * 24 * 60 * 60 })
     if (accepted === null) return
     try {
       await this.handler.handle(entry)
