@@ -13,11 +13,6 @@ export const dynamic = 'force-dynamic'
 const SESSION_ID = z.string().uuid()
 const CURSOR = /^\d+-\d+$/
 const DEFAULT_LIMIT = 2_000
-// Vercel/proxy response buffering can hold a stream that starts with only
-// small SSE frames until several kilobytes have accumulated.  An SSE comment
-// is protocol-noop padding: it flushes the response headers/body without
-// changing transcript data or introducing an input/output delay.
-const STREAM_BOOTSTRAP_PADDING_BYTES = 2_048
 
 function eventFromRealtime(
   sessionId: TTYSessionId,
@@ -102,7 +97,6 @@ export async function GET(request: Request, context: { params: Promise<{ session
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(new TextEncoder().encode(`: ${' '.repeat(STREAM_BOOTSTRAP_PADDING_BYTES)}\n\n`))
       const seen = new Set<string>()
       let replayReady = false
       const pending: TTYSessionTranscriptEvent[] = []

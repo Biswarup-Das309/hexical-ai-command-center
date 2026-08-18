@@ -34,6 +34,7 @@ import type { TTYWorkerId } from './tty-worker-types'
 const DEFAULT_LEASE_TTL_MS = 30_000
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000
 const MAX_COMPLETED_COMMANDS_PER_SESSION = 1_024
+const INPUT_TELEMETRY_INTERVAL_MS = 1_000
 
 const CLAIM_RUNTIME_SCRIPT = `
 -- hexical:tty-session-runtime-claim
@@ -272,6 +273,7 @@ interface ManagedSession {
   readonly maxOutputBytes: number
   outputBytesSinceInput: number
   outputLimitReached: boolean
+  lastInputTelemetryAtMs: number
   outputReady: boolean
   bufferedOutput: string[]
   readonly protocol: TTYPersistentExecutionProtocolDecoder
@@ -765,6 +767,12 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
       throw error
     }
     const ptyWriteAtMs = this.now().getTime()
+    // PTY bytes remain lossless and immediate, but persisting two transcript
+    // rows for every printable batch can put Supabase latency in front of the
+    // shell echo. Keep timing telemetry bounded; durable PTY output remains
+    // unthrottled.
+    if (ptyWriteAtMs - managed.lastInputTelemetryAtMs < INPUT_TELEMETRY_INTERVAL_MS) return
+    managed.lastInputTelemetryAtMs = ptyWriteAtMs
     this.queueTranscript(managed, async () => {
       const touched = await this.sessions.touchSession(command.sessionId, command.ownerUserId)
       if (touched === null) {
@@ -918,6 +926,7 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
         maxOutputBytes: session.limits.maxOutputBytesPerExecution,
         outputBytesSinceInput: 0,
         outputLimitReached: false,
+        lastInputTelemetryAtMs: Number.NEGATIVE_INFINITY,
         outputReady: false,
         bufferedOutput: earlyOutput,
         protocol: new TTYPersistentExecutionProtocolDecoder(),

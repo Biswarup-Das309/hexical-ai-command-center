@@ -259,6 +259,30 @@ test('persistent session manager writes interactive stdin before durable session
   await fixture.manager.stop()
 })
 
+test('interactive stdin telemetry is sampled without delaying lossless PTY writes', async () => {
+  const fixture = createFixture()
+  await fixture.manager.start()
+  await fixture.manager.handle(command('open', { commandId: 'open-telemetry-sampling' }))
+
+  await fixture.manager.handle(command('write', { commandId: 'write-telemetry-a', data: 'a' }))
+  await fixture.manager.handle(command('write', { commandId: 'write-telemetry-b', data: 'b' }))
+  await fixture.manager.flush(sessionId)
+
+  assert.deepEqual(fixture.factory.ptys[0]?.writes, ['a', 'b'])
+  const replay = await fixture.transcript.read(sessionId)
+  assert.equal(replay.filter((event) => event.data.event === 'stdin_dispatching').length, 1)
+  assert.equal(
+    replay.filter((event) => event.type === 'stdout').some((event) => event.data.text === 'echo:a'),
+    true,
+  )
+  assert.equal(
+    replay.filter((event) => event.type === 'stdout').some((event) => event.data.text === 'echo:b'),
+    true,
+  )
+
+  await fixture.manager.stop()
+})
+
 test('persistent session manager fences the PTY when output exceeds the session budget', async () => {
   const fixture = createFixture(8)
   await fixture.manager.start()
