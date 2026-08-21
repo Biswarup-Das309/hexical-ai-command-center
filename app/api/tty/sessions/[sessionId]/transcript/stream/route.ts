@@ -4,6 +4,7 @@ import { createSupabaseRuntimeStore } from '@/lib/tty/supabase-runtime-store'
 import { normalizeTTYRedisStreamFields } from '@/lib/tty/tty-redis-stream'
 import { createTTYSessionStore } from '@/lib/tty/tty-session-store'
 import { TTYSessionTranscriptManager, type TTYSessionTranscriptEvent } from '@/lib/tty/tty-session-transcript'
+import { ttySseKeepAliveFrame } from '@/lib/tty/tty-sse'
 import type { TTYSessionId } from '@/lib/tty/tty-types'
 import { ttySessionTranscriptStreamKey } from '@/lib/tty/tty-worker-keys'
 
@@ -124,7 +125,7 @@ export async function GET(request: Request, context: { params: Promise<{ session
           pending.sort((left, right) => left.sequence - right.sequence)
           for (const event of pending) emit(event)
           keepAlive = setInterval(() => {
-            if (!closed) controller.enqueue(encoder.encode(': keep-alive\n\n'))
+            if (!closed) controller.enqueue(ttySseKeepAliveFrame())
           }, SSE_HEARTBEAT_INTERVAL_MS)
           request.signal.addEventListener('abort', close, { once: true })
         } catch (error) {
