@@ -91,6 +91,7 @@ export const createSupabaseClient = (token?: string): SupabaseClient<Database> =
           ? `hexical-dev-bypass-${crypto.randomUUID().substring(0, 8)}`
           : 'hexical-prod-auth',
     },
+    realtime: { params: { eventsPerSecond: 100 } },
   }
 
   if (token) {

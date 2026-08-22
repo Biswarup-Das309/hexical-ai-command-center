@@ -10,4 +10,5 @@ test('Supabase bearer clients avoid GoTrue storage-key collisions and reuse the 
   assert.match(source, /supabaseAuthenticatedClient\?\.token === token/)
   assert.match(source, /clerk-bearer-\$\{sequence\}/)
   assert.match(source, /auth: \{ \.\.\.clientOptions\.auth, storageKey \}/)
+  assert.match(source, /realtime: \{ params: \{ eventsPerSecond: 100 \} \}/)
 })
