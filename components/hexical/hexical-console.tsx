@@ -77,8 +77,8 @@ import { createSupabaseClient } from '@/lib/supabase'
 //      HTML/Markdown downstream (in DataStream et al.) to prevent stored XSS.
 //      The client-side redaction below is a best-effort convenience filter
 //      for accidental secret paste, not a substitute for that.
-//   5. Serve job-status polling from an authenticated, same-origin route and
-//      validate Origin/CSRF tokens on state-changing requests.
+//   5. Keep state-changing requests same-origin and authenticated; the current
+//      verification route completes synchronously or returns its own stream.
 // None of the above can be verified or fixed from this file alone — treat
 // this diff as raising the floor, not a guarantee of "zero exploitable flaws".
 // =============================================================================
@@ -186,9 +186,6 @@ interface AttackGraph {
 }
 interface VerifyApiResponse {
   status?: string
-  job_id?: string
-  position?: number | null
-  data?: VerifyApiResponse
   analysis?: string
   steps?: unknown
   valid?: boolean
@@ -218,8 +215,6 @@ const VERIFY_ENDPOINT = '/api/verify'
 // (see lib/hexical-types.ts), read at call time in handleSubmit below, so
 // each tier gets its own configured ceiling (free 10k / go 15k / plus 60k /
 // pro 120k as of this writing) instead of one hardcoded number for everyone.
-const POLL_INTERVAL_MS = 1500
-const MAX_POLL_ATTEMPTS = 80
 const PROFILE_TO_VERIFY_PROFILE: Record<string, VerifyProfile> = {
   recon: 'recon',
   swarm: 'swarm',
@@ -421,27 +416,12 @@ function getSafeExceptionMessage(error: unknown): string {
   if (error instanceof Error) {
     if (error.message === 'AUTH_TOKEN_UNAVAILABLE') return 'Session token unavailable. Please sign in again.'
     if (error.message === 'EMPTY_RESPONSE') return 'Verification service returned an empty response.'
-    if (error.message === 'INVALID_JOB_ID') return 'Verification queue returned an invalid job.'
-    if (error.message === 'VERIFY_JOB_ERROR') return 'Verification job failed on the server.'
-    if (error.message === 'POLL_TIMEOUT') return 'Verification timed out while waiting in the queue.'
+    if (error.message === 'UNEXPECTED_ASYNC_RESPONSE')
+      return 'Verification was queued unexpectedly. Please retry in a moment.'
     const statusMatch = error.message.match(/^HTTP_(\d{3})$/)
     if (statusMatch) return getSafeClientError(Number(statusMatch[1]))
   }
   return 'Pipeline sequence failed.'
-}
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(resolve, ms)
-    signal?.addEventListener(
-      'abort',
-      () => {
-        window.clearTimeout(timeout)
-        reject(new DOMException('Request aborted', 'AbortError'))
-      },
-      { once: true },
-    )
-  })
 }
 
 const extractTargetsFromLogic = (text: string): string[] => {
@@ -1319,73 +1299,8 @@ export function HexicalConsole() {
       if (!initData) {
         throw new Error('EMPTY_RESPONSE')
       }
-      let finalData = initData
-
-      if (initData.status === 'queued') {
-        const jobId = initData.job_id
-        if (typeof jobId !== 'string' || jobId.length < 8) {
-          throw new Error('INVALID_JOB_ID')
-        }
-        logToTerminal(`[QUEUE] Assigned Job ID: ${jobId}. Position: ${initData.position}`)
-        setLoadingPhase(`In Queue (Position: ${initData.position})...`)
-
-        let isPolling = true
-        let attempts = 0
-        while (isPolling && attempts < MAX_POLL_ATTEMPTS) {
-          attempts += 1
-          if (requestSignal.aborted) {
-            logToTerminal(`[SYSTEM] User aborted request.`)
-            setBusy(false)
-            return
-          }
-          await sleep(POLL_INTERVAL_MS, requestSignal)
-
-          try {
-            // SECURITY: poll through our own authenticated Next.js API route
-            // instead of hitting the job runner directly. A raw client-side
-            // call to an internal service — and a hardcoded localhost URL is
-            // itself a dev leftover that won't resolve in production — skips
-            // auth, rate limiting, and CORS controls, and turns a guessable
-            // job id into a de-facto bearer token: anyone who learns or
-            // enumerates a jobId could read someone else's results (IDOR).
-            const statusRes = await fetch(`/api/verify/status/${jobId}`, {
-              headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-              credentials: 'same-origin',
-              signal: requestSignal,
-            })
-            if (!statusRes.ok) {
-              throw new Error(`POLL_HTTP_${statusRes.status}`)
-            }
-            const statusData = await parseJsonResponse<VerifyApiResponse>(statusRes)
-            if (!statusData) {
-              throw new Error('POLL_EMPTY_RESPONSE')
-            }
-
-            if (statusData.status === 'queued') {
-              setLoadingPhase(`In Queue (Position: ${statusData.position})...`)
-            } else if (statusData.status === 'processing') {
-              setLoadingPhase('Processing investigation...')
-            } else if (statusData.status === 'completed') {
-              if (!statusData.data) throw new Error('POLL_EMPTY_RESULT')
-              finalData = statusData.data
-              isPolling = false
-            } else if (statusData.status === 'error') {
-              throw new Error('VERIFY_JOB_ERROR')
-            } else if (statusData.status === 'not_found') {
-              throw new Error('Job lost in server queue.')
-            }
-          } catch (pollErr: unknown) {
-            if (pollErr instanceof DOMException && pollErr.name === 'AbortError') {
-              isPolling = false
-              return
-            }
-            logToTerminal(`[ERR] Polling error. Retrying...`)
-          }
-        }
-        if (isPolling) {
-          throw new Error('POLL_TIMEOUT')
-        }
-      }
+      if (initData.status === 'queued') throw new Error('UNEXPECTED_ASYNC_RESPONSE')
+      const finalData = initData
       if (!finalData || typeof finalData !== 'object') {
         throw new Error('EMPTY_RESPONSE')
       }
