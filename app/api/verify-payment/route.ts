@@ -1,10 +1,10 @@
 import crypto from 'crypto'
 import { auth } from '@clerk/nextjs/server'
-import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 import Razorpay from 'razorpay'
 import { z } from 'zod'
 import { PRICING } from '@/lib/pricing.config'
+import { createSupabaseAdminClient } from '@/lib/supabase-admin'
 
 export const runtime = 'nodejs'
 
@@ -71,8 +71,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       return NextResponse.json({ error: 'Payment could not be matched to this account and plan.' }, { status: 400 })
     }
 
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey)
-    const { data, error } = await supabaseAdmin.rpc('process_payment_webhook', {
+    const { data, error } = await createSupabaseAdminClient().rpc('process_payment_webhook', {
       p_payment_id: payment.razorpay_payment_id,
       p_user_id: userId,
       p_order_id: payment.razorpay_order_id,

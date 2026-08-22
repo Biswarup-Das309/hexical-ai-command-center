@@ -1,10 +1,10 @@
 import 'server-only'
 
 import { auth } from '@clerk/nextjs/server'
-import { createClient } from '@supabase/supabase-js'
 import { getUserTier } from '@/lib/get-user-tier'
 import { verifyAuthorization } from '@/lib/hexical/authorization'
 import { log } from '@/lib/hexical/telemetry'
+import { createSupabaseAdminClient } from '@/lib/supabase-admin'
 import { createSupabaseRuntimeStore } from './supabase-runtime-store'
 import { activateTTYExecution } from './tty-execution-activator-server'
 import { TTYExecutionAdmission } from './tty-execution-admission'
@@ -15,7 +15,7 @@ import { createTTYSessionStore } from './tty-session-store'
 
 export function createTTYAdmissionApiForRequest(options: { readonly activate?: boolean } = {}) {
   const redis = createSupabaseRuntimeStore()
-  const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+  const supabase = createSupabaseAdminClient()
   const store = createTTYSessionStore(redis)
   const admission = new TTYExecutionAdmission(redis, {
     authorize: async ({ userId, rawInput, kind }) => {

@@ -213,6 +213,21 @@ export type Database = {
         Args: { p_operation: string; p_keys: string[]; p_args: string[] }
         Returns: Json
       }
+      hexical_evidence_graph_eval: {
+        Args: { p_operation: string; p_keys: string[]; p_args: string[] }
+        Returns: number
+      }
+      process_payment_webhook: {
+        Args: {
+          p_payment_id: string
+          p_user_id: string
+          p_order_id: string | null
+          p_tier: string
+          p_tokens: number
+          p_period_days: number
+        }
+        Returns: { already_processed: boolean }[]
+      }
       hexical_investigation_rate_limit: {
         Args: {
           p_key: string

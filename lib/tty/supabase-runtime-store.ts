@@ -1,6 +1,7 @@
-import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js'
+import { type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/lib/database.types'
 import type { RuntimeWindowResult } from '@/lib/hexical/runtime-store'
+import { createSupabaseAdminClient } from '@/lib/supabase-admin'
 import {
   toRuntimeJson,
   type TTYRuntimeSetOptions,
@@ -8,7 +9,6 @@ import {
   type TTYRuntimeStore,
 } from './tty-runtime-store'
 
-const GLOBAL_RUNTIME_KEY = '__hexical_runtime_supabase_client__'
 const GLOBAL_BROADCAST_CHANNELS_KEY = '__hexical_runtime_supabase_broadcast_channels__'
 const MAX_STREAM_READ = 10_000
 
@@ -30,25 +30,8 @@ function subscribeRealtimeChannel(channel: RealtimeChannel, channelName: string)
   })
 }
 
-function requiredRuntimeEnv(name: 'NEXT_PUBLIC_SUPABASE_URL' | 'SUPABASE_SERVICE_ROLE_KEY'): string {
-  const value = process.env[name]?.trim()
-  if (!value) throw new Error(`Missing required Supabase runtime environment variable: ${name}`)
-  return value
-}
-
 export function createSupabaseRuntimeClient(): RuntimeClient {
-  const existing = (globalThis as Record<string, unknown>)[GLOBAL_RUNTIME_KEY]
-  if (existing) return existing as RuntimeClient
-  const client = createClient<Database>(
-    requiredRuntimeEnv('NEXT_PUBLIC_SUPABASE_URL'),
-    requiredRuntimeEnv('SUPABASE_SERVICE_ROLE_KEY'),
-    {
-      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-      realtime: { params: { eventsPerSecond: 100 } },
-    },
-  )
-  ;(globalThis as Record<string, unknown>)[GLOBAL_RUNTIME_KEY] = client
-  return client
+  return createSupabaseAdminClient()
 }
 
 function broadcastChannels(): Map<string, BroadcastChannelState> {
@@ -308,8 +291,10 @@ export class SupabaseRuntimeStore implements TTYRuntimeStore {
   }
 
   async eval<T = unknown>(script: string, keys: readonly string[], args: readonly string[]): Promise<T> {
-    const { data, error } = await this.client.rpc('hexical_runtime_eval', {
-      p_operation: operationName(script),
+    const operation = operationName(script)
+    const rpc = operation.startsWith('hexical:evidence-graph:') ? 'hexical_evidence_graph_eval' : 'hexical_runtime_eval'
+    const { data, error } = await this.client.rpc(rpc, {
+      p_operation: operation,
       p_keys: [...keys],
       p_args: [...args],
     })

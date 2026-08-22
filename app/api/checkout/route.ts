@@ -1,9 +1,9 @@
 import { auth, currentUser } from '@clerk/nextjs/server'
-import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 import Razorpay from 'razorpay'
 import { getCanonicalEntitlement } from '@/lib/canonical-entitlement'
 import { PRICING } from '@/lib/pricing.config'
+import { createSupabaseAdminClient } from '@/lib/supabase-admin'
 
 export const runtime = 'nodejs'
 
@@ -35,8 +35,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     }
 
     const tier = requestedTier as keyof typeof PRICING
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey)
-    const entitlement = await getCanonicalEntitlement(supabaseAdmin, userId)
+    const entitlement = await getCanonicalEntitlement(createSupabaseAdminClient(), userId)
     if (entitlement.active && entitlement.tier === tier) {
       return NextResponse.json(
         { error: `You already have an active ${tier.toUpperCase()} subscription.` },

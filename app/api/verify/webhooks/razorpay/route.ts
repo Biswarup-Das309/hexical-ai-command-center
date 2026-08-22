@@ -1,10 +1,10 @@
 // app/api/webhooks/razorpay/route.ts
 import crypto from 'crypto'
 import { clerkClient } from '@clerk/nextjs/server'
-import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 import { log } from '@/lib/hexical/telemetry'
 import { PRICING } from '@/lib/pricing.config'
+import { createSupabaseAdminClient } from '@/lib/supabase-admin'
 
 interface RazorpayEntity {
   readonly id?: unknown
@@ -43,8 +43,6 @@ export async function POST(req: Request) {
     if (!RAZORPAY_WEBHOOK_SECRET) {
       throw new Error('FATAL: Missing Razorpay Webhook Secret.')
     }
-
-    const supabaseAdmin = createClient(NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
     const bodyText = await req.text()
     const signature = req.headers.get('x-razorpay-signature')
@@ -153,7 +151,7 @@ export async function POST(req: Request) {
     // 6. Atomic idempotency + asset injection via single RPC call.
     // The RPC function inside Supabase handles the tier, tokens, AND the
     // 30-day expiration in one transaction. This is the billing source of truth.
-    const { data: rpcResult, error: rpcError } = await supabaseAdmin.rpc('process_payment_webhook', {
+    const { data: rpcResult, error: rpcError } = await createSupabaseAdminClient().rpc('process_payment_webhook', {
       p_payment_id: paymentId,
       p_user_id: clerkUserId,
       p_order_id: orderId ?? null,
