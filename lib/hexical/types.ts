@@ -528,8 +528,6 @@ export const REQUIRED_ENV = [
   'OPENAI_MAIN_MODEL',
   'ANTHROPIC_MAIN_MODEL',
   'ANTHROPIC_SWARM_MODEL',
-  'UPSTASH_REDIS_REST_URL',
-  'UPSTASH_REDIS_REST_TOKEN',
 ] as const
 
 export function modelEnvKey(provider: Provider, slot: ModelSlot = 'main'): string {

@@ -1,23 +1,19 @@
 import 'server-only'
-import { createClient } from '@supabase/supabase-js'
-import { Redis } from '@upstash/redis'
+import { type SupabaseClient } from '@supabase/supabase-js'
 import { generateText } from 'ai'
 import { z } from 'zod'
 import { getLanguageModel } from './hexical/providers'
+import type { HexicalRuntimeStore } from './hexical/runtime-store'
 import { log } from './hexical/telemetry'
 import { PLAN_LIMITS } from './plans'
+import { createSupabaseRuntimeClient, SupabaseRuntimeStore } from './tty/supabase-runtime-store'
 
 /**
  * Fail loudly at import time, not at request time. This is exactly the
  * class of bug a silent env-var typo causes: the client silently gets
  * `undefined` and only breaks deep inside a request, as an unhelpful crash.
  */
-const REQUIRED_ENV = [
-  'NEXT_PUBLIC_SUPABASE_URL',
-  'SUPABASE_SERVICE_ROLE_KEY',
-  'UPSTASH_REDIS_REST_URL',
-  'UPSTASH_REDIS_REST_TOKEN',
-] as const
+const REQUIRED_ENV = ['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'] as const
 
 for (const key of REQUIRED_ENV) {
   const value = process.env[key]
@@ -27,12 +23,9 @@ for (const key of REQUIRED_ENV) {
   }
 }
 
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
-
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL!,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-})
+const runtimeClient = createSupabaseRuntimeClient()
+const supabase = runtimeClient as unknown as SupabaseClient
+const runtime: HexicalRuntimeStore = new SupabaseRuntimeStore(runtimeClient)
 
 type Tier = 'free' | 'go' | 'plus' | 'pro'
 type Model = 'groq' | 'openai' | 'anthropic' | 'deepseek'
@@ -291,17 +284,16 @@ async function releaseReservation(reservationId: string): Promise<void> {
 
 async function checkRateLimit(userId: string, tier: Tier, ip: string): Promise<{ allowed: boolean }> {
   const cfg = RATE_LIMITS[tier]
-  const bucket = Math.floor(Date.now() / (cfg.windowSecs * 1000))
+  const userKey = `hexical:legacy:rl:user:${tier}:${userId}`
+  const ipKey = `hexical:legacy:rl:ip:${tier}:${ip}`
 
-  const userKey = `rl:user:${userId}:${bucket}`
-  const ipKey = `rl:ip:${ip}:${bucket}`
-
-  const [userCount, ipCount] = await Promise.all([redis.incr(userKey), redis.incr(ipKey)])
-
-  await Promise.all([redis.expire(userKey, cfg.windowSecs * 2), redis.expire(ipKey, cfg.windowSecs * 2)])
+  const [userResult, ipResult] = await Promise.all([
+    runtime.rateLimit(userKey, cfg.maxReq, cfg.windowSecs),
+    runtime.rateLimit(ipKey, cfg.maxReq * 5, cfg.windowSecs),
+  ])
 
   return {
-    allowed: userCount <= cfg.maxReq && ipCount <= cfg.maxReq * 5,
+    allowed: userResult.allowed && ipResult.allowed,
   }
 }
 
@@ -332,12 +324,12 @@ function getModelCandidates(tier: Tier, totalInputChars: number): Model[] {
 }
 
 async function isModelOnCooldown(model: Model): Promise<boolean> {
-  const flagged = await redis.get(`model:cooldown:${model}`)
+  const flagged = await runtime.get(`model:cooldown:${model}`)
   return flagged !== null
 }
 
 async function markModelOnCooldown(model: Model): Promise<void> {
-  await redis.set(`model:cooldown:${model}`, '1', { ex: MODEL_COOLDOWN_TTL_SECS })
+  await runtime.set(`model:cooldown:${model}`, '1', { ex: MODEL_COOLDOWN_TTL_SECS })
 }
 
 interface ModelCallError extends Error {

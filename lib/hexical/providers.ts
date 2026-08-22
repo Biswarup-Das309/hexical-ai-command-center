@@ -14,11 +14,11 @@ import { createDeepSeek } from '@ai-sdk/deepseek'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { createGroq } from '@ai-sdk/groq'
 import { createOpenAI } from '@ai-sdk/openai'
-import type { Redis } from '@upstash/redis'
 import { generateText, streamText, generateObject, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { isProviderCircuitOpen, markProviderFailure, markProviderSuccess } from './limits'
 import { fallbackProviders } from './routing'
+import type { HexicalRuntimeStore } from './runtime-store'
 import { buildSingleSystemPrompt, INJECTION_GUARD } from './security'
 import { log } from './telemetry'
 import type { Provider, ModelRoute, ModelExecutionResult, Profile } from './types'
@@ -170,7 +170,7 @@ async function callProviderOnce(args: {
 }
 
 export async function executeSingleWithFallback(args: {
-  redis: Redis
+  runtime: HexicalRuntimeStore
   route: ModelRoute
   profile: Profile
   systemCtx: string
@@ -184,7 +184,7 @@ export async function executeSingleWithFallback(args: {
       trail.push(`${provider}: skipped, missing API key`)
       continue
     }
-    if (await isProviderCircuitOpen(args.redis, provider)) {
+    if (await isProviderCircuitOpen(args.runtime, provider)) {
       trail.push(`${provider}: skipped, circuit open`)
       continue
     }
@@ -200,10 +200,10 @@ export async function executeSingleWithFallback(args: {
         maxOutputTokens: args.route.maxOutputTokens,
         temperature: args.route.temperature,
       })
-      await markProviderSuccess(args.redis, provider)
+      await markProviderSuccess(args.runtime, provider)
       return { ...result, text: sanitizeOutput(result.text), fallbackTrail: trail }
     } catch (err) {
-      await markProviderFailure(args.redis, provider)
+      await markProviderFailure(args.runtime, provider)
       log.warn('provider_fallback', { provider, error: errorMessage(err) })
       const attempts = err instanceof ProviderCallError ? err.attempts : 1
       trail.push(`${provider}: failed after ${attempts} attempt(s)`)
@@ -415,7 +415,7 @@ export async function executeSwarm(args: {
 // retry-then-circuit-break treatment here as everywhere else in this file.
 // ---------------------------------------------------------------------------
 export async function extractStructuredFinding<T>(args: {
-  redis: Redis
+  runtime: HexicalRuntimeStore
   provider: Provider
   modelId: string
   system: string
@@ -423,7 +423,7 @@ export async function extractStructuredFinding<T>(args: {
   schema: z.ZodType<T>
   maxOutputTokens: number
 }): Promise<{ value: T; usage: { inputTokens: number; outputTokens: number } } | null> {
-  if (await isProviderCircuitOpen(args.redis, args.provider)) {
+  if (await isProviderCircuitOpen(args.runtime, args.provider)) {
     log.warn('structured_finding_skipped_circuit_open', { provider: args.provider })
     return null
   }
@@ -438,10 +438,10 @@ export async function extractStructuredFinding<T>(args: {
       maxOutputTokens: args.maxOutputTokens,
     })
 
-    await markProviderSuccess(args.redis, args.provider)
+    await markProviderSuccess(args.runtime, args.provider)
     return { value, usage }
   } catch (err) {
-    await markProviderFailure(args.redis, args.provider)
+    await markProviderFailure(args.runtime, args.provider)
     log.warn('structured_finding_extraction_failed', { provider: args.provider, error: errorMessage(err) })
     return null // caller must treat this as "no finding" — never fall back to a fabricated one
   }
@@ -451,7 +451,7 @@ export async function extractStructuredFinding<T>(args: {
  *  only pay for the full Red/Blue/Architect swarm if that pass's
  *  self-reported confidence doesn't clear the bar. */
 export async function executeRoute(args: {
-  redis: Redis
+  runtime: HexicalRuntimeStore
   profile: Profile
   route: ModelRoute
   systemCtx: string
@@ -464,7 +464,7 @@ export async function executeRoute(args: {
   }
 
   const firstPass = await executeSingleWithFallback({
-    redis: args.redis,
+    runtime: args.runtime,
     route: args.route,
     profile: args.profile,
     systemCtx: args.systemCtx,
@@ -486,7 +486,7 @@ export async function executeRoute(args: {
     return firstPass
   }
 
-  if (await isProviderCircuitOpen(args.redis, 'anthropic')) {
+  if (await isProviderCircuitOpen(args.runtime, 'anthropic')) {
     args.execSteps.push('Anthropic circuit is open; returning single-agent result without swarm expansion.')
     return firstPass
   }
@@ -508,7 +508,7 @@ export async function executeRoute(args: {
       userMessage: args.userMessage,
       maxOutputTokens: Math.max(args.route.maxOutputTokens, 1_500),
     })
-    await markProviderSuccess(args.redis, 'anthropic')
+    await markProviderSuccess(args.runtime, 'anthropic')
 
     return {
       ...swarmResult,
@@ -519,7 +519,7 @@ export async function executeRoute(args: {
       providerRetryCount: firstPass.providerRetryCount + swarmResult.providerRetryCount,
     }
   } catch (err) {
-    await markProviderFailure(args.redis, 'anthropic')
+    await markProviderFailure(args.runtime, 'anthropic')
     if (err instanceof SwarmParseError) throw err
     log.error('swarm_provider_failure', { error: errorMessage(err) })
     args.execSteps.push('Swarm provider unavailable; returning single-agent analysis.')
@@ -531,7 +531,7 @@ export async function executeRoute(args: {
 }
 
 async function runForcedSwarm(args: {
-  redis: Redis
+  runtime: HexicalRuntimeStore
   profile: Profile
   route: ModelRoute
   systemCtx: string
@@ -540,7 +540,7 @@ async function runForcedSwarm(args: {
   execSteps: string[]
 }): Promise<ModelExecutionResult> {
   try {
-    if (await isProviderCircuitOpen(args.redis, 'anthropic')) {
+    if (await isProviderCircuitOpen(args.runtime, 'anthropic')) {
       throw new Error('Anthropic circuit open before swarm execution.')
     }
     const swarmResult = await executeSwarm({
@@ -550,15 +550,15 @@ async function runForcedSwarm(args: {
       userMessage: args.userMessage,
       maxOutputTokens: args.route.maxOutputTokens,
     })
-    await markProviderSuccess(args.redis, 'anthropic')
+    await markProviderSuccess(args.runtime, 'anthropic')
     return swarmResult
   } catch (err) {
-    await markProviderFailure(args.redis, 'anthropic')
+    await markProviderFailure(args.runtime, 'anthropic')
     if (err instanceof SwarmParseError) throw err
     log.error('swarm_provider_failure', { error: errorMessage(err) })
     args.execSteps.push('Swarm provider unavailable; downgrading to single-agent analysis.')
     return executeSingleWithFallback({
-      redis: args.redis,
+      runtime: args.runtime,
       route: { ...args.route, mode: 'single' },
       profile: args.profile,
       systemCtx: args.systemCtx,

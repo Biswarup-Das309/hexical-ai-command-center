@@ -4,7 +4,7 @@
  * used for the per-request analytics event.
  */
 
-import type { Redis } from '@upstash/redis'
+import type { HexicalRuntimeStore } from './runtime-store'
 import type { Tier, ExecutionPayload, ModelRoute, ExecutionResponse, Provider } from './types'
 import {
   API_VERSION,
@@ -38,8 +38,11 @@ export function buildCacheKey(tier: Tier, payload: ExecutionPayload, route: Mode
   return `cache:hexical:${API_VERSION}:${sha256(canonical)}`
 }
 
-export async function readCachedResponse(redis: Redis, cacheKey: string): Promise<ExecutionResponse | null> {
-  const cached = await redis.get<string>(cacheKey)
+export async function readCachedResponse(
+  runtime: HexicalRuntimeStore,
+  cacheKey: string,
+): Promise<ExecutionResponse | null> {
+  const cached = await runtime.get<string>(cacheKey)
   if (!cached) return null
 
   try {
@@ -52,8 +55,12 @@ export async function readCachedResponse(redis: Redis, cacheKey: string): Promis
   }
 }
 
-export async function writeCachedResponse(redis: Redis, cacheKey: string, response: ExecutionResponse): Promise<void> {
-  await redis.set(cacheKey, JSON.stringify(response), { ex: CACHE_TTL_SECS })
+export async function writeCachedResponse(
+  runtime: HexicalRuntimeStore,
+  cacheKey: string,
+  response: ExecutionResponse,
+): Promise<void> {
+  await runtime.set(cacheKey, JSON.stringify(response), { ex: CACHE_TTL_SECS })
 }
 
 export function estimateCostPaise(provider: Provider, tokensIn: number, tokensOut: number): number {

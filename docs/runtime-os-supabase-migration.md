@@ -18,6 +18,11 @@ multi-key transitions into Postgres transactions. Lease claim, renewal,
 release, recovery, session caps, worker heartbeats, output deduplication,
 transcript deduplication, and queue admission are all serialized by the RPC.
 
+The Investigation message path is also Supabase-backed. Apply
+`supabase/migrations/20260822_hexical_investigation_supabase_runtime.sql`
+after the Runtime OS migration; it adds atomic rate-limit and budget RPCs for
+`/api/verify` and the legacy `/api/ai/chat` gateway.
+
 ## Environment
 
 The Vercel runtime and Linux worker require:
@@ -27,9 +32,8 @@ The Vercel runtime and Linux worker require:
 - `TTY_WORKER_AUTH_SECRET`
 
 The Runtime OS worker does not read or call `UPSTASH_REDIS_REST_URL` or
-`UPSTASH_REDIS_REST_TOKEN`. Those variables may remain temporarily for
-non-runtime legacy features during the migration window, but they are not a
-Runtime OS dependency.
+`UPSTASH_REDIS_REST_TOKEN`. The Investigation and legacy chat API paths do
+not read them either. They are no longer an application runtime dependency.
 
 ## Live paths
 

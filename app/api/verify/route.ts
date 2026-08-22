@@ -4,11 +4,11 @@
  * v5 rewrite, on top of the v4 cost-control layer:
  *  - Provider calls unified behind the Vercel AI SDK (generateText /
  *    streamText / generateObject) instead of five hand-rolled integrations.
- *  - Rate limiting and the 5h message quota moved to @upstash/ratelimit
- *    (atomic sliding windows) — fixes a race in the old "INCR then undo"
- *    counters.
+ *  - Rate limiting and the 5h message quota use atomic sliding windows in
+ *    Supabase/Postgres — fixes the race in the old "INCR then undo" counters
+ *    without depending on Redis.
  *  - Monthly token budget kept as a custom ledger (reserve now, true up
- *    after real usage is known) but made atomic via Lua scripts, since a
+ *    after real usage is known) but made atomic via Postgres functions, since a
  *    request-rate limiter has no notion of giving tokens back.
  *  - Monthly *cost* budget added alongside the token ledger: reserved and
  *    reconciled the same way, in paise, against MONTHLY_COST_BUDGET_PAISE.
@@ -46,8 +46,7 @@
  */
 import { randomUUID } from 'crypto'
 import { auth } from '@clerk/nextjs/server'
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
-import { Redis } from '@upstash/redis'
+import { type SupabaseClient } from '@supabase/supabase-js'
 import { NextResponse, after } from 'next/server'
 import { getCanonicalEntitlement } from '@/lib/canonical-entitlement'
 import { verifyAuthorization } from '@/lib/hexical/authorization'
@@ -83,6 +82,7 @@ import {
 } from '@/lib/hexical/providers'
 import { buildReconEvent, buildFingerprintEvent } from '@/lib/hexical/recon'
 import { chooseModelRoute, hasSensitiveCacheMarkers, fallbackProviders } from '@/lib/hexical/routing'
+import type { HexicalRuntimeStore } from '@/lib/hexical/runtime-store'
 import {
   buildPromptPayload,
   buildSafeSystemContext,
@@ -119,18 +119,11 @@ import {
   secondsUntilTomorrow,
   sanitizeLabel,
 } from '@/lib/hexical/util'
+import { createSupabaseRuntimeClient, SupabaseRuntimeStore } from '@/lib/tty/supabase-runtime-store'
 
 export const runtime = 'nodejs'
 
 const MAX_BODY_BYTES = 150_000
-
-function supabaseClient(): SupabaseClient {
-  return createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
-}
-
-function redisClient(): Redis {
-  return new Redis({ url: process.env.UPSTASH_REDIS_REST_URL!, token: process.env.UPSTASH_REDIS_REST_TOKEN! })
-}
 
 async function logUsage(supabase: SupabaseClient, event: UsageEvent): Promise<void> {
   const { error } = await supabase.from('usage_events').insert(event)
@@ -150,8 +143,12 @@ export async function POST(req: Request): Promise<NextResponse> {
     }
   }
 
-  const supabase = supabaseClient()
-  const redis = redisClient()
+  // Reuse the service-role client that also backs the runtime store. This
+  // keeps Investigation requests and Runtime OS on one Supabase connection
+  // and prevents a retired Redis client from being created on this path.
+  const runtimeClient = createSupabaseRuntimeClient()
+  const supabase = runtimeClient as unknown as SupabaseClient
+  const runtime: HexicalRuntimeStore = new SupabaseRuntimeStore(runtimeClient)
 
   const { userId } = await auth()
   if (!userId) {
@@ -198,7 +195,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   if (payload.requestNonce) {
-    const fresh = await consumeNonce(redis, userId, payload.requestNonce, NONCE_TTL_SECS)
+    const fresh = await consumeNonce(runtime, userId, payload.requestNonce, NONCE_TTL_SECS)
     if (!fresh) {
       return NextResponse.json(
         { error: 'Duplicate nonce detected. Replay attack rejected.', code: ERROR_CODES.REPLAY_REJECTED },
@@ -265,7 +262,7 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   // --- rate limit / message quota ---------------------------------------
   const clientIp = firstClientIp(req.headers)
-  const rl = await checkRateLimit(redis, userId, activeTier, clientIp)
+  const rl = await checkRateLimit(runtime, userId, activeTier, clientIp)
   if (!rl.allowed) {
     return NextResponse.json(
       { error: 'Rate limit exceeded. Please wait before retrying.', code: ERROR_CODES.RATE_LIMITED },
@@ -279,7 +276,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     )
   }
 
-  const messageQuota = await checkMessageQuota(redis, userId, activeTier)
+  const messageQuota = await checkMessageQuota(runtime, userId, activeTier)
   if (!messageQuota.allowed) {
     const resetMinutes = Math.max(1, Math.ceil(messageQuota.resetSeconds / 60))
     return NextResponse.json(
@@ -302,7 +299,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   // ---------------------------------------------------------------------------
   const authDecision = await verifyAuthorization({
     supabase,
-    redis,
+    redis: runtime,
     userId,
     profile: payload.profile,
     targetScope: payload.targetScope,
@@ -319,7 +316,7 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   // --- daily swarm cap (Pro only) ----------------------------------------
   if (FEATURE_FLAGS.swarmEnabled && activeTier === 'pro' && payload.profile === 'swarm') {
-    const swarmCap = await checkSwarmDailyLimit(redis, userId)
+    const swarmCap = await checkSwarmDailyLimit(runtime, userId)
     if (!swarmCap.allowed) {
       return NextResponse.json(
         { error: 'Daily Swarm quota exhausted. Resets at midnight UTC.', code: ERROR_CODES.SWARM_DAILY_LIMIT_EXCEEDED },
@@ -334,7 +331,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   // request. The former Redis-only queue returned job IDs without a worker or
   // status contract, which could strand paid work indefinitely.
 
-  const dailySpend = await readDailySpend(redis)
+  const dailySpend = await readDailySpend(runtime)
   const route = chooseModelRoute({ tier: activeTier, payload, promptLogic: promptPayload.promptLogic, dailySpend })
 
   const execSteps: string[] = [
@@ -369,11 +366,11 @@ export async function POST(req: Request): Promise<NextResponse> {
   const cacheKey = cacheable ? buildCacheKey(activeTier, payload, route, promptPayload.promptLogic) : ''
 
   if (cacheKey) {
-    const cached = await readCachedResponse(redis, cacheKey)
+    const cached = await readCachedResponse(runtime, cacheKey)
     if (cached) {
       return respondFromCache({
         supabase,
-        redis,
+        runtime,
         cached,
         cacheKey,
         rl,
@@ -404,7 +401,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   const estimatedOutputTokens = route.maxOutputTokens * providerCallsReserved
   const estimatedTokens = estimatedInputTokens + estimatedOutputTokens
 
-  const reservation = await reserveMonthlyTokens(redis, userId, activeTier, estimatedTokens)
+  const reservation = await reserveMonthlyTokens(runtime, userId, activeTier, estimatedTokens)
   if (!reservation.allowed) {
     return NextResponse.json(
       {
@@ -421,10 +418,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   // the token budget is blind to the 5-17x price gap between input and
   // output tokens across providers, this isn't.
   const estimatedPaise = estimateCostPaise(route.provider, estimatedInputTokens, estimatedOutputTokens)
-  const costReservation = await reserveMonthlyCost(redis, userId, activeTier, estimatedPaise)
+  const costReservation = await reserveMonthlyCost(runtime, userId, activeTier, estimatedPaise)
   if (!costReservation.allowed) {
     // nothing was spent — hand back the token reservation we just took
-    await reconcileMonthlyTokens(redis, userId, activeTier, reservation.reservedTokens, 0)
+    await reconcileMonthlyTokens(runtime, userId, activeTier, reservation.reservedTokens, 0)
     return NextResponse.json(
       {
         error: 'Monthly cost budget exceeded.',
@@ -447,9 +444,9 @@ export async function POST(req: Request): Promise<NextResponse> {
     const candidate = fallbackProviders(route.provider, dailySpend.forceCheapModels).find(
       (p) => providerAvailable(p) === true,
     )
-    if (candidate && !(await isProviderCircuitOpen(redis, candidate))) {
+    if (candidate && !(await isProviderCircuitOpen(runtime, candidate))) {
       return streamSingleResponse({
-        redis,
+        runtime,
         supabase,
         provider: candidate,
         modelId: candidate === route.provider ? route.model : route.model,
@@ -484,7 +481,7 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   try {
     result = await executeRoute({
-      redis,
+      runtime,
       profile: payload.profile,
       route,
       systemCtx,
@@ -493,8 +490,8 @@ export async function POST(req: Request): Promise<NextResponse> {
       execSteps,
     })
   } catch (err) {
-    await reconcileMonthlyTokens(redis, userId, activeTier, reservation.reservedTokens, 0)
-    await reconcileMonthlyCost(redis, userId, activeTier, costReservation.reservedPaise, 0)
+    await reconcileMonthlyTokens(runtime, userId, activeTier, reservation.reservedTokens, 0)
+    await reconcileMonthlyCost(runtime, userId, activeTier, costReservation.reservedPaise, 0)
 
     if (err instanceof SwarmParseError) {
       log.error('swarm_parse_failure', { error: err.message })
@@ -517,7 +514,7 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const totalTokens = result.tokensIn + result.tokensOut
   const monthlyTokenRemaining = await reconcileMonthlyTokens(
-    redis,
+    runtime,
     userId,
     activeTier,
     reservation.reservedTokens,
@@ -525,13 +522,13 @@ export async function POST(req: Request): Promise<NextResponse> {
   )
   const costPaise = estimateCostPaise(result.provider, result.tokensIn, result.tokensOut)
   const monthlyCostRemaining = await reconcileMonthlyCost(
-    redis,
+    runtime,
     userId,
     activeTier,
     costReservation.reservedPaise,
     costPaise,
   )
-  const dailyAfterSpend = await recordDailySpend(redis, costPaise)
+  const dailyAfterSpend = await recordDailySpend(runtime, costPaise)
   const revenuePaise = allocatedRevenuePaise(activeTier, totalTokens)
   const profitPaise = revenuePaise - costPaise
   const latencyMs = Date.now() - startedAt
@@ -568,19 +565,19 @@ export async function POST(req: Request): Promise<NextResponse> {
     const findingInputTokens = estimateRequestTokens('', `${userMsg}\n${result.text}`)
     const findingOutputTokens = 500 // bumped slightly to leave room for the sources array
     const findingReservation = await reserveMonthlyTokens(
-      redis,
+      runtime,
       userId,
       activeTier,
       findingInputTokens + findingOutputTokens,
     )
     const findingPaiseEstimate = estimateCostPaise(result.provider, findingInputTokens, findingOutputTokens)
     const findingCostReservation = findingReservation.allowed
-      ? await reserveMonthlyCost(redis, userId, activeTier, findingPaiseEstimate)
+      ? await reserveMonthlyCost(runtime, userId, activeTier, findingPaiseEstimate)
       : { allowed: false as const, reservedPaise: 0 }
 
     if (findingReservation.allowed && findingCostReservation.allowed) {
       const finding = await extractStructuredFinding({
-        redis,
+        runtime,
         provider: result.provider,
         modelId: result.model,
         system:
@@ -602,14 +599,14 @@ export async function POST(req: Request): Promise<NextResponse> {
       if (finding) {
         structuredFinding = finding.value
         await reconcileMonthlyTokens(
-          redis,
+          runtime,
           userId,
           activeTier,
           findingReservation.reservedTokens,
           finding.usage.inputTokens + finding.usage.outputTokens,
         )
         await reconcileMonthlyCost(
-          redis,
+          runtime,
           userId,
           activeTier,
           findingCostReservation.reservedPaise,
@@ -620,11 +617,11 @@ export async function POST(req: Request): Promise<NextResponse> {
         // the circuit breaker if warranted — route.ts's only remaining job
         // is to give back the reservation it took for a call that never
         // produced billable usage.
-        await reconcileMonthlyTokens(redis, userId, activeTier, findingReservation.reservedTokens, 0)
-        await reconcileMonthlyCost(redis, userId, activeTier, findingCostReservation.reservedPaise, 0)
+        await reconcileMonthlyTokens(runtime, userId, activeTier, findingReservation.reservedTokens, 0)
+        await reconcileMonthlyCost(runtime, userId, activeTier, findingCostReservation.reservedPaise, 0)
       }
     } else if (findingReservation.allowed) {
-      await reconcileMonthlyTokens(redis, userId, activeTier, findingReservation.reservedTokens, 0)
+      await reconcileMonthlyTokens(runtime, userId, activeTier, findingReservation.reservedTokens, 0)
     }
   }
 
@@ -712,7 +709,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     authorization_scope_id: authDecision.scopeId,
   })
 
-  if (cacheKey) void writeCachedResponse(redis, cacheKey, response)
+  if (cacheKey) void writeCachedResponse(runtime, cacheKey, response)
 
   return NextResponse.json(response, {
     headers: jsonHeaders({
@@ -731,7 +728,7 @@ export async function POST(req: Request): Promise<NextResponse> {
 
 async function respondFromCache(args: {
   supabase: SupabaseClient
-  redis: Redis
+  runtime: HexicalRuntimeStore
   cached: ExecutionResponse
   cacheKey: string
   rl: { remaining: number }
@@ -741,10 +738,10 @@ async function respondFromCache(args: {
   startedAt: number
   userId: string
 }): Promise<NextResponse> {
-  const { supabase, redis, cached, cacheKey, rl, messageQuota, activeTier, payload, startedAt, userId } = args
+  const { supabase, runtime, cached, cacheKey, rl, messageQuota, activeTier, payload, startedAt, userId } = args
   const latencyMs = Date.now() - startedAt
-  const monthlyUsed = await readMonthlyTokenUsage(redis, userId, activeTier)
-  const dailyAfterCache = await readDailySpend(redis)
+  const monthlyUsed = await readMonthlyTokenUsage(runtime, userId, activeTier)
+  const dailyAfterCache = await readDailySpend(runtime)
 
   const metrics: ResponseMetrics = {
     ...cached.metrics,
@@ -814,7 +811,7 @@ function sseFrame(event: string, data: unknown): Uint8Array {
 }
 
 function streamSingleResponse(args: {
-  redis: Redis
+  runtime: HexicalRuntimeStore
   supabase: SupabaseClient
   provider: Parameters<typeof streamProvider>[0]['provider']
   modelId: string
@@ -834,7 +831,7 @@ function streamSingleResponse(args: {
   cacheKey: string
 }): NextResponse {
   const {
-    redis,
+    runtime,
     supabase,
     provider,
     modelId,
@@ -881,11 +878,11 @@ function streamSingleResponse(args: {
     try {
       const [usage, text] = await Promise.all([run.result.usage, run.result.text])
       const totalTokens = usage.inputTokens + usage.outputTokens
-      await reconcileMonthlyTokens(redis, userId, activeTier, reservedTokens, totalTokens)
+      await reconcileMonthlyTokens(runtime, userId, activeTier, reservedTokens, totalTokens)
       const costPaise = estimateCostPaise(provider, usage.inputTokens, usage.outputTokens)
-      await reconcileMonthlyCost(redis, userId, activeTier, reservedCostPaise, costPaise)
-      await recordDailySpend(redis, costPaise)
-      await markProviderSuccess(redis, provider)
+      await reconcileMonthlyCost(runtime, userId, activeTier, reservedCostPaise, costPaise)
+      await recordDailySpend(runtime, costPaise)
+      await markProviderSuccess(runtime, provider)
 
       await logUsage(supabase, {
         user_id: userId,
@@ -943,15 +940,15 @@ function streamSingleResponse(args: {
             authorizationExpiresInHours: args.authExpiresInHours,
           },
         }
-        await writeCachedResponse(redis, args.cacheKey, response)
+        await writeCachedResponse(runtime, args.cacheKey, response)
       }
     } catch (err) {
-      await markProviderFailure(redis, provider)
+      await markProviderFailure(runtime, provider)
       log.error('stream_reconcile_failed', { error: err instanceof Error ? err.message : String(err) })
       // Best-effort: give back the full reservation so a failed stream
       // doesn't silently eat into the user's monthly budget.
-      await reconcileMonthlyTokens(redis, userId, activeTier, reservedTokens, 0)
-      await reconcileMonthlyCost(redis, userId, activeTier, reservedCostPaise, 0)
+      await reconcileMonthlyTokens(runtime, userId, activeTier, reservedTokens, 0)
+      await reconcileMonthlyCost(runtime, userId, activeTier, reservedCostPaise, 0)
     }
   })
 

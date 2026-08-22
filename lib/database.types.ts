@@ -213,6 +213,24 @@ export type Database = {
         Args: { p_operation: string; p_keys: string[]; p_args: string[] }
         Returns: Json
       }
+      hexical_investigation_rate_limit: {
+        Args: {
+          p_key: string
+          p_capacity: number
+          p_window_seconds: number
+          p_now_ms: number
+          p_member: string
+        }
+        Returns: Json
+      }
+      hexical_investigation_reserve_budget: {
+        Args: { p_key: string; p_amount: number; p_cap: number; p_ttl_seconds: number }
+        Returns: Json
+      }
+      hexical_investigation_reconcile_budget: {
+        Args: { p_key: string; p_delta: number }
+        Returns: number
+      }
     }
     Enums: Record<string, never>
     CompositeTypes: Record<string, never>

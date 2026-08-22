@@ -1,5 +1,6 @@
 import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/lib/database.types'
+import type { RuntimeWindowResult } from '@/lib/hexical/runtime-store'
 import {
   toRuntimeJson,
   type TTYRuntimeSetOptions,
@@ -123,6 +124,10 @@ export class SupabaseRuntimeStore implements TTYRuntimeStore {
 
   async incr(key: string): Promise<number> {
     return this.increment(key, 1)
+  }
+
+  async incrby(key: string, delta: number): Promise<number> {
+    return this.increment(key, Math.trunc(delta))
   }
 
   async decr(key: string): Promise<number> {
@@ -310,6 +315,51 @@ export class SupabaseRuntimeStore implements TTYRuntimeStore {
     })
     if (error) throw error
     return data as T
+  }
+
+  /**
+   * Atomic fixed/sliding-window admission for the Investigation API. The
+   * Postgres function owns the row lock and expiry cleanup; the application
+   * only receives the decision and counters it needs for response headers.
+   */
+  async rateLimit(key: string, capacity: number, windowSecs: number): Promise<RuntimeWindowResult> {
+    const { data, error } = await this.client.rpc('hexical_investigation_rate_limit', {
+      p_key: key,
+      p_capacity: Math.max(1, Math.floor(capacity)),
+      p_window_seconds: Math.max(1, Math.floor(windowSecs)),
+      p_now_ms: Date.now(),
+      p_member: crypto.randomUUID(),
+    })
+    if (error) throw error
+    const result = Array.isArray(data) ? data : []
+    return {
+      allowed: result[0] === true,
+      remaining: asNumber(result[1]),
+      resetMs: asNumber(result[2], Date.now() + Math.max(1, windowSecs) * 1_000),
+    }
+  }
+
+  /** Atomic reserve against a capped numeric budget. */
+  async reserveBudget(key: string, amount: number, cap: number, ttlSecs: number): Promise<[number, number, number]> {
+    const { data, error } = await this.client.rpc('hexical_investigation_reserve_budget', {
+      p_key: key,
+      p_amount: Math.max(1, Math.ceil(amount)),
+      p_cap: Math.max(0, Math.floor(cap)),
+      p_ttl_seconds: Math.max(1, Math.floor(ttlSecs)),
+    })
+    if (error) throw error
+    const result = Array.isArray(data) ? data : []
+    return [asNumber(result[0]), asNumber(result[1]), asNumber(result[2])]
+  }
+
+  /** Atomic reconciliation against a previously reserved budget. */
+  async reconcileBudget(key: string, delta: number): Promise<number> {
+    const { data, error } = await this.client.rpc('hexical_investigation_reconcile_budget', {
+      p_key: key,
+      p_delta: Math.trunc(delta),
+    })
+    if (error) throw error
+    return asNumber(data)
   }
 
   async ping(): Promise<string> {
