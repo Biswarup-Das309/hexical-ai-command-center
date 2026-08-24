@@ -205,6 +205,10 @@ export type Database = {
         Args: { p_key: string; p_ttl_seconds: number }
         Returns: number
       }
+      hexical_runtime_add_set_members: {
+        Args: { p_key: string; p_members: string[] }
+        Returns: number
+      }
       hexical_runtime_append_stream: {
         Args: { p_stream_key: string; p_fields: Json }
         Returns: string

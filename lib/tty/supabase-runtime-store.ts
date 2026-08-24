@@ -11,6 +11,7 @@ import {
 
 const GLOBAL_BROADCAST_CHANNELS_KEY = '__hexical_runtime_supabase_broadcast_channels__'
 const MAX_STREAM_READ = 10_000
+const MAX_SORTED_READ = 100_000
 
 type RuntimeClient = SupabaseClient<Database>
 type RuntimeStreamRow = Database['public']['Tables']['hexical_runtime_stream_entries']['Row']
@@ -134,20 +135,12 @@ export class SupabaseRuntimeStore implements TTYRuntimeStore {
 
   async sadd(key: string, ...members: string[]): Promise<number> {
     if (members.length === 0) return 0
-    const rows = members.map((member) => ({ key, member }))
-    const { data: existing, error: existingError } = await this.client
-      .from('hexical_runtime_set_members')
-      .select('member')
-      .eq('key', key)
-      .in('member', members)
-    if (existingError) throw existingError
-    const existingMembers = new Set((existing ?? []).map((row) => row.member))
-    const inserts = rows.filter((row) => !existingMembers.has(row.member))
-    if (inserts.length > 0) {
-      const { error } = await this.client.from('hexical_runtime_set_members').insert(inserts)
-      if (error) throw error
-    }
-    return inserts.length
+    const { data, error } = await this.client.rpc('hexical_runtime_add_set_members', {
+      p_key: key,
+      p_members: members,
+    })
+    if (error) throw error
+    return asNumber(data)
   }
 
   async smembers(key: string): Promise<string[]> {
@@ -190,21 +183,39 @@ export class SupabaseRuntimeStore implements TTYRuntimeStore {
     max: number,
     options: { readonly rev?: boolean; readonly offset?: number; readonly count?: number } = {},
   ): Promise<T> {
+    const offset = Math.max(0, Math.trunc(options.offset ?? 0))
+    const requestedCount = Math.min(
+      MAX_SORTED_READ,
+      options.count === undefined ? MAX_SORTED_READ : Math.max(0, Math.trunc(options.count)),
+    )
+    if (requestedCount === 0) return [] as T
+
+    const needsTotal = min < 0 || max < 0
+    let total: number | null = null
+    if (needsTotal) {
+      const { count, error } = await this.client
+        .from('hexical_runtime_sorted_members')
+        .select('member', { count: 'exact', head: true })
+        .eq('key', key)
+      if (error) throw error
+      total = count ?? 0
+    }
+
+    const start = Math.max(0, min < 0 ? (total ?? 0) + Math.trunc(min) : Math.trunc(min))
+    const end = max < 0 ? (total ?? 0) + Math.trunc(max) : Math.trunc(max)
+    const first = start + offset
+    const last = Math.min(end, first + requestedCount - 1)
+    if (first > last || end < start) return [] as T
+
     const { data, error } = await this.client
       .from('hexical_runtime_sorted_members')
       .select('member,score')
       .eq('key', key)
       .order('score', { ascending: options.rev !== true })
       .order('member', { ascending: options.rev !== true })
+      .range(first, last)
     if (error) throw error
-    const offset = Math.max(0, options.offset ?? 0)
-    const requestedCount = options.count === undefined ? undefined : Math.max(0, options.count)
-    const rowCount = data?.length ?? 0
-    const start = min < 0 ? Math.max(0, rowCount + min) : min
-    const end = max < 0 ? rowCount : max + 1
-    const selected = (data ?? []).slice(start, end)
-    const window = selected.slice(offset, requestedCount === undefined ? undefined : offset + requestedCount)
-    return window.map((row) => row.member) as T
+    return (data ?? []).map((row) => row.member) as T
   }
 
   async zrem(key: string, ...members: string[]): Promise<number> {
@@ -260,12 +271,12 @@ export class SupabaseRuntimeStore implements TTYRuntimeStore {
     if (start.startsWith('(')) query = query.gt('stream_sequence', startSequence)
     else if (start !== '-') query = query.gte('stream_sequence', startSequence)
     if (end !== '+') query = query.lte('stream_sequence', endSequence)
+    // Apply expiry before LIMIT. Filtering expired rows after LIMIT can hide
+    // newer live events behind a stale prefix and create replay gaps.
+    query = query.or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
     const { data, error } = await query
     if (error) throw error
-    const now = Date.now()
-    return (data ?? [])
-      .filter((row) => row.expires_at === null || Date.parse(row.expires_at) > now)
-      .map((row) => [row.stream_id, row.fields]) as T
+    return (data ?? []).map((row) => [row.stream_id, row.fields]) as T
   }
 
   async xtrim(
