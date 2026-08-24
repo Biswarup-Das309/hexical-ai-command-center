@@ -1,7 +1,7 @@
 import { type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/lib/database.types'
 import type { RuntimeWindowResult } from '@/lib/hexical/runtime-store'
-import { createSupabaseAdminClient } from '@/lib/supabase-admin'
+import { createSupabaseAdminClient } from '@/lib/supabase-admin-runtime'
 import {
   toRuntimeJson,
   type TTYRuntimeSetOptions,

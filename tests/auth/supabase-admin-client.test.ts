@@ -5,10 +5,13 @@ import { test } from 'node:test'
 
 test('server Supabase admin clients are centralized and sessionless', async () => {
   const source = await readFile(resolve(process.cwd(), 'lib/supabase-admin.ts'), 'utf8')
-  assert.match(source, /GLOBAL_ADMIN_CLIENT_KEY/)
-  assert.match(source, /persistSession: false/)
-  assert.match(source, /autoRefreshToken: false/)
-  assert.match(source, /storageKey: 'hexical-server-admin'/)
+  const implementation = await readFile(resolve(process.cwd(), 'lib/supabase-admin-runtime.ts'), 'utf8')
+  assert.match(source, /import ['"]server-only['"]|from ['"]server-only['"]/)
+  assert.match(source, /supabase-admin-runtime/)
+  assert.match(implementation, /GLOBAL_ADMIN_CLIENT_KEY/)
+  assert.match(implementation, /persistSession: false/)
+  assert.match(implementation, /autoRefreshToken: false/)
+  assert.match(implementation, /storageKey: 'hexical-server-admin'/)
 })
 
 test('server service-role call sites use the shared admin client boundary', async () => {
@@ -25,6 +28,6 @@ test('server service-role call sites use the shared admin client boundary', asyn
   for (const file of files) {
     const source = await readFile(resolve(process.cwd(), file), 'utf8')
     assert.doesNotMatch(source, /createClient\(/, file)
-    assert.match(source, /createSupabaseAdminClient|createSupabaseRuntimeClient/, file)
+    assert.match(source, /createSupabaseAdminClient|createSupabaseRuntimeClient|supabase-admin-runtime/, file)
   }
 })
