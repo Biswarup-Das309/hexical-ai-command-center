@@ -1,3 +1,4 @@
+import { isTTYExecutionState, type TTYExecutionState } from './tty-execution-state'
 import { parseTTYStreamEvent, type TTYStreamEvent } from './tty-stream-types'
 
 export type TTYStreamClientConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'completed' | 'error'
@@ -38,6 +39,35 @@ export function isTTYStreamTerminal(event: TTYStreamEvent): boolean {
     event.type === 'completion' &&
     ['succeeded', 'failed', 'cancelled', 'timed_out', 'expired'].includes(event.payload.state)
   )
+}
+
+/**
+ * Returns the authoritative execution state already received by the browser.
+ * The durable workspace snapshot can lag behind the live execution stream;
+ * Runtime OS surfaces must project this value immediately without waiting for
+ * a refresh.
+ */
+export function latestTTYStreamExecutionState(events: readonly TTYStreamEvent[]): TTYExecutionState | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event?.type === 'completion' && isTTYExecutionState(event.payload.state)) return event.payload.state
+    if (event?.type === 'state' && isTTYExecutionState(event.payload.state)) return event.payload.state
+  }
+  return null
+}
+
+/**
+ * Overlays a live stream state on the server-provided execution history. This
+ * keeps the history card and status panels consistent while the durable
+ * investigation snapshot catches up asynchronously.
+ */
+export function projectTTYExecutionHistoryState<T extends { readonly executionId: string; readonly state: string }>(
+  entries: readonly T[],
+  executionId: string | null | undefined,
+  state: TTYExecutionState | null,
+): readonly T[] {
+  if (!executionId || !state) return entries
+  return entries.map((entry) => (entry.executionId === executionId ? { ...entry, state } : entry))
 }
 
 /**

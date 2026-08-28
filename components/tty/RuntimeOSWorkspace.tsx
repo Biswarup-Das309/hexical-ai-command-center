@@ -7,6 +7,7 @@ import { useTTYSessionTranscript } from '@/hooks/useTTYSessionTranscript'
 import { recordTTYBrowserOutputLatency } from '@/lib/tty/tty-browser-latency'
 import type { TTYExecutionState } from '@/lib/tty/tty-execution-state'
 import type { TTYSessionTranscriptEvent } from '@/lib/tty/tty-session-transcript'
+import { latestTTYStreamExecutionState, projectTTYExecutionHistoryState } from '@/lib/tty/tty-stream-client'
 import { ExecutionHistory, type TTYExecutionHistoryEntry } from './ExecutionHistory'
 import { ExecutionResourceMonitor } from './ExecutionResourceMonitor'
 import { ExecutionTimeline } from './ExecutionTimeline'
@@ -200,6 +201,15 @@ export function RuntimeOSWorkspace({
     }
     return metrics
   }, [executionStream.events])
+  const liveExecutionState = useMemo(
+    () => latestTTYStreamExecutionState(executionStream.events),
+    [executionStream.events],
+  )
+  const displayedExecutionState = liveExecutionState ?? activeExecutionState
+  const displayedExecutions = useMemo(
+    () => projectTTYExecutionHistoryState(executions, observedExecutionId, liveExecutionState),
+    [executions, liveExecutionState, observedExecutionId],
+  )
 
   useEffect(() => {
     if (!sessionId) return
@@ -527,7 +537,7 @@ export function RuntimeOSWorkspace({
               <div className="flex justify-between gap-2">
                 <dt className="text-zinc-600">execution</dt>
                 <dd className="text-zinc-300">
-                  {activeTabIsPrimary ? activeExecutionState ?? 'idle' : lastTabExecutionId ?? 'idle'}
+                  {activeTabIsPrimary ? displayedExecutionState ?? 'idle' : lastTabExecutionId ?? 'idle'}
                 </dd>
               </div>
               <div className="flex justify-between gap-2">
@@ -545,11 +555,11 @@ export function RuntimeOSWorkspace({
           <ExecutionResourceMonitor metrics={executionMetrics} />
           <ExecutionTimeline
             events={executionStream.events}
-            currentState={activeTabIsPrimary ? activeExecutionState : null}
+            currentState={activeTabIsPrimary ? displayedExecutionState : null}
             className="max-h-72 overflow-y-auto"
           />
           <ExecutionHistory
-            entries={executions}
+            entries={displayedExecutions}
             selectedExecutionId={selectedExecutionId ?? undefined}
             onSelect={onSelectExecution}
             className="max-h-72 overflow-y-auto"
@@ -578,8 +588,8 @@ export function RuntimeOSWorkspace({
             <p className="font-mono text-[10px] text-zinc-600">last admitted: {lastSubmittedInput}</p>
           )}
           {activeTabIsPrimary &&
-            activeExecutionState &&
-            !['succeeded', 'failed', 'cancelled', 'timed_out', 'expired'].includes(activeExecutionState) && (
+            displayedExecutionState &&
+            !['succeeded', 'failed', 'cancelled', 'timed_out', 'expired'].includes(displayedExecutionState) && (
               <button
                 type="button"
                 onClick={() => void onCancel()}

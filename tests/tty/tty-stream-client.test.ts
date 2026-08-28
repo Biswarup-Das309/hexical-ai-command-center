@@ -4,7 +4,9 @@ import {
   appendTTYStreamEvents,
   buildTTYStreamUrl,
   hasTTYStreamSequenceGap,
+  latestTTYStreamExecutionState,
   parseTTYStreamMessage,
+  projectTTYExecutionHistoryState,
   requiresTTYDurableRecovery,
 } from '@/lib/tty/tty-stream-client'
 import { createTTYStreamEvent } from '@/lib/tty/tty-stream-types'
@@ -87,4 +89,46 @@ test('client requires durable recovery for an unavailable or gapped live broker'
   assert.equal(requiresTTYDurableRecovery(gap), true)
   assert.equal(requiresTTYDurableRecovery(unavailable), true)
   assert.equal(requiresTTYDurableRecovery(ordinary), false)
+})
+
+test('live execution state projects completion into history without a refresh', () => {
+  const queued = createTTYStreamEvent({
+    executionId,
+    sessionId,
+    sequence: 1,
+    timestamp: '2026-08-11T00:00:00.000Z',
+    type: 'state',
+    payload: { state: 'queued' },
+  })
+  const running = createTTYStreamEvent({
+    executionId,
+    sessionId,
+    sequence: 2,
+    timestamp: '2026-08-11T00:00:01.000Z',
+    type: 'state',
+    payload: { state: 'running' },
+  })
+  const completed = createTTYStreamEvent({
+    executionId,
+    sessionId,
+    sequence: 3,
+    timestamp: '2026-08-11T00:00:02.000Z',
+    type: 'completion',
+    payload: { state: 'succeeded', exitCode: 0, signal: null, failureCode: null },
+  })
+
+  assert.equal(latestTTYStreamExecutionState([queued]), 'queued')
+  assert.equal(latestTTYStreamExecutionState([queued, running]), 'running')
+  const history = projectTTYExecutionHistoryState(
+    [
+      { executionId: 'execution-1', state: 'starting' },
+      { executionId: 'execution-2', state: 'running' },
+    ],
+    'execution-1',
+    latestTTYStreamExecutionState([queued, running, completed]),
+  )
+  assert.deepEqual(history, [
+    { executionId: 'execution-1', state: 'succeeded' },
+    { executionId: 'execution-2', state: 'running' },
+  ])
 })

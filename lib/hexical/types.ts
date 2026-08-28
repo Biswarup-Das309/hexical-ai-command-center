@@ -491,6 +491,9 @@ export const FEATURE_FLAGS = {
   swarmEnabled: readBooleanEnv('SWARM_ENABLED', true),
   cacheEnabled: readBooleanEnv('CACHE_ENABLED', true),
   cheapMode: readBooleanEnv('CHEAP_MODE', false),
+  // Soft company-wide guard: once the daily spend threshold is reached,
+  // routing is constrained to cheaper providers. Per-user monthly token and
+  // cost budgets remain the hard fail-closed ceilings.
   dailySpendGuard: readBooleanEnv('DAILY_SPEND_GUARD', true),
   autoFallback: readBooleanEnv('AUTO_FALLBACK', true),
   streamingEnabled: readBooleanEnv('STREAMING_ENABLED', true),

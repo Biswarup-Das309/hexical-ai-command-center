@@ -251,7 +251,10 @@ export async function reconcileMonthlyCost(
   return Math.max(0, MONTHLY_COST_BUDGET_PAISE[tier] - usedPaise)
 }
 
-// --- daily spend guard (company-wide circuit breaker, not per-user) ------
+// --- daily spend guard (company-wide soft guard, not per-user) ------------
+// This policy deliberately constrains routing to cheaper providers instead of
+// rejecting requests. The per-user monthly token and cost ledgers are the
+// hard, fail-closed ceilings. Keep this distinction explicit at call sites.
 
 export async function readDailySpend(runtime: HexicalRuntimeStore): Promise<DailySpendState> {
   const budgetPaise = getDailyBudgetPaise()
