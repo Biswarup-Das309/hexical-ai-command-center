@@ -16,6 +16,8 @@ test('persistent shell protocol preserves literal argv and frames split PTY outp
   assert.equal(command.includes('eval'), false)
   assert.match(command, /printf '%s%s\\n' 'HEXICAL_RUNTIME_FRAME' ';START;/)
   assert.match(command, /printf '%s%s;%s\\n' 'HEXICAL_RUNTIME_FRAME' ';END;/)
+  assert.equal(command.startsWith('\n'), true)
+  assert.match(command, /^\n__hexical_errexit=0;/)
 
   const decoder = new TTYPersistentExecutionProtocolDecoder()
   const first = decoder.push(`shell echo\r\n\u001b]9;HEXICAL;START;${token.slice(0, 12)}`)
@@ -32,6 +34,12 @@ test('persistent shell protocol preserves literal argv and frames split PTY outp
     { type: 'completed', token, exitCode: 7, raw: `\u001b]9;HEXICAL;END;${token};7\u0007` },
     { type: 'output', text: 'prompt$ ' },
   ])
+})
+
+test('persistent shell protocol flushes a pending PTY carriage return before the errexit guard', () => {
+  const command = serializeTTYPersistentShellExecution({ token, argv: ['echo', 'safe-boundary'] })
+  assert.equal(command[0], '\n')
+  assert.equal(command.includes('\r__hexical_errexit=0'), false)
 })
 
 test('persistent shell protocol decodes printable token-boundary frames', () => {

@@ -518,3 +518,65 @@ test('investigation session ensure replaces a remotely terminated attached sessi
   assert.equal((await read(rebound)).sessionId, replacementId)
   assert.equal((await store.get(OWNER, investigationId as never))?.investigation.ttySessionId, replacementId)
 })
+
+test('investigation session ensure replaces an active durable row whose runtime lease is gone', async () => {
+  const store = new InvestigationStore(new FakeInvestigationRedis())
+  const created = await store.create(OWNER, { title: 'Runtime lease recovery', description: '' })
+  const investigationId = created.investigationId
+  const replacementId = '00000000-0000-4000-8000-000000000916'
+  let sessionCreates = 0
+  const sessionApi = createInvestigationSessionApi({
+    authenticate: async () => OWNER,
+    getStore: () => store,
+    createTTYSession: async () => {
+      sessionCreates += 1
+      return new Response(JSON.stringify({ ok: true, session: { sessionId: replacementId, status: 'active' } }), {
+        status: 201,
+      })
+    },
+    getTTYSession: async () =>
+      new Response(JSON.stringify({ ok: true, session: { sessionId: SESSION_ID, status: 'active' } }), {
+        status: 200,
+      }),
+    isTTYSessionUsable: async () => false,
+    terminateTTYSession: async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
+  })
+
+  await store.attachSession(OWNER, investigationId, SESSION_ID)
+  const rebound = await sessionApi.ensure(
+    request('POST', `/api/investigations/${investigationId}/session`),
+    investigationId,
+  )
+  assert.equal(rebound.status, 201)
+  assert.equal(sessionCreates, 1)
+  assert.equal((await read(rebound)).sessionId, replacementId)
+  assert.equal((await store.get(OWNER, investigationId))?.investigation.ttySessionId, replacementId)
+})
+
+test('investigation hydration returns durable state when execution reconciliation exceeds its request budget', async () => {
+  const store = new InvestigationStore(new FakeInvestigationRedis())
+  const created = await store.create(OWNER, { title: 'Bounded hydration', description: '' })
+  let releaseSync!: () => void
+  let syncFinished = false
+  const synchronize = new Promise<void>((resolve) => {
+    releaseSync = () => {
+      syncFinished = true
+      resolve()
+    }
+  })
+  const api = createInvestigationApi({
+    authenticate: async () => OWNER,
+    getStore: () => store,
+    synchronize: async () => synchronize,
+    synchronizeBudgetMs: 5,
+  })
+
+  const response = await api.get(
+    request('GET', `/api/investigations/${created.investigationId}`),
+    created.investigationId,
+  )
+  assert.equal(response.status, 200)
+  assert.equal(syncFinished, false)
+  releaseSync()
+  await synchronize
+})

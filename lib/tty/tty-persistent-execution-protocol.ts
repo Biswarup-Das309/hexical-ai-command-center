@@ -58,7 +58,13 @@ export function serializeTTYPersistentShellExecution(input: {
 }): string {
   if (!validToken(input.token) || input.argv.length === 0) throw new Error('Invalid persistent shell execution frame.')
   const command = input.argv.map(shellQuote).join(' ')
+  // A browser Enter/raw-key event can leave a carriage return queued in the
+  // PTY's canonical input buffer immediately before this write.  Start with
+  // an explicit empty line so that pending input is terminated before the
+  // errexit guard is parsed; otherwise Bash can see `\r__hexical_errexit=0`
+  // as the first command and exit before emitting either protocol frame.
   return (
+    '\n' +
     [
       '__hexical_errexit=0',
       'case $- in *e*) __hexical_errexit=1; set +e ;; esac',
@@ -67,7 +73,8 @@ export function serializeTTYPersistentShellExecution(input: {
       '__hexical_exit=$?',
       markerCommand(input.token, 'END'),
       '[ "$__hexical_errexit" -eq 0 ] || set -e',
-    ].join('; ') + '\n'
+    ].join('; ') +
+    '\n'
   )
 }
 

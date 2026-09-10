@@ -22,6 +22,7 @@ import { createInvestigationLogger } from './investigation-logger'
 import { InvestigationStore, type InvestigationRedis } from './investigation-store'
 
 const investigationLogger = createInvestigationLogger()
+const TTY_SESSION_PROVISIONING_GRACE_MS = 30_000
 
 export function createRuntimeStore(): TTYRuntimeStore {
   return createSupabaseRuntimeStore()
@@ -98,6 +99,7 @@ export function createInvestigationApiForRequest() {
 export function createInvestigationSessionApiForRequest() {
   const runtime = createRuntimeStore()
   const store = new InvestigationStore(createInvestigationRedis(runtime))
+  const sessionStore = createTTYSessionStore(runtime)
   const lifecycle = createTTYLifecycleApiForRequest()
   return createInvestigationSessionApi({
     authenticate: async () => (await auth()).userId ?? null,
@@ -107,8 +109,15 @@ export function createInvestigationSessionApiForRequest() {
     isTTYSessionUsable: async (sessionId, ownerUserId) => {
       const history = await runtime.get<unknown>(ttySessionRuntimeHistoryKey(sessionId as never))
       // A brand-new session has not been opened by a worker yet. Keep it
-      // reusable so ensure() remains idempotent during that short handoff.
-      if (history === null) return true
+      // reusable only during the short creation-to-worker handoff. An older
+      // active DB row without runtime history is stale and must be replaced;
+      // otherwise reconnect can retain a dead session forever.
+      if (history === null) {
+        const session = await sessionStore.getSession(sessionId as never, ownerUserId)
+        if (session?.status !== 'active') return false
+        const ageMs = Date.now() - Date.parse(session.createdAt)
+        return Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= TTY_SESSION_PROVISIONING_GRACE_MS
+      }
       const lease = await runtime.get<unknown>(ttySessionRuntimeKey(sessionId as never))
       if (typeof lease !== 'object' || lease === null) return false
       const record = lease as Record<string, unknown>

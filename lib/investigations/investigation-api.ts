@@ -12,6 +12,7 @@ import type {
 } from './investigation-types'
 
 const MAX_BODY_BYTES = 32_768
+const DEFAULT_SYNCHRONIZATION_BUDGET_MS = 1_500
 const ID_SCHEMA = z.string().uuid()
 const CREATE_SCHEMA = z
   .object({ title: z.string().trim().min(1).max(200), description: z.string().trim().max(10_000).default('') })
@@ -77,6 +78,8 @@ export interface InvestigationApiDependencies {
   readonly authenticate: () => Promise<string | null>
   readonly getStore: () => Store
   readonly synchronize?: (ownerUserId: string, investigationId: InvestigationId) => Promise<void>
+  /** Bounds request-visible reconciliation; durable hydration remains authoritative. */
+  readonly synchronizeBudgetMs?: number
   readonly terminateInvestigationSession?: (sessionId: string) => Promise<void>
   readonly logger?: InvestigationLogger
 }
@@ -150,6 +153,56 @@ function publicHydration(hydration: Awaited<ReturnType<Store['get']>>) {
   return { ...hydration, investigation: publicRecord(hydration.investigation) }
 }
 
+async function synchronizeWithinBudget(
+  synchronize: NonNullable<InvestigationApiDependencies['synchronize']> | undefined,
+  ownerUserId: string,
+  investigationId: InvestigationId,
+  budgetMs: number,
+  requestId: string,
+  logger: InvestigationLogger,
+): Promise<void> {
+  if (!synchronize) return
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      settled = true
+      logger.warn('investigation.execution_sync_timeout', {
+        requestId,
+        investigationId,
+        userId: ownerUserId,
+        budgetMs,
+      })
+      resolve()
+    }, budgetMs)
+
+    Promise.resolve()
+      .then(() => synchronize(ownerUserId, investigationId))
+      .then(
+        () => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve()
+        },
+        (error: unknown) => {
+          if (settled) {
+            logger.warn('investigation.execution_sync_late_failure', {
+              requestId,
+              investigationId,
+              userId: ownerUserId,
+              message: error instanceof Error ? error.message : String(error),
+            })
+            return
+          }
+          settled = true
+          clearTimeout(timer)
+          reject(error)
+        },
+      )
+  })
+}
+
 export function createInvestigationApi(dependencies: InvestigationApiDependencies) {
   return {
     async create(request: Request): Promise<Response> {
@@ -219,7 +272,14 @@ export function createInvestigationApi(dependencies: InvestigationApiDependencie
           return failure(400, 'INVALID_PAGINATION', 'The execution cursor is invalid.')
         const requestId = newRequestId(request)
         const logger = dependencies.logger ?? NOOP_INVESTIGATION_LOGGER
-        await dependencies.synchronize?.(user, investigationId)
+        await synchronizeWithinBudget(
+          dependencies.synchronize,
+          user,
+          investigationId,
+          dependencies.synchronizeBudgetMs ?? DEFAULT_SYNCHRONIZATION_BUDGET_MS,
+          requestId,
+          logger,
+        )
         const hydration = await resolveCanonicalInvestigation(
           dependencies.getStore(),
           user,
