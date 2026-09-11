@@ -209,6 +209,7 @@ const DEFAULT_GUEST_EMAIL = 'guest@hexical.ai'
 const PENDING_SESSION_ID = 'local_pending_session'
 const ACTIVE_INVESTIGATION_STORAGE_KEY = 'hexical:workspace:active-investigation'
 const VERIFY_ENDPOINT = '/api/verify'
+const VERIFY_REQUEST_TIMEOUT_MS = 30_000
 // NOTE: the flat MAX_LOGIC_CHARS = 12000 constant that used to live here was
 // the bug — it applied the same 12k ceiling to every tier, including Pro.
 // Per-request character limits now come straight from PLAN_LIMITS[tier]
@@ -1209,26 +1210,31 @@ export function HexicalConsole() {
     setBusy(true)
     logToTerminal(`[TX] Transmitting heuristic model to remote cluster...`)
 
-    if (user && !stealthMode) {
-      const supabaseAuth = await getAuthenticatedClient()
-      if (isNewChat) {
-        await supabaseAuth
-          .from('conversations')
-          .upsert({ id: activeId, user_id: user.id, title: generatedTitle, pinned: currentChatContext.pinned })
-        sessionStorage.removeItem(PENDING_SESSION_ID)
-      }
-      await supabaseAuth
-        .from('messages')
-        .insert({ id: userMsg.id, conversation_id: activeId, user_id: user.id, content: safeLogic, role: 'user' })
-    }
-
     const startTime = performance.now()
 
     abortControllerRef.current?.abort()
     abortControllerRef.current = new AbortController()
     const requestSignal = abortControllerRef.current.signal
+    let requestTimedOut = false
+    const requestTimeoutId = window.setTimeout(() => {
+      requestTimedOut = true
+      abortControllerRef.current?.abort()
+    }, VERIFY_REQUEST_TIMEOUT_MS)
 
     try {
+      if (user && !stealthMode) {
+        const supabaseAuth = await getAuthenticatedClient()
+        if (isNewChat) {
+          await supabaseAuth
+            .from('conversations')
+            .upsert({ id: activeId, user_id: user.id, title: generatedTitle, pinned: currentChatContext.pinned })
+          sessionStorage.removeItem(PENDING_SESSION_ID)
+        }
+        await supabaseAuth
+          .from('messages')
+          .insert({ id: userMsg.id, conversation_id: activeId, user_id: user.id, content: safeLogic, role: 'user' })
+      }
+
       // SECURITY: send a Clerk session token when present and keep the
       // request same-origin so cookie-based Clerk auth still works. The
       // backend must derive identity from its verified auth context, never
@@ -1389,7 +1395,23 @@ export function HexicalConsole() {
       recordUsage()
     } catch (err: any) {
       if (err.name === 'AbortError') {
-        logToTerminal(`[SYSTEM] Execution aborted by operator.`)
+        if (requestTimedOut) {
+          const timeoutMessage: ExtendedStreamMessage = {
+            id: generateUniqueID(),
+            role: 'error',
+            text: `**TIMEOUT:** The investigation did not complete within ${
+              VERIFY_REQUEST_TIMEOUT_MS / 1000
+            } seconds. No result was recorded. Please retry shortly.`,
+            steps: ['REQUEST_TIMEOUT'],
+            valid: false,
+            route: 'unknown',
+            ts: generateTimestamp(),
+          }
+          logToTerminal(`[ERR] Verification request timed out after ${VERIFY_REQUEST_TIMEOUT_MS / 1000}s.`)
+          dispatch({ type: 'APPEND_MESSAGES', chatId: activeId, messages: [timeoutMessage] })
+        } else {
+          logToTerminal(`[SYSTEM] Execution aborted by operator.`)
+        }
         return
       }
       const safeErrorText = getSafeExceptionMessage(err)
@@ -1405,6 +1427,7 @@ export function HexicalConsole() {
       }
       dispatch({ type: 'APPEND_MESSAGES', chatId: activeId, messages: [errorMsg] })
     } finally {
+      window.clearTimeout(requestTimeoutId)
       setBusy(false)
       abortControllerRef.current = null
     }

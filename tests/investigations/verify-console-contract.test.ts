@@ -8,4 +8,7 @@ test('verification console matches the current synchronous/streaming API contrac
   assert.doesNotMatch(source, /\/api\/verify\/status\//)
   assert.doesNotMatch(source, /MAX_POLL_ATTEMPTS|POLL_INTERVAL_MS|INVALID_JOB_ID|POLL_TIMEOUT/)
   assert.match(source, /UNEXPECTED_ASYNC_RESPONSE/)
+  assert.match(source, /VERIFY_REQUEST_TIMEOUT_MS = 30_000/)
+  assert.match(source, /REQUEST_TIMEOUT/)
+  assert.match(source, /No result was recorded/)
 })
