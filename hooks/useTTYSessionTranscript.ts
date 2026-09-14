@@ -210,24 +210,28 @@ export function useTTYSessionTranscript(
     inputChannelRef.current = null
   }, [])
 
-  const prepareInputChannel = useCallback(async () => {
-    if (!sessionId) return
-    const current = inputChannelRef.current
-    if (current?.sessionId === sessionId) return
-    closeInputChannel()
-    const body = await readJson<TTYSessionInputChannelResponse>(
-      `/api/tty/sessions/${encodeURIComponent(sessionId)}/input-channel`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
-    )
-    const channel = await connectTTYBrowserInputChannel(body.channel)
-    if (sessionIdRef.current !== sessionId) {
-      channel.close()
-      return
-    }
-    inputChannelRef.current = { sessionId: sessionId as TTYSessionId, token: body.token, channel }
-  }, [closeInputChannel, sessionId])
+  const prepareInputChannel = useCallback(
+    async (generation: number) => {
+      if (!sessionId || generation !== generationRef.current || !startedRef.current) return
+      const current = inputChannelRef.current
+      if (current?.sessionId === sessionId) return
+      closeInputChannel()
+      const body = await readJson<TTYSessionInputChannelResponse>(
+        `/api/tty/sessions/${encodeURIComponent(sessionId)}/input-channel`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+      )
+      const channel = await connectTTYBrowserInputChannel(body.channel)
+      if (generation !== generationRef.current || !startedRef.current || sessionIdRef.current !== sessionId) {
+        channel.close()
+        return
+      }
+      inputChannelRef.current = { sessionId: sessionId as TTYSessionId, token: body.token, channel }
+    },
+    [closeInputChannel, sessionId],
+  )
 
   const open = useCallback(async () => {
+    const generation = generationRef.current
     await withTimeout(
       control({ type: 'open' }),
       OPEN_CONTROL_TIMEOUT_MS,
@@ -238,7 +242,8 @@ export function useTTYSessionTranscript(
     // subscription pending forever, which otherwise prevents the transcript
     // stream from receiving pty_exited/runtime_shell_unavailable and leaves
     // the browser attached to the dead session ID.
-    void prepareInputChannel().catch(() => undefined)
+    if (generation !== generationRef.current || !startedRef.current) return
+    void prepareInputChannel(generation).catch(() => undefined)
   }, [control, prepareInputChannel])
 
   const write = useCallback(
@@ -498,6 +503,9 @@ export function useTTYSessionTranscript(
       startedRef.current = false
       generationRef.current += 1
       stopStream()
+      writeQueueRef.current?.reset()
+      writeQueueRef.current = null
+      closeInputChannel()
       if (touchTimerRef.current !== null) clearInterval(touchTimerRef.current)
       touchTimerRef.current = null
     }

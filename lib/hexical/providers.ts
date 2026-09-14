@@ -17,6 +17,13 @@ import { createOpenAI } from '@ai-sdk/openai'
 import { generateText, streamText, generateObject, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import { isProviderCircuitOpen, markProviderFailure, markProviderSuccess } from './limits'
+import {
+  abortReason,
+  createRequestDeadline,
+  isRequestDeadlineExceeded,
+  sleepWithSignal,
+  throwIfAborted,
+} from './request-deadline'
 import { fallbackProviders } from './routing'
 import type { HexicalRuntimeStore } from './runtime-store'
 import { buildSingleSystemPrompt, INJECTION_GUARD } from './security'
@@ -49,10 +56,6 @@ export class ProviderCallError extends Error {
 }
 
 const PROVIDER_RETRY_DELAYS_MS = [500, 1_000] as const
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
 
 // Explicit create*() instances, each pinned to the same env var names the
 // rest of this file already checks in providerAvailable() — rather than
@@ -104,25 +107,32 @@ export function estimateRequestTokens(systemPrompt: string, userMessage: string)
   return estimateTokensHeuristic(systemPrompt + userMessage)
 }
 
-async function withProviderRetry<T>(
+export async function withProviderRetry<T>(
   provider: Provider,
   operation: (signal: AbortSignal) => Promise<T>,
+  requestSignal?: AbortSignal,
 ): Promise<{ value: T; retryCount: number }> {
   let lastError: unknown
 
   for (let attempt = 0; attempt <= PROVIDER_RETRY_DELAYS_MS.length; attempt += 1) {
+    throwIfAborted(requestSignal)
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), PROVIDER_TIMEOUT_MS)
+    const onRequestAbort = () => controller.abort(abortReason(requestSignal as AbortSignal))
+    if (requestSignal?.aborted) onRequestAbort()
+    else requestSignal?.addEventListener('abort', onRequestAbort, { once: true })
     try {
       const value = await operation(controller.signal)
       return { value, retryCount: attempt }
     } catch (err) {
+      if (requestSignal?.aborted) throw abortReason(requestSignal)
       lastError = err
       const delayMs = PROVIDER_RETRY_DELAYS_MS[attempt]
       if (delayMs === undefined) break
-      await sleep(delayMs)
+      await sleepWithSignal(delayMs, requestSignal)
     } finally {
       clearTimeout(timeout)
+      requestSignal?.removeEventListener('abort', onRequestAbort)
     }
   }
 
@@ -139,20 +149,25 @@ async function callProviderOnce(args: {
   userMessage: string
   maxOutputTokens: number
   temperature: number
+  requestSignal?: AbortSignal
 }): Promise<ModelExecutionResult> {
   const model = getLanguageModel(args.provider, args.modelId)
 
-  const { value: result, retryCount } = await withProviderRetry(args.provider, async (signal) => {
-    return generateText({
-      model,
-      system: args.systemPrompt,
-      prompt: args.userMessage,
-      maxOutputTokens: args.maxOutputTokens,
-      temperature: args.temperature,
-      maxRetries: 0, // retries owned by withProviderRetry, not double-stacked in the SDK
-      abortSignal: signal,
-    })
-  })
+  const { value: result, retryCount } = await withProviderRetry(
+    args.provider,
+    async (signal) => {
+      return generateText({
+        model,
+        system: args.systemPrompt,
+        prompt: args.userMessage,
+        maxOutputTokens: args.maxOutputTokens,
+        temperature: args.temperature,
+        maxRetries: 0, // retries owned by withProviderRetry, not double-stacked in the SDK
+        abortSignal: signal,
+      })
+    },
+    args.requestSignal,
+  )
 
   const text = result.text ?? ''
 
@@ -176,10 +191,12 @@ export async function executeSingleWithFallback(args: {
   systemCtx: string
   userMessage: string
   cheapOnly: boolean
+  requestSignal?: AbortSignal
 }): Promise<ModelExecutionResult> {
   const trail: string[] = []
 
   for (const provider of fallbackProviders(args.route.provider, args.cheapOnly)) {
+    throwIfAborted(args.requestSignal)
     if (!providerAvailable(provider)) {
       trail.push(`${provider}: skipped, missing API key`)
       continue
@@ -199,10 +216,12 @@ export async function executeSingleWithFallback(args: {
         userMessage: args.userMessage,
         maxOutputTokens: args.route.maxOutputTokens,
         temperature: args.route.temperature,
+        requestSignal: args.requestSignal,
       })
       await markProviderSuccess(args.runtime, provider)
       return { ...result, text: sanitizeOutput(result.text), fallbackTrail: trail }
     } catch (err) {
+      if (args.requestSignal?.aborted || isRequestDeadlineExceeded(err)) throw err
       await markProviderFailure(args.runtime, provider)
       log.warn('provider_fallback', { provider, error: errorMessage(err) })
       const attempts = err instanceof ProviderCallError ? err.attempts : 1
@@ -223,6 +242,7 @@ export interface StreamingRun {
     usage: Promise<{ inputTokens: number; outputTokens: number }>
     text: Promise<string>
   }
+  dispose(): void
 }
 
 /** Streams a single provider's output live while still letting the caller
@@ -238,8 +258,10 @@ export function streamProvider(args: {
   userMessage: string
   maxOutputTokens: number
   temperature: number
+  requestSignal?: AbortSignal
 }): StreamingRun {
   const model = getLanguageModel(args.provider, args.modelId)
+  const streamDeadline = createRequestDeadline(args.requestSignal, PROVIDER_TIMEOUT_MS * 3)
   const result = streamText({
     model,
     system: args.systemPrompt,
@@ -247,7 +269,7 @@ export function streamProvider(args: {
     maxOutputTokens: args.maxOutputTokens,
     temperature: args.temperature,
     maxRetries: PROVIDER_MAX_RETRIES,
-    abortSignal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS * 3), // streaming responses run longer than a single call
+    abortSignal: streamDeadline.signal, // streaming responses run longer than a single call
   })
 
   return {
@@ -259,6 +281,7 @@ export function streamProvider(args: {
       })),
       text: Promise.resolve(result.text),
     },
+    dispose: streamDeadline.dispose,
   }
 }
 
@@ -290,20 +313,25 @@ async function generateAgentObject<T>(args: {
   prompt: string
   schema: z.ZodType<T>
   maxOutputTokens: number
+  requestSignal?: AbortSignal
 }): Promise<{ value: T; usage: { inputTokens: number; outputTokens: number }; retryCount: number }> {
   const model = getLanguageModel(args.provider, args.modelId)
-  const { value, retryCount } = await withProviderRetry(args.provider, async (signal) => {
-    return generateObject({
-      model,
-      system: args.system,
-      prompt: args.prompt,
-      schema: args.schema,
-      temperature: 0.1,
-      maxOutputTokens: args.maxOutputTokens,
-      maxRetries: 0,
-      abortSignal: signal,
-    })
-  })
+  const { value, retryCount } = await withProviderRetry(
+    args.provider,
+    async (signal) => {
+      return generateObject({
+        model,
+        system: args.system,
+        prompt: args.prompt,
+        schema: args.schema,
+        temperature: 0.1,
+        maxOutputTokens: args.maxOutputTokens,
+        maxRetries: 0,
+        abortSignal: signal,
+      })
+    },
+    args.requestSignal,
+  )
 
   return {
     value: value.object,
@@ -321,6 +349,7 @@ export async function executeSwarm(args: {
   systemCtx: string
   userMessage: string
   maxOutputTokens: number
+  requestSignal?: AbortSignal
 }): Promise<ModelExecutionResult> {
   const redSys =
     INJECTION_GUARD +
@@ -348,6 +377,7 @@ export async function executeSwarm(args: {
         prompt: args.userMessage,
         schema: RedTeamSchema,
         maxOutputTokens: args.maxOutputTokens,
+        requestSignal: args.requestSignal,
       }),
       generateAgentObject({
         provider: args.provider,
@@ -356,6 +386,7 @@ export async function executeSwarm(args: {
         prompt: args.userMessage,
         schema: BlueTeamSchema,
         maxOutputTokens: args.maxOutputTokens,
+        requestSignal: args.requestSignal,
       }),
       generateAgentObject({
         provider: args.provider,
@@ -364,9 +395,11 @@ export async function executeSwarm(args: {
         prompt: args.userMessage,
         schema: ArchitectSchema,
         maxOutputTokens: args.maxOutputTokens,
+        requestSignal: args.requestSignal,
       }),
     ])
   } catch (err) {
+    if (args.requestSignal?.aborted || isRequestDeadlineExceeded(err)) throw err
     throw new SwarmParseError(`Swarm agent failed to produce schema-valid output: ${errorMessage(err)}`)
   }
 
@@ -422,7 +455,9 @@ export async function extractStructuredFinding<T>(args: {
   prompt: string
   schema: z.ZodType<T>
   maxOutputTokens: number
+  requestSignal?: AbortSignal
 }): Promise<{ value: T; usage: { inputTokens: number; outputTokens: number } } | null> {
+  throwIfAborted(args.requestSignal)
   if (await isProviderCircuitOpen(args.runtime, args.provider)) {
     log.warn('structured_finding_skipped_circuit_open', { provider: args.provider })
     return null
@@ -436,11 +471,13 @@ export async function extractStructuredFinding<T>(args: {
       prompt: args.prompt,
       schema: args.schema,
       maxOutputTokens: args.maxOutputTokens,
+      requestSignal: args.requestSignal,
     })
 
     await markProviderSuccess(args.runtime, args.provider)
     return { value, usage }
   } catch (err) {
+    if (args.requestSignal?.aborted || isRequestDeadlineExceeded(err)) throw err
     await markProviderFailure(args.runtime, args.provider)
     log.warn('structured_finding_extraction_failed', { provider: args.provider, error: errorMessage(err) })
     return null // caller must treat this as "no finding" — never fall back to a fabricated one
@@ -458,7 +495,9 @@ export async function executeRoute(args: {
   userMessage: string
   cheapOnly: boolean
   execSteps: string[]
+  requestSignal?: AbortSignal
 }): Promise<ModelExecutionResult> {
+  throwIfAborted(args.requestSignal)
   if (args.route.mode === 'swarm') {
     return runForcedSwarm(args)
   }
@@ -470,6 +509,7 @@ export async function executeRoute(args: {
     systemCtx: args.systemCtx,
     userMessage: args.userMessage,
     cheapOnly: args.cheapOnly,
+    requestSignal: args.requestSignal,
   })
 
   const canConfidenceGateSwarm =
@@ -486,6 +526,7 @@ export async function executeRoute(args: {
     return firstPass
   }
 
+  throwIfAborted(args.requestSignal)
   if (await isProviderCircuitOpen(args.runtime, 'anthropic')) {
     args.execSteps.push('Anthropic circuit is open; returning single-agent result without swarm expansion.')
     return firstPass
@@ -507,6 +548,7 @@ export async function executeRoute(args: {
       systemCtx: args.systemCtx,
       userMessage: args.userMessage,
       maxOutputTokens: Math.max(args.route.maxOutputTokens, 1_500),
+      requestSignal: args.requestSignal,
     })
     await markProviderSuccess(args.runtime, 'anthropic')
 
@@ -538,8 +580,10 @@ async function runForcedSwarm(args: {
   userMessage: string
   cheapOnly: boolean
   execSteps: string[]
+  requestSignal?: AbortSignal
 }): Promise<ModelExecutionResult> {
   try {
+    throwIfAborted(args.requestSignal)
     if (await isProviderCircuitOpen(args.runtime, 'anthropic')) {
       throw new Error('Anthropic circuit open before swarm execution.')
     }
@@ -549,10 +593,12 @@ async function runForcedSwarm(args: {
       systemCtx: args.systemCtx,
       userMessage: args.userMessage,
       maxOutputTokens: args.route.maxOutputTokens,
+      requestSignal: args.requestSignal,
     })
     await markProviderSuccess(args.runtime, 'anthropic')
     return swarmResult
   } catch (err) {
+    if (args.requestSignal?.aborted || isRequestDeadlineExceeded(err)) throw err
     await markProviderFailure(args.runtime, 'anthropic')
     if (err instanceof SwarmParseError) throw err
     log.error('swarm_provider_failure', { error: errorMessage(err) })
@@ -564,6 +610,7 @@ async function runForcedSwarm(args: {
       systemCtx: args.systemCtx,
       userMessage: args.userMessage,
       cheapOnly: args.cheapOnly,
+      requestSignal: args.requestSignal,
     })
   }
 }

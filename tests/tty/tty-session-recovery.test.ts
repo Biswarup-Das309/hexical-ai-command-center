@@ -20,9 +20,9 @@ test('stale-session reconnect opens durable control before realtime input setup'
 
   assert.ok(openBlock, 'the transcript hook must keep a dedicated open path')
   assert.match(openBlock, /control\(\{ type: 'open' \}\)/)
-  assert.match(openBlock, /void prepareInputChannel\(\)\.catch\(\(\) => undefined\)/)
+  assert.match(openBlock, /void prepareInputChannel\(generation\)\.catch\(\(\) => undefined\)/)
   assert.ok(
-    openBlock.indexOf("control({ type: 'open' })") < openBlock.indexOf('void prepareInputChannel()'),
+    openBlock.indexOf("control({ type: 'open' })") < openBlock.indexOf('void prepareInputChannel(generation)'),
     'durable control must not be blocked by a hanging realtime input subscription',
   )
 })

@@ -334,8 +334,12 @@ export function RuntimeOSWorkspace({
     if (busy && !ignoreBusy) return
     setControlError(null)
     try {
-      if (tab.primary) await onTerminateSession()
-      else await runtimeRequest(`/api/tty/sessions/${encodeURIComponent(tab.id)}`, { method: 'DELETE' })
+      // Closing a tab is local UI cleanup. The canonical session may be
+      // shared by another authenticated browser tab, so only the explicit
+      // header terminate action may destroy the persistent session.
+      if (!tab.primary) {
+        await runtimeRequest(`/api/tty/sessions/${encodeURIComponent(tab.id)}`, { method: 'DELETE' })
+      }
       setTabs((current) => current.filter((candidate) => candidate.id !== tab.id))
       setActiveTabId((current) => (current === tab.id ? primarySessionId ?? null : current))
     } catch (cause) {

@@ -81,6 +81,12 @@ import {
   SwarmParseError,
 } from '@/lib/hexical/providers'
 import { buildReconEvent, buildFingerprintEvent } from '@/lib/hexical/recon'
+import {
+  createRequestDeadline,
+  isRequestDeadlineExceeded,
+  VERIFY_REQUEST_DEADLINE_MS,
+  type RequestDeadlineHandle,
+} from '@/lib/hexical/request-deadline'
 import { chooseModelRoute, hasSensitiveCacheMarkers, fallbackProviders } from '@/lib/hexical/routing'
 import type { HexicalRuntimeStore } from '@/lib/hexical/runtime-store'
 import {
@@ -131,6 +137,40 @@ async function logUsage(supabase: SupabaseClient, event: UsageEvent): Promise<vo
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
+  const deadline = createRequestDeadline(req.signal, VERIFY_REQUEST_DEADLINE_MS)
+  let streaming = false
+  try {
+    return await executeVerification(
+      req,
+      deadline.signal,
+      () => {
+        streaming = true
+      },
+      deadline,
+    )
+  } catch (error) {
+    if (isRequestDeadlineExceeded(error)) {
+      return NextResponse.json(
+        {
+          error: 'The investigation exceeded the server execution deadline.',
+          code: ERROR_CODES.REQUEST_DEADLINE_EXCEEDED,
+          message: 'The investigation was stopped before the bounded execution budget expired.',
+        },
+        { status: 504, headers: jsonHeaders() },
+      )
+    }
+    throw error
+  } finally {
+    if (!streaming) deadline.dispose()
+  }
+}
+
+async function executeVerification(
+  req: Request,
+  requestSignal: AbortSignal,
+  handoffStreamingDeadline: () => void,
+  deadline: RequestDeadlineHandle,
+): Promise<NextResponse> {
   const startedAt = Date.now()
 
   for (const key of REQUIRED_ENV) {
@@ -464,6 +504,9 @@ export async function POST(req: Request): Promise<NextResponse> {
         authExpiresInHours: authDecision.expiresInHours,
         execSteps,
         cacheKey,
+        requestSignal,
+        onStreamingStarted: handoffStreamingDeadline,
+        disposeDeadline: deadline.dispose,
       })
     }
     // fall through to the normal non-streaming path if nothing is available to stream from
@@ -488,10 +531,13 @@ export async function POST(req: Request): Promise<NextResponse> {
       userMessage: userMsg,
       cheapOnly: dailySpend.forceCheapModels,
       execSteps,
+      requestSignal,
     })
   } catch (err) {
     await reconcileMonthlyTokens(runtime, userId, activeTier, reservation.reservedTokens, 0)
     await reconcileMonthlyCost(runtime, userId, activeTier, costReservation.reservedPaise, 0)
+
+    if (isRequestDeadlineExceeded(err) || requestSignal.aborted) throw err
 
     if (err instanceof SwarmParseError) {
       log.error('swarm_parse_failure', { error: err.message })
@@ -576,25 +622,33 @@ export async function POST(req: Request): Promise<NextResponse> {
       : { allowed: false as const, reservedPaise: 0 }
 
     if (findingReservation.allowed && findingCostReservation.allowed) {
-      const finding = await extractStructuredFinding({
-        runtime,
-        provider: result.provider,
-        modelId: result.model,
-        system:
-          'Extract structured findings from a completed security analysis. Only report ' +
-          'what the analysis actually concluded — if it found no vulnerability, set risk ' +
-          'to null rather than inventing one. Evidence strings must cite specifics from ' +
-          'the analysis text, not generic boilerplate. Every verification and every risk ' +
-          'object must also include a `sources` array: one entry per distinct fact you ' +
-          'relied on, each with a `type` (code_location, cwe, owasp, cve, documentation, ' +
-          'or analysis_text), a short `label`, and — where one exists in the analysis — a ' +
-          '`locator` such as a line reference, a CWE/CVE id, or the exact phrase in the ' +
-          'analysis text the claim is grounded in. Never invent a locator; omit it rather ' +
-          'than guess. If you cannot point to a real source for a claim, drop the claim.',
-        prompt: `Original input:\n${userMsg}\n\nCompleted analysis:\n${result.text}`,
-        schema: StructuredFindingSchema,
-        maxOutputTokens: findingOutputTokens,
-      })
+      let finding: Awaited<ReturnType<typeof extractStructuredFinding<StructuredFinding>>>
+      try {
+        finding = await extractStructuredFinding({
+          runtime,
+          provider: result.provider,
+          modelId: result.model,
+          system:
+            'Extract structured findings from a completed security analysis. Only report ' +
+            'what the analysis actually concluded — if it found no vulnerability, set risk ' +
+            'to null rather than inventing one. Evidence strings must cite specifics from ' +
+            'the analysis text, not generic boilerplate. Every verification and every risk ' +
+            'object must also include a `sources` array: one entry per distinct fact you ' +
+            'relied on, each with a `type` (code_location, cwe, owasp, cve, documentation, ' +
+            'or analysis_text), a short `label`, and — where one exists in the analysis — a ' +
+            '`locator` such as a line reference, a CWE/CVE id, or the exact phrase in the ' +
+            'analysis text the claim is grounded in. Never invent a locator; omit it rather ' +
+            'than guess. If you cannot point to a real source for a claim, drop the claim.',
+          prompt: `Original input:\n${userMsg}\n\nCompleted analysis:\n${result.text}`,
+          schema: StructuredFindingSchema,
+          maxOutputTokens: findingOutputTokens,
+          requestSignal,
+        })
+      } catch (error) {
+        await reconcileMonthlyTokens(runtime, userId, activeTier, findingReservation.reservedTokens, 0)
+        await reconcileMonthlyCost(runtime, userId, activeTier, findingCostReservation.reservedPaise, 0)
+        throw error
+      }
 
       if (finding) {
         structuredFinding = finding.value
@@ -829,6 +883,9 @@ function streamSingleResponse(args: {
   authExpiresInHours: number | null
   execSteps: string[]
   cacheKey: string
+  requestSignal: AbortSignal
+  onStreamingStarted: () => void
+  disposeDeadline: () => void
 }): NextResponse {
   const {
     runtime,
@@ -843,6 +900,9 @@ function streamSingleResponse(args: {
     userId,
     reservedTokens,
     reservedCostPaise,
+    requestSignal,
+    onStreamingStarted,
+    disposeDeadline,
   } = args
 
   const run = streamProvider({
@@ -852,7 +912,9 @@ function streamSingleResponse(args: {
     userMessage,
     maxOutputTokens: route.maxOutputTokens,
     temperature: route.temperature,
+    requestSignal,
   })
+  onStreamingStarted()
 
   const encoder = new TextEncoder()
   const stream = new ReadableStream<Uint8Array>({
@@ -867,6 +929,8 @@ function streamSingleResponse(args: {
       } finally {
         controller.enqueue(encoder.encode('event: done\ndata: {}\n\n'))
         controller.close()
+        run.dispose()
+        disposeDeadline()
       }
     },
   })

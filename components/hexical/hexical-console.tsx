@@ -209,7 +209,9 @@ const DEFAULT_GUEST_EMAIL = 'guest@hexical.ai'
 const PENDING_SESSION_ID = 'local_pending_session'
 const ACTIVE_INVESTIGATION_STORAGE_KEY = 'hexical:workspace:active-investigation'
 const VERIFY_ENDPOINT = '/api/verify'
-const VERIFY_REQUEST_TIMEOUT_MS = 30_000
+// The server owns the 75-second investigation deadline. Keep a small client
+// grace period so a bounded 504 can be rendered instead of aborting first.
+const VERIFY_REQUEST_TIMEOUT_MS = 90_000
 // NOTE: the flat MAX_LOGIC_CHARS = 12000 constant that used to live here was
 // the bug — it applied the same 12k ceiling to every tier, including Pro.
 // Per-request character limits now come straight from PLAN_LIMITS[tier]
@@ -1273,7 +1275,24 @@ export function HexicalConsole() {
       })
 
       if (!res.ok) {
-        const errData = await parseJsonResponse<{ error?: string }>(res)
+        const errData = await parseJsonResponse<{ error?: string; code?: string; message?: string }>(res)
+
+        if (res.status === 504 || errData?.code === 'REQUEST_DEADLINE_EXCEEDED') {
+          const timeoutMessage: ExtendedStreamMessage = {
+            id: generateUniqueID(),
+            role: 'error',
+            text: `**TIMEOUT:** The investigation exceeded the bounded server budget of ${
+              VERIFY_REQUEST_TIMEOUT_MS / 1000 - 15
+            } seconds. No result was recorded. Please retry shortly.`,
+            steps: ['REQUEST_DEADLINE_EXCEEDED'],
+            valid: false,
+            route: 'unknown',
+            ts: generateTimestamp(),
+          }
+          logToTerminal('[ERR] Verification request exceeded the server execution deadline.')
+          dispatch({ type: 'APPEND_MESSAGES', chatId: activeId, messages: [timeoutMessage] })
+          return
+        }
 
         // ADD 429 TO THIS CHECK:
         if (res.status === 402 || res.status === 403 || res.status === 429) {
