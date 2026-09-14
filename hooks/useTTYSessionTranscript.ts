@@ -58,6 +58,24 @@ class RuntimeSessionRequestError extends Error {
 const TOUCH_INTERVAL_MS = 15_000
 const REPLAY_LIMIT = 2_000
 const TRANSCRIPT_STATE_FLUSH_MS = 16
+const OPEN_CONTROL_TIMEOUT_MS = 10_000
+const STREAM_OPEN_TIMEOUT_MS = 10_000
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (cause) => {
+        clearTimeout(timer)
+        reject(cause)
+      },
+    )
+  })
+}
 
 function messageFromBody(body: unknown, fallback: string): string {
   if (typeof body === 'object' && body !== null && 'message' in body && typeof body.message === 'string') {
@@ -120,6 +138,7 @@ export function useTTYSessionTranscript(
   const touchTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const streamRef = useRef<EventSource | null>(null)
   const streamReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const streamOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const connectStreamRef = useRef<(() => void) | null>(null)
   const startedRef = useRef(false)
   const onSessionUnavailableRef = useRef(onSessionUnavailable)
@@ -209,8 +228,17 @@ export function useTTYSessionTranscript(
   }, [closeInputChannel, sessionId])
 
   const open = useCallback(async () => {
-    await prepareInputChannel().catch(() => undefined)
-    await control({ type: 'open' })
+    await withTimeout(
+      control({ type: 'open' }),
+      OPEN_CONTROL_TIMEOUT_MS,
+      'The runtime control path did not respond. Reconnecting from durable replay.',
+    )
+    // Durable control/replay is the recovery path. Do not gate it on the
+    // browser Broadcast channel: a stale session can leave a Realtime
+    // subscription pending forever, which otherwise prevents the transcript
+    // stream from receiving pty_exited/runtime_shell_unavailable and leaves
+    // the browser attached to the dead session ID.
+    void prepareInputChannel().catch(() => undefined)
   }, [control, prepareInputChannel])
 
   const write = useCallback(
@@ -266,6 +294,8 @@ export function useTTYSessionTranscript(
     streamRef.current = null
     if (streamReconnectTimerRef.current !== null) clearTimeout(streamReconnectTimerRef.current)
     streamReconnectTimerRef.current = null
+    if (streamOpenTimerRef.current !== null) clearTimeout(streamOpenTimerRef.current)
+    streamOpenTimerRef.current = null
   }, [])
 
   const recoverMissingSession = useCallback(
@@ -337,14 +367,36 @@ export function useTTYSessionTranscript(
       `/api/tty/sessions/${encodeURIComponent(activeSessionId)}/transcript/stream?${query.toString()}`,
     )
     streamRef.current = source
+    const handleStreamFailure = () => {
+      if (streamRef.current !== source) return
+      source.close()
+      streamRef.current = null
+      if (streamOpenTimerRef.current !== null) clearTimeout(streamOpenTimerRef.current)
+      streamOpenTimerRef.current = null
+      if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
+      setConnectionState('reconnecting')
+      setError('The runtime transcript stream was interrupted. Reconnecting from durable replay.')
+      void probeSessionAfterStreamFailure(generation, activeSessionId).then((recovered) => {
+        if (recovered || generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
+        streamReconnectTimerRef.current = setTimeout(() => connectStreamRef.current?.(), 1_000)
+      })
+    }
     source.onopen = () => {
+      if (streamRef.current !== source) return
+      if (streamOpenTimerRef.current !== null) clearTimeout(streamOpenTimerRef.current)
+      streamOpenTimerRef.current = null
       if (generation === generationRef.current && activeSessionId === sessionIdRef.current) {
         setConnectionState('open')
         setError(null)
       }
     }
     source.addEventListener('transcript', (message) => {
-      if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
+      if (
+        streamRef.current !== source ||
+        generation !== generationRef.current ||
+        activeSessionId !== sessionIdRef.current
+      )
+        return
       try {
         const parsed = JSON.parse((message as MessageEvent<string>).data) as { event?: TTYSessionTranscriptEvent }
         const event = parsed.event
@@ -362,17 +414,8 @@ export function useTTYSessionTranscript(
         setError('The runtime transcript returned an invalid event.')
       }
     })
-    source.onerror = () => {
-      source.close()
-      if (streamRef.current === source) streamRef.current = null
-      if (generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
-      setConnectionState('reconnecting')
-      setError('The runtime transcript stream was interrupted. Reconnecting from durable replay.')
-      void probeSessionAfterStreamFailure(generation, activeSessionId).then((recovered) => {
-        if (recovered || generation !== generationRef.current || activeSessionId !== sessionIdRef.current) return
-        streamReconnectTimerRef.current = setTimeout(() => connectStreamRef.current?.(), 1_000)
-      })
-    }
+    source.onerror = handleStreamFailure
+    streamOpenTimerRef.current = setTimeout(handleStreamFailure, STREAM_OPEN_TIMEOUT_MS)
   }, [acceptTranscriptEvent, probeSessionAfterStreamFailure, setReplayCursor, stopStream])
   useEffect(() => {
     connectStreamRef.current = connectStream
