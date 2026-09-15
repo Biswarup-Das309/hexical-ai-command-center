@@ -12,7 +12,15 @@ test('Linux worker supervisor preserves tmux ownership across worker restarts', 
   assert.match(unit, /KillMode=process/)
   assert.match(unit, /TMUX_TMPDIR=\/var\/lib\/hexical-tty-worker\/tmux/)
   assert.match(unit, /StateDirectory=hexical-tty-worker/)
+  assert.match(unit, /Environment=HEXICAL_ENV_FILE=\/etc\/hexical\/tty-worker\.env/)
   assert.doesNotMatch(unit, /PrivateTmp=true/)
+})
+
+test('Linux worker launcher uses a stable host environment instead of the developer checkout', async () => {
+  const launcher = await readFile(new URL('../../scripts/start-tty-worker-linux.sh', import.meta.url), 'utf8')
+  assert.match(launcher, /env_file="\$\{HEXICAL_ENV_FILE:-\/etc\/hexical\/tty-worker\.env\}"/)
+  assert.doesNotMatch(launcher, /Downloads\/hexical-ai-command-center/)
+  assert.doesNotMatch(launcher, /\.env\.local/)
 })
 
 test('Linux worker runtime imports without the Next server-only boundary', async () => {

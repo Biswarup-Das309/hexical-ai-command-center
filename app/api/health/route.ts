@@ -18,6 +18,12 @@ type HealthResult = {
   message?: string
 }
 
+type ProviderHealthResult = {
+  status: 'configured' | 'unconfigured'
+  configured: boolean
+  message: string
+}
+
 type TTYWorkerHealthResult = HealthResult & {
   mode: 'direct' | 'worker'
   registeredCount: number
@@ -71,7 +77,7 @@ async function safeCheck<T extends HealthResult>(
   }
 }
 
-function providerStatus(provider: AiProvider): HealthResult {
+function providerStatus(provider: AiProvider): ProviderHealthResult {
   const envMap: Record<AiProvider, string[]> = {
     groq: ['GROQ_API_KEY', 'GROQ_MAIN_MODEL'],
     openai: ['OPENAI_API_KEY', 'OPENAI_MAIN_MODEL'],
@@ -81,8 +87,11 @@ function providerStatus(provider: AiProvider): HealthResult {
   const configured = hasEnv(envMap[provider])
 
   return {
-    status: configured ? 'healthy' : 'unhealthy',
+    status: configured ? 'configured' : 'unconfigured',
     configured,
+    message: configured
+      ? 'Credentials and model configuration are present; live provider probing is disabled on the normal health path.'
+      : 'Credentials or model configuration is missing; provider requests will be unavailable.',
   }
 }
 
@@ -200,15 +209,7 @@ export async function GET(request: Request) {
     anthropic: providerStatus('anthropic'),
   }
 
-  const allStatuses = [
-    runtimeHealth.status,
-    supabaseHealth.status,
-    queueHealth.status,
-    ttyWorkerHealth.status,
-    providers.groq.status,
-    providers.openai.status,
-    providers.anthropic.status,
-  ]
+  const allStatuses = [runtimeHealth.status, supabaseHealth.status, queueHealth.status, ttyWorkerHealth.status]
 
   const status: HealthStatus = allStatuses.includes('unhealthy') ? 'unhealthy' : 'healthy'
 

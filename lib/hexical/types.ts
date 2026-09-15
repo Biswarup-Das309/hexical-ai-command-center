@@ -218,6 +218,7 @@ export interface ExecutionResponse {
   analysis: string
   steps: string[]
   status: 'completed'
+  requestId?: string
   swarmConsensus?: Record<string, unknown>
   traceEvents?: TraceEvent[] // <-- ADDED THIS LINE
   metrics: ResponseMetrics
@@ -484,6 +485,8 @@ export const ERROR_CODES = {
   MONTHLY_COST_BUDGET_EXCEEDED: 'MONTHLY_COST_BUDGET_EXCEEDED',
   SWARM_CONSENSUS_FAILURE: 'SWARM_CONSENSUS_FAILURE',
   PROVIDER_FAILURE: 'PROVIDER_FAILURE',
+  PROVIDER_CONFIGURATION_UNAVAILABLE: 'PROVIDER_CONFIGURATION_UNAVAILABLE',
+  PROVIDER_TEMPORARILY_UNAVAILABLE: 'PROVIDER_TEMPORARILY_UNAVAILABLE',
   REQUEST_DEADLINE_EXCEEDED: 'REQUEST_DEADLINE_EXCEEDED',
 } as const
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES]

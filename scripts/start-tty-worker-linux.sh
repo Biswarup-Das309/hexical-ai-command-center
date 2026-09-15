@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-env_file="${HEXICAL_ENV_FILE:-/mnt/c/Users/Biswa/Downloads/hexical-ai-command-center (2)/hexical-ai-command-center/.env.local}"
+env_file="${HEXICAL_ENV_FILE:-/etc/hexical/tty-worker.env}"
 
 if [[ ! -r "$env_file" ]]; then
   echo "Missing worker environment file: $env_file" >&2

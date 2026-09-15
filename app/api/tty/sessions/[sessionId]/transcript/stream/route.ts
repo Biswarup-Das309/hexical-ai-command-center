@@ -1,5 +1,6 @@
 import { auth } from '@clerk/nextjs/server'
 import { z } from 'zod'
+import { log, requestCorrelationId } from '@/lib/hexical/telemetry'
 import { createSupabaseRuntimeStore } from '@/lib/tty/supabase-runtime-store'
 import { normalizeTTYRedisStreamFields } from '@/lib/tty/tty-redis-stream'
 import { createTTYSessionStore } from '@/lib/tty/tty-session-store'
@@ -67,6 +68,7 @@ function sseError(code: string, message: string): Uint8Array {
 }
 
 export async function GET(request: Request, context: { params: Promise<{ sessionId: string }> }): Promise<Response> {
+  const correlationId = requestCorrelationId(request)
   const rawSessionId = (await context.params).sessionId
   const sessionId = SESSION_ID.safeParse(rawSessionId).success ? (rawSessionId as TTYSessionId) : null
   if (!sessionId) return new Response(JSON.stringify({ ok: false, code: 'INVALID_INPUT' }), { status: 400 })
@@ -130,9 +132,13 @@ export async function GET(request: Request, context: { params: Promise<{ session
           request.signal.addEventListener('abort', close, { once: true })
         } catch (error) {
           if (!closed) {
-            controller.enqueue(
-              sseError('STREAM_UNAVAILABLE', error instanceof Error ? error.message : 'Transcript stream unavailable.'),
-            )
+            log.error('tty.transcript_stream_failed', {
+              sessionId,
+              correlationId,
+              errorName: error instanceof Error ? error.name : 'unknown_error',
+              errorMessage: error instanceof Error ? error.message : String(error),
+            })
+            controller.enqueue(sseError('STREAM_UNAVAILABLE', 'Transcript stream temporarily unavailable.'))
             controller.close()
           }
           close()

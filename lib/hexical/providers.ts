@@ -28,7 +28,6 @@ import { fallbackProviders } from './routing'
 import type { HexicalRuntimeStore } from './runtime-store'
 import { buildSingleSystemPrompt, INJECTION_GUARD } from './security'
 import { log } from './telemetry'
-import type { Provider, ModelRoute, ModelExecutionResult, Profile } from './types'
 import {
   PROVIDER_TIMEOUT_MS,
   PROVIDER_MAX_RETRIES,
@@ -36,6 +35,10 @@ import {
   getModelName,
   providerAvailable,
   modelEnvKey,
+  type Provider,
+  type ModelRoute,
+  type ModelExecutionResult,
+  type Profile,
 } from './types'
 import { extractConfidenceScore, sanitizeOutput, errorMessage } from './util'
 
@@ -48,12 +51,163 @@ export class SwarmParseError extends Error {
 
 export class ProviderCallError extends Error {
   attempts: number
-  constructor(message: string, attempts: number) {
+  classification: ProviderFailureClassification
+  status?: number
+  code?: string
+  constructor(message: string, attempts: number, details: ProviderFailureInfo) {
     super(message)
     this.name = 'ProviderCallError'
     this.attempts = attempts
+    this.classification = details.classification
+    this.status = details.status
+    this.code = details.code
   }
 }
+
+export type ProviderFailureClassification = 'permanent' | 'transient' | 'unknown'
+
+export interface ProviderFailureInfo {
+  classification: ProviderFailureClassification
+  retryable: boolean
+  status?: number
+  code?: string
+  safeMessage: string
+}
+
+export class ProviderChainError extends Error {
+  classification: ProviderFailureClassification
+  failures: ProviderFailureInfo[]
+
+  constructor(failures: ProviderFailureInfo[], trail: string[]) {
+    const classification = failures.some((failure) => failure.classification === 'transient')
+      ? 'transient'
+      : failures.length > 0 && failures.every((failure) => failure.classification === 'permanent')
+      ? 'permanent'
+      : 'unknown'
+    super(`All model providers failed. Trail: ${trail.join(' | ')}`)
+    this.name = 'ProviderChainError'
+    this.classification = classification
+    this.failures = failures
+  }
+}
+
+const PERMANENT_PROVIDER_CODES = new Set([
+  'authentication_error',
+  'invalid_api_key',
+  'invalid_configuration',
+  'invalid_model',
+  'invalid_request_error',
+  'model_not_found',
+  'model_not_supported',
+  'not_found',
+  'permission_error',
+  'unsupported_endpoint',
+  'unsupported_model',
+])
+
+const TRANSIENT_PROVIDER_CODES = new Set([
+  'connection_reset',
+  'econnrefused',
+  'econnreset',
+  'eai_again',
+  'etimedout',
+  'timeout',
+])
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null
+}
+
+function readProviderStatus(error: unknown): number | undefined {
+  const record = asRecord(error)
+  const response = asRecord(record?.response)
+  const cause = asRecord(record?.cause)
+  const candidates = [record?.statusCode, record?.status, response?.status, cause?.statusCode, cause?.status]
+  for (const candidate of candidates) {
+    const status = typeof candidate === 'number' ? candidate : Number(candidate)
+    if (Number.isInteger(status) && status >= 100 && status <= 599) return status
+  }
+  return undefined
+}
+
+function readProviderCode(error: unknown): string | undefined {
+  const record = asRecord(error)
+  const data = asRecord(record?.data)
+  const nestedError = asRecord(data?.error)
+  const cause = asRecord(record?.cause)
+  const candidates = [record?.code, nestedError?.code, data?.code, cause?.code]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim().toLowerCase()
+  }
+  return undefined
+}
+
+export function safeProviderErrorMessage(error: unknown): string {
+  let message = errorMessage(error)
+  message = message
+    .replace(/Bearer\s+[^\s]+/gi, 'Bearer [REDACTED]')
+    .replace(/((?:api[_-]?key|access[_-]?token|secret|password)[=: ]+)[^\s,;]+/gi, '$1[REDACTED]')
+    .replace(/(sk-[a-zA-Z0-9_-]{8,})/g, '[REDACTED]')
+  return message.slice(0, 240)
+}
+
+export function classifyProviderError(error: unknown): ProviderFailureInfo {
+  const record = asRecord(error)
+  const inheritedClassification = record?.classification
+  const status = readProviderStatus(error)
+  const code = readProviderCode(error)
+  const safeMessage = safeProviderErrorMessage(error)
+
+  if (inheritedClassification === 'permanent' || inheritedClassification === 'transient') {
+    return {
+      classification: inheritedClassification,
+      retryable: inheritedClassification === 'transient',
+      status,
+      code,
+      safeMessage,
+    }
+  }
+  if (status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504) {
+    return { classification: 'transient', retryable: true, status, code, safeMessage }
+  }
+  if (
+    status === 400 ||
+    status === 401 ||
+    status === 403 ||
+    status === 404 ||
+    (status !== undefined && status >= 405 && status < 500)
+  ) {
+    return { classification: 'permanent', retryable: false, status, code, safeMessage }
+  }
+  if (code && PERMANENT_PROVIDER_CODES.has(code)) {
+    return { classification: 'permanent', retryable: false, status, code, safeMessage }
+  }
+  if (code && TRANSIENT_PROVIDER_CODES.has(code)) {
+    return { classification: 'transient', retryable: true, status, code, safeMessage }
+  }
+
+  // Unknown failures retain the existing retry behavior. They are not
+  // treated as permanent configuration failures without provider evidence.
+  return { classification: 'unknown', retryable: true, status, code, safeMessage }
+}
+
+interface ProviderRetryContext {
+  requestId?: string
+  modelId?: string
+}
+
+export interface ProviderCallArgs {
+  provider: Provider
+  modelId: string
+  systemPrompt: string
+  userMessage: string
+  maxOutputTokens: number
+  temperature: number
+  requestSignal?: AbortSignal
+  requestId?: string
+}
+
+type ProviderCall = (args: ProviderCallArgs) => Promise<ModelExecutionResult>
 
 const PROVIDER_RETRY_DELAYS_MS = [500, 1_000] as const
 
@@ -111,11 +265,20 @@ export async function withProviderRetry<T>(
   provider: Provider,
   operation: (signal: AbortSignal) => Promise<T>,
   requestSignal?: AbortSignal,
+  context: ProviderRetryContext = {},
 ): Promise<{ value: T; retryCount: number }> {
   let lastError: unknown
 
   for (let attempt = 0; attempt <= PROVIDER_RETRY_DELAYS_MS.length; attempt += 1) {
     throwIfAborted(requestSignal)
+    if (context.requestId) {
+      log.info('provider_attempt', {
+        requestId: context.requestId,
+        provider,
+        model: context.modelId,
+        attempt: attempt + 1,
+      })
+    }
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), PROVIDER_TIMEOUT_MS)
     const onRequestAbort = () => controller.abort(abortReason(requestSignal as AbortSignal))
@@ -127,8 +290,23 @@ export async function withProviderRetry<T>(
     } catch (err) {
       if (requestSignal?.aborted) throw abortReason(requestSignal)
       lastError = err
+      const failure = classifyProviderError(err)
       const delayMs = PROVIDER_RETRY_DELAYS_MS[attempt]
-      if (delayMs === undefined) break
+      const shouldRetry = failure.retryable && delayMs !== undefined
+      if (context.requestId) {
+        log.warn('provider_attempt_failed', {
+          requestId: context.requestId,
+          provider,
+          model: context.modelId,
+          attempt: attempt + 1,
+          status: failure.status,
+          code: failure.code,
+          classification: failure.classification,
+          retry: shouldRetry,
+          error: failure.safeMessage,
+        })
+      }
+      if (!shouldRetry) break
       await sleepWithSignal(delayMs, requestSignal)
     } finally {
       clearTimeout(timeout)
@@ -136,21 +314,16 @@ export async function withProviderRetry<T>(
     }
   }
 
+  const failure = classifyProviderError(lastError)
+  const attempts = failure.retryable ? PROVIDER_RETRY_DELAYS_MS.length + 1 : 1
   throw new ProviderCallError(
-    `${provider} failed after retries: ${errorMessage(lastError)}`,
-    PROVIDER_RETRY_DELAYS_MS.length + 1,
+    `${provider} failed after ${attempts} attempt(s): ${failure.safeMessage}`,
+    attempts,
+    failure,
   )
 }
 
-async function callProviderOnce(args: {
-  provider: Provider
-  modelId: string
-  systemPrompt: string
-  userMessage: string
-  maxOutputTokens: number
-  temperature: number
-  requestSignal?: AbortSignal
-}): Promise<ModelExecutionResult> {
+async function callProviderOnce(args: ProviderCallArgs): Promise<ModelExecutionResult> {
   const model = getLanguageModel(args.provider, args.modelId)
 
   const { value: result, retryCount } = await withProviderRetry(
@@ -167,6 +340,7 @@ async function callProviderOnce(args: {
       })
     },
     args.requestSignal,
+    { requestId: args.requestId, modelId: args.modelId },
   )
 
   const text = result.text ?? ''
@@ -192,12 +366,19 @@ export async function executeSingleWithFallback(args: {
   userMessage: string
   cheapOnly: boolean
   requestSignal?: AbortSignal
+  requestId?: string
+  providerAvailable?: (provider: Provider) => boolean
+  providerCall?: ProviderCall
 }): Promise<ModelExecutionResult> {
   const trail: string[] = []
+  const failures: ProviderFailureInfo[] = []
+  const providers = fallbackProviders(args.route.provider, args.cheapOnly)
+  const isAvailable = args.providerAvailable ?? providerAvailable
+  const call = args.providerCall ?? callProviderOnce
 
-  for (const provider of fallbackProviders(args.route.provider, args.cheapOnly)) {
+  for (const [index, provider] of providers.entries()) {
     throwIfAborted(args.requestSignal)
-    if (!providerAvailable(provider)) {
+    if (!isAvailable(provider)) {
       trail.push(`${provider}: skipped, missing API key`)
       continue
     }
@@ -206,10 +387,11 @@ export async function executeSingleWithFallback(args: {
       continue
     }
 
+    let modelId = provider === args.route.provider ? args.route.model : ''
     try {
-      const modelId = provider === args.route.provider ? args.route.model : getModelName(provider)
+      modelId = provider === args.route.provider ? args.route.model : getModelName(provider)
       const systemPrompt = buildSingleSystemPrompt(args.systemCtx, provider, args.profile)
-      const result = await callProviderOnce({
+      const result = await call({
         provider,
         modelId,
         systemPrompt,
@@ -217,19 +399,32 @@ export async function executeSingleWithFallback(args: {
         maxOutputTokens: args.route.maxOutputTokens,
         temperature: args.route.temperature,
         requestSignal: args.requestSignal,
+        requestId: args.requestId,
       })
       await markProviderSuccess(args.runtime, provider)
       return { ...result, text: sanitizeOutput(result.text), fallbackTrail: trail }
     } catch (err) {
       if (args.requestSignal?.aborted || isRequestDeadlineExceeded(err)) throw err
       await markProviderFailure(args.runtime, provider)
-      log.warn('provider_fallback', { provider, error: errorMessage(err) })
+      const failure = classifyProviderError(err)
+      failures.push(failure)
       const attempts = err instanceof ProviderCallError ? err.attempts : 1
-      trail.push(`${provider}: failed after ${attempts} attempt(s)`)
+      trail.push(`${provider}: ${failure.classification} after ${attempts} attempt(s)`)
+      log.warn('provider_fallback', {
+        requestId: args.requestId,
+        provider,
+        model: modelId,
+        fallbackPosition: index + 1,
+        status: failure.status,
+        code: failure.code,
+        classification: failure.classification,
+        attempts,
+        error: failure.safeMessage,
+      })
     }
   }
 
-  throw new Error(`All model providers failed. Trail: ${trail.join(' | ')}`)
+  throw new ProviderChainError(failures, trail)
 }
 
 // ---------------------------------------------------------------------------
@@ -314,6 +509,7 @@ async function generateAgentObject<T>(args: {
   schema: z.ZodType<T>
   maxOutputTokens: number
   requestSignal?: AbortSignal
+  requestId?: string
 }): Promise<{ value: T; usage: { inputTokens: number; outputTokens: number }; retryCount: number }> {
   const model = getLanguageModel(args.provider, args.modelId)
   const { value, retryCount } = await withProviderRetry(
@@ -331,6 +527,7 @@ async function generateAgentObject<T>(args: {
       })
     },
     args.requestSignal,
+    { requestId: args.requestId, modelId: args.modelId },
   )
 
   return {
@@ -350,6 +547,7 @@ export async function executeSwarm(args: {
   userMessage: string
   maxOutputTokens: number
   requestSignal?: AbortSignal
+  requestId?: string
 }): Promise<ModelExecutionResult> {
   const redSys =
     INJECTION_GUARD +
@@ -378,6 +576,7 @@ export async function executeSwarm(args: {
         schema: RedTeamSchema,
         maxOutputTokens: args.maxOutputTokens,
         requestSignal: args.requestSignal,
+        requestId: args.requestId,
       }),
       generateAgentObject({
         provider: args.provider,
@@ -387,6 +586,7 @@ export async function executeSwarm(args: {
         schema: BlueTeamSchema,
         maxOutputTokens: args.maxOutputTokens,
         requestSignal: args.requestSignal,
+        requestId: args.requestId,
       }),
       generateAgentObject({
         provider: args.provider,
@@ -396,11 +596,12 @@ export async function executeSwarm(args: {
         schema: ArchitectSchema,
         maxOutputTokens: args.maxOutputTokens,
         requestSignal: args.requestSignal,
+        requestId: args.requestId,
       }),
     ])
   } catch (err) {
     if (args.requestSignal?.aborted || isRequestDeadlineExceeded(err)) throw err
-    throw new SwarmParseError(`Swarm agent failed to produce schema-valid output: ${errorMessage(err)}`)
+    throw new SwarmParseError(`Swarm agent failed to produce schema-valid output: ${safeProviderErrorMessage(err)}`)
   }
 
   const safeConfidence = Math.min(100, Math.max(0, red.value.confidence))
@@ -456,10 +657,15 @@ export async function extractStructuredFinding<T>(args: {
   schema: z.ZodType<T>
   maxOutputTokens: number
   requestSignal?: AbortSignal
+  requestId?: string
 }): Promise<{ value: T; usage: { inputTokens: number; outputTokens: number } } | null> {
   throwIfAborted(args.requestSignal)
   if (await isProviderCircuitOpen(args.runtime, args.provider)) {
-    log.warn('structured_finding_skipped_circuit_open', { provider: args.provider })
+    log.warn('structured_finding_skipped_circuit_open', {
+      requestId: args.requestId,
+      provider: args.provider,
+      model: args.modelId,
+    })
     return null
   }
 
@@ -472,6 +678,7 @@ export async function extractStructuredFinding<T>(args: {
       schema: args.schema,
       maxOutputTokens: args.maxOutputTokens,
       requestSignal: args.requestSignal,
+      requestId: args.requestId,
     })
 
     await markProviderSuccess(args.runtime, args.provider)
@@ -479,7 +686,16 @@ export async function extractStructuredFinding<T>(args: {
   } catch (err) {
     if (args.requestSignal?.aborted || isRequestDeadlineExceeded(err)) throw err
     await markProviderFailure(args.runtime, args.provider)
-    log.warn('structured_finding_extraction_failed', { provider: args.provider, error: errorMessage(err) })
+    const failure = classifyProviderError(err)
+    log.warn('structured_finding_extraction_failed', {
+      requestId: args.requestId,
+      provider: args.provider,
+      model: args.modelId,
+      status: failure.status,
+      code: failure.code,
+      classification: failure.classification,
+      error: failure.safeMessage,
+    })
     return null // caller must treat this as "no finding" — never fall back to a fabricated one
   }
 }
@@ -496,6 +712,7 @@ export async function executeRoute(args: {
   cheapOnly: boolean
   execSteps: string[]
   requestSignal?: AbortSignal
+  requestId?: string
 }): Promise<ModelExecutionResult> {
   throwIfAborted(args.requestSignal)
   if (args.route.mode === 'swarm') {
@@ -510,6 +727,7 @@ export async function executeRoute(args: {
     userMessage: args.userMessage,
     cheapOnly: args.cheapOnly,
     requestSignal: args.requestSignal,
+    requestId: args.requestId,
   })
 
   const canConfidenceGateSwarm =
@@ -549,6 +767,7 @@ export async function executeRoute(args: {
       userMessage: args.userMessage,
       maxOutputTokens: Math.max(args.route.maxOutputTokens, 1_500),
       requestSignal: args.requestSignal,
+      requestId: args.requestId,
     })
     await markProviderSuccess(args.runtime, 'anthropic')
 
@@ -563,7 +782,11 @@ export async function executeRoute(args: {
   } catch (err) {
     await markProviderFailure(args.runtime, 'anthropic')
     if (err instanceof SwarmParseError) throw err
-    log.error('swarm_provider_failure', { error: errorMessage(err) })
+    log.error('swarm_provider_failure', {
+      requestId: args.requestId,
+      provider: 'anthropic',
+      error: safeProviderErrorMessage(err),
+    })
     args.execSteps.push('Swarm provider unavailable; returning single-agent analysis.')
     return {
       ...firstPass,
@@ -581,6 +804,7 @@ async function runForcedSwarm(args: {
   cheapOnly: boolean
   execSteps: string[]
   requestSignal?: AbortSignal
+  requestId?: string
 }): Promise<ModelExecutionResult> {
   try {
     throwIfAborted(args.requestSignal)
@@ -594,6 +818,7 @@ async function runForcedSwarm(args: {
       userMessage: args.userMessage,
       maxOutputTokens: args.route.maxOutputTokens,
       requestSignal: args.requestSignal,
+      requestId: args.requestId,
     })
     await markProviderSuccess(args.runtime, 'anthropic')
     return swarmResult
@@ -601,7 +826,11 @@ async function runForcedSwarm(args: {
     if (args.requestSignal?.aborted || isRequestDeadlineExceeded(err)) throw err
     await markProviderFailure(args.runtime, 'anthropic')
     if (err instanceof SwarmParseError) throw err
-    log.error('swarm_provider_failure', { error: errorMessage(err) })
+    log.error('swarm_provider_failure', {
+      requestId: args.requestId,
+      provider: 'anthropic',
+      error: safeProviderErrorMessage(err),
+    })
     args.execSteps.push('Swarm provider unavailable; downgrading to single-agent analysis.')
     return executeSingleWithFallback({
       runtime: args.runtime,
@@ -611,6 +840,7 @@ async function runForcedSwarm(args: {
       userMessage: args.userMessage,
       cheapOnly: args.cheapOnly,
       requestSignal: args.requestSignal,
+      requestId: args.requestId,
     })
   }
 }

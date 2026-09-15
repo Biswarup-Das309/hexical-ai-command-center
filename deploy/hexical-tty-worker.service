@@ -10,6 +10,7 @@ Group=biswarup
 WorkingDirectory=/opt/hexical-ai-command-center
 Environment=HOME=/home/biswarup
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HEXICAL_ENV_FILE=/etc/hexical/tty-worker.env
 Environment=TMUX_TMPDIR=/var/lib/hexical-tty-worker/tmux
 StateDirectory=hexical-tty-worker
 ExecStartPre=/usr/bin/mkdir -p /var/lib/hexical-tty-worker/tmux

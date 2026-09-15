@@ -154,6 +154,7 @@ interface ExtendedStreamMessage extends StreamMessage {
   // the pipeline didn't report structured trace events for this response —
   // render the honest fallback, never a placeholder timeline.
   traceEvents?: TraceEvent[]
+  requestId?: string
 }
 
 interface SwarmEvaluation {
@@ -193,6 +194,7 @@ interface VerifyApiResponse {
   graphData?: AttackGraph
   swarmConsensus?: SwarmEvaluation
   traceEvents?: TraceEvent[]
+  requestId?: string
 }
 interface ChatState {
   id: string
@@ -405,17 +407,43 @@ async function parseJsonResponse<T = unknown>(response: Response): Promise<T | n
   return response.json().catch(() => null)
 }
 
-function getSafeClientError(status?: number): string {
+class VerifyApiError extends Error {
+  readonly status?: number
+  readonly code?: string
+  readonly requestId?: string
+
+  constructor(status?: number, code?: string, requestId?: string) {
+    super(`HTTP_${status ?? 500}`)
+    this.name = 'VerifyApiError'
+    this.status = status
+    this.code = code
+    this.requestId = requestId
+  }
+}
+
+function requestReference(requestId?: string): string {
+  return requestId ? ` Reference: ${requestId}` : ''
+}
+
+function getSafeClientError(status?: number, code?: string, requestId?: string): string {
+  if (code === 'PROVIDER_CONFIGURATION_UNAVAILABLE') {
+    return `AI provider configuration is unavailable.${requestReference(requestId)}`
+  }
+  if (code === 'PROVIDER_TEMPORARILY_UNAVAILABLE') {
+    return `AI provider temporarily unavailable. Please try again later.${requestReference(requestId)}`
+  }
   if (status === 400) return 'Request rejected. Please check the selected profile and options.'
   if (status === 401) return 'Session expired. Please sign in again.'
   if (status === 402 || status === 403) return 'Your current plan cannot run this operation.'
   if (status === 408) return 'The operation timed out. Try a smaller target or lower concurrency.'
   if (status === 429) return 'Rate limit reached. Please wait a moment and retry.'
-  if (status && status >= 500) return 'The verification service is temporarily unavailable.'
+  if (status && status >= 500)
+    return `The verification service is temporarily unavailable.${requestReference(requestId)}`
   return 'Pipeline sequence failed.'
 }
 
 function getSafeExceptionMessage(error: unknown): string {
+  if (error instanceof VerifyApiError) return getSafeClientError(error.status, error.code, error.requestId)
   if (error instanceof Error) {
     if (error.message === 'AUTH_TOKEN_UNAVAILABLE') return 'Session token unavailable. Please sign in again.'
     if (error.message === 'EMPTY_RESPONSE') return 'Verification service returned an empty response.'
@@ -1218,6 +1246,7 @@ export function HexicalConsole() {
     abortControllerRef.current = new AbortController()
     const requestSignal = abortControllerRef.current.signal
     let requestTimedOut = false
+    let serverRequestId: string | undefined
     const requestTimeoutId = window.setTimeout(() => {
       requestTimedOut = true
       abortControllerRef.current?.abort()
@@ -1275,7 +1304,14 @@ export function HexicalConsole() {
       })
 
       if (!res.ok) {
-        const errData = await parseJsonResponse<{ error?: string; code?: string; message?: string }>(res)
+        serverRequestId = res.headers.get('x-hexical-request-id') || undefined
+        const errData = await parseJsonResponse<{
+          error?: string
+          code?: string
+          message?: string
+          requestId?: string
+        }>(res)
+        serverRequestId = errData?.requestId || serverRequestId
 
         if (res.status === 504 || errData?.code === 'REQUEST_DEADLINE_EXCEEDED') {
           const timeoutMessage: ExtendedStreamMessage = {
@@ -1283,7 +1319,7 @@ export function HexicalConsole() {
             role: 'error',
             text: `**TIMEOUT:** The investigation exceeded the bounded server budget of ${
               VERIFY_REQUEST_TIMEOUT_MS / 1000 - 15
-            } seconds. No result was recorded. Please retry shortly.`,
+            } seconds. No result was recorded. Please retry shortly.${requestReference(serverRequestId)}`,
             steps: ['REQUEST_DEADLINE_EXCEEDED'],
             valid: false,
             route: 'unknown',
@@ -1299,7 +1335,7 @@ export function HexicalConsole() {
           logToTerminal(`[SYSTEM_HALT] Transaction rejected: ${res.status}`)
 
           // Custom message if it's a 429 Rate Limit
-          const errorMsg = getSafeClientError(res.status)
+          const errorMsg = getSafeClientError(res.status, errData?.code, serverRequestId)
 
           const systemWarning: ExtendedStreamMessage = {
             id: generateUniqueID(),
@@ -1317,9 +1353,10 @@ export function HexicalConsole() {
           setBusy(false)
           return
         }
-        throw new Error(errData?.error || `HTTP_${res.status}`)
+        throw new VerifyApiError(res.status, errData?.code, serverRequestId)
       }
 
+      serverRequestId = res.headers.get('x-hexical-request-id') || undefined
       const initData = await parseJsonResponse<VerifyApiResponse>(res)
       if (!initData) {
         throw new Error('EMPTY_RESPONSE')
@@ -1396,6 +1433,7 @@ export function HexicalConsole() {
         swarmConsensus: swarmData,
         graphData: newGraph,
         traceEvents: traceEventsData,
+        requestId: finalData.requestId || serverRequestId,
       }
 
       dispatch({ type: 'APPEND_MESSAGES', chatId: activeId, title: generatedTitle, messages: [hexMsg] })
@@ -1433,13 +1471,17 @@ export function HexicalConsole() {
         }
         return
       }
-      const safeErrorText = getSafeExceptionMessage(err)
+      const safeErrorText = getSafeExceptionMessage(
+        err instanceof VerifyApiError && !err.requestId && serverRequestId
+          ? new VerifyApiError(err.status, err.code, serverRequestId)
+          : err,
+      )
       logToTerminal(`[ERR] Pipeline crash during remote execution: ${safeErrorText}`)
       const errorMsg: ExtendedStreamMessage = {
         id: generateUniqueID(),
         role: 'hexical',
         text: `**FATAL ERROR:** ${safeErrorText}`,
-        steps: ['SYSTEM_CRASH'],
+        steps: [err instanceof VerifyApiError && err.code ? err.code : 'SYSTEM_CRASH'],
         valid: false,
         route: 'unknown',
         ts: generateTimestamp(),
@@ -2487,7 +2529,7 @@ export function HexicalConsole() {
                         <pre>
                           {JSON.stringify(
                             {
-                              request_id: 'req_' + generateUniqueID(),
+                              request_id: activeTraceMessage.requestId ?? null,
                               timestamp: activeTraceMessage.ts,
                               route: activeTraceMessage.route,
                               execution_metrics: activeTraceMessage.metrics,

@@ -78,6 +78,9 @@ import {
   streamProvider,
   estimateRequestTokens,
   extractStructuredFinding,
+  classifyProviderError,
+  ProviderChainError,
+  safeProviderErrorMessage,
   SwarmParseError,
 } from '@/lib/hexical/providers'
 import { buildReconEvent, buildFingerprintEvent } from '@/lib/hexical/recon'
@@ -113,6 +116,7 @@ import {
   NONCE_TTL_SECS,
   MONTHLY_TOKEN_BUDGETS,
   providerAvailable,
+  getModelName,
   ERROR_CODES,
 } from '@/lib/hexical/types'
 import {
@@ -137,17 +141,22 @@ async function logUsage(supabase: SupabaseClient, event: UsageEvent): Promise<vo
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
+  const requestId = randomUUID()
   const deadline = createRequestDeadline(req.signal, VERIFY_REQUEST_DEADLINE_MS)
   let streaming = false
+  log.info('verify_request_started', { requestId })
   try {
-    return await executeVerification(
+    const response = await executeVerification(
       req,
       deadline.signal,
       () => {
         streaming = true
       },
       deadline,
+      requestId,
     )
+    response.headers.set('X-Hexical-Request-Id', requestId)
+    return response
   } catch (error) {
     if (isRequestDeadlineExceeded(error)) {
       return NextResponse.json(
@@ -155,8 +164,9 @@ export async function POST(req: Request): Promise<NextResponse> {
           error: 'The investigation exceeded the server execution deadline.',
           code: ERROR_CODES.REQUEST_DEADLINE_EXCEEDED,
           message: 'The investigation was stopped before the bounded execution budget expired.',
+          requestId,
         },
-        { status: 504, headers: jsonHeaders() },
+        { status: 504, headers: jsonHeaders({ 'X-Hexical-Request-Id': requestId }) },
       )
     }
     throw error
@@ -170,6 +180,7 @@ async function executeVerification(
   requestSignal: AbortSignal,
   handoffStreamingDeadline: () => void,
   deadline: RequestDeadlineHandle,
+  requestId: string,
 ): Promise<NextResponse> {
   const startedAt = Date.now()
 
@@ -419,6 +430,7 @@ async function executeVerification(
         payload,
         startedAt,
         userId,
+        requestId,
       })
     }
   }
@@ -489,7 +501,7 @@ async function executeVerification(
         runtime,
         supabase,
         provider: candidate,
-        modelId: candidate === route.provider ? route.model : route.model,
+        modelId: candidate === route.provider ? route.model : getModelName(candidate),
         systemPrompt: buildSingleSystemPrompt(systemCtx, candidate, payload.profile),
         userMessage: userMsg,
         route,
@@ -507,6 +519,7 @@ async function executeVerification(
         requestSignal,
         onStreamingStarted: handoffStreamingDeadline,
         disposeDeadline: deadline.dispose,
+        requestId,
       })
     }
     // fall through to the normal non-streaming path if nothing is available to stream from
@@ -532,6 +545,7 @@ async function executeVerification(
       cheapOnly: dailySpend.forceCheapModels,
       execSteps,
       requestSignal,
+      requestId,
     })
   } catch (err) {
     await reconcileMonthlyTokens(runtime, userId, activeTier, reservation.reservedTokens, 0)
@@ -540,7 +554,7 @@ async function executeVerification(
     if (isRequestDeadlineExceeded(err) || requestSignal.aborted) throw err
 
     if (err instanceof SwarmParseError) {
-      log.error('swarm_parse_failure', { error: err.message })
+      log.error('swarm_parse_failure', { requestId, error: safeProviderErrorMessage(err) })
       return NextResponse.json(
         {
           error: 'Consensus Generation Error',
@@ -551,10 +565,30 @@ async function executeVerification(
       )
     }
 
-    log.error('model_execution_failure', { error: err instanceof Error ? err.message : String(err) })
+    const failure = classifyProviderError(err)
+    const providerErrorCode =
+      err instanceof ProviderChainError && err.classification === 'permanent'
+        ? ERROR_CODES.PROVIDER_CONFIGURATION_UNAVAILABLE
+        : err instanceof ProviderChainError && err.classification === 'transient'
+        ? ERROR_CODES.PROVIDER_TEMPORARILY_UNAVAILABLE
+        : ERROR_CODES.PROVIDER_FAILURE
+    log.error('model_execution_failure', {
+      requestId,
+      classification: failure.classification,
+      status: failure.status,
+      code: failure.code,
+      error: safeProviderErrorMessage(err),
+    })
     return NextResponse.json(
-      { error: 'All model providers failed. Please retry shortly.', code: ERROR_CODES.PROVIDER_FAILURE },
-      { status: 502, headers: jsonHeaders() },
+      {
+        error:
+          providerErrorCode === ERROR_CODES.PROVIDER_CONFIGURATION_UNAVAILABLE
+            ? 'AI provider configuration is unavailable.'
+            : 'AI provider temporarily unavailable. Please retry shortly.',
+        code: providerErrorCode,
+        requestId,
+      },
+      { status: 502, headers: jsonHeaders({ 'X-Hexical-Request-Id': requestId }) },
     )
   }
 
@@ -643,6 +677,7 @@ async function executeVerification(
           schema: StructuredFindingSchema,
           maxOutputTokens: findingOutputTokens,
           requestSignal,
+          requestId,
         })
       } catch (error) {
         await reconcileMonthlyTokens(runtime, userId, activeTier, findingReservation.reservedTokens, 0)
@@ -709,6 +744,7 @@ async function executeVerification(
     analysis: result.text,
     steps: execSteps,
     status: 'completed',
+    requestId,
     swarmConsensus: result.swarmConsensus,
     traceEvents,
     metrics: {
@@ -791,8 +827,10 @@ async function respondFromCache(args: {
   payload: ExecutionPayload
   startedAt: number
   userId: string
+  requestId: string
 }): Promise<NextResponse> {
-  const { supabase, runtime, cached, cacheKey, rl, messageQuota, activeTier, payload, startedAt, userId } = args
+  const { supabase, runtime, cached, cacheKey, rl, messageQuota, activeTier, payload, startedAt, userId, requestId } =
+    args
   const latencyMs = Date.now() - startedAt
   const monthlyUsed = await readMonthlyTokenUsage(runtime, userId, activeTier)
   const dailyAfterCache = await readDailySpend(runtime)
@@ -845,12 +883,13 @@ async function respondFromCache(args: {
   })
 
   return NextResponse.json(
-    { ...cached, steps: [...cached.steps, 'Returned from response cache.'], metrics },
+    { ...cached, requestId, steps: [...cached.steps, 'Returned from response cache.'], metrics },
     {
       headers: jsonHeaders({
         'X-RateLimit-Remaining': String(rl.remaining),
         'X-MessageQuota-Remaining': String(messageQuota.remaining),
         'X-Cache': 'HIT',
+        'X-Hexical-Request-Id': requestId,
       }),
     },
   )
@@ -886,6 +925,7 @@ function streamSingleResponse(args: {
   requestSignal: AbortSignal
   onStreamingStarted: () => void
   disposeDeadline: () => void
+  requestId: string
 }): NextResponse {
   const {
     runtime,
@@ -903,6 +943,7 @@ function streamSingleResponse(args: {
     requestSignal,
     onStreamingStarted,
     disposeDeadline,
+    requestId,
   } = args
 
   const run = streamProvider({
@@ -920,12 +961,19 @@ function streamSingleResponse(args: {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       controller.enqueue(sseFrame('steps', args.execSteps))
+      controller.enqueue(sseFrame('meta', { requestId }))
       try {
         for await (const chunk of run.textStream) {
           controller.enqueue(sseFrame('token', { text: chunk }))
         }
-      } catch (err) {
-        controller.enqueue(sseFrame('error', { message: err instanceof Error ? err.message : 'stream failed' }))
+      } catch {
+        controller.enqueue(
+          sseFrame('error', {
+            code: ERROR_CODES.PROVIDER_TEMPORARILY_UNAVAILABLE,
+            message: 'AI provider temporarily unavailable. Please retry shortly.',
+            requestId,
+          }),
+        )
       } finally {
         controller.enqueue(encoder.encode('event: done\ndata: {}\n\n'))
         controller.close()
@@ -978,6 +1026,7 @@ function streamSingleResponse(args: {
           analysis: text,
           steps: [...args.execSteps, 'Streamed response.'],
           status: 'completed',
+          requestId,
           metrics: {
             latencyMs: 0,
             tokensUsed: totalTokens,
@@ -1008,7 +1057,12 @@ function streamSingleResponse(args: {
       }
     } catch (err) {
       await markProviderFailure(runtime, provider)
-      log.error('stream_reconcile_failed', { error: err instanceof Error ? err.message : String(err) })
+      log.error('stream_reconcile_failed', {
+        requestId,
+        provider,
+        model: modelId,
+        error: safeProviderErrorMessage(err),
+      })
       // Best-effort: give back the full reservation so a failed stream
       // doesn't silently eat into the user's monthly budget.
       await reconcileMonthlyTokens(runtime, userId, activeTier, reservedTokens, 0)
@@ -1024,6 +1078,7 @@ function streamSingleResponse(args: {
       'X-Content-Type-Options': 'nosniff',
       'X-RateLimit-Remaining': String(args.rl.remaining),
       'X-MessageQuota-Remaining': String(args.messageQuota.remaining),
+      'X-Hexical-Request-Id': requestId,
     },
   })
 }
