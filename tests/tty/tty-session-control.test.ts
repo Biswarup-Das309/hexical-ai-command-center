@@ -128,6 +128,13 @@ class BroadcastInputRedisFake {
     return 1
   }
 
+  addSessionRecord(record: { sessionId: string; channel: string; token: string; ownerUserId: string }): void {
+    this.values.set(ttySessionInputChannelKey(record.sessionId as TTYSessionId), {
+      ...record,
+      issuedAtMs: Date.now(),
+    })
+  }
+
   async subscribeToBroadcast(
     channel: string,
     event: string,
@@ -452,6 +459,42 @@ test('broadcast stdin preserves per-session byte order and ignores duplicate del
 
   assert.deepEqual(handled, ['echo PRE_ENTER_CHECK\r', 'echo SECOND_NO_REFRESH_TEST\r'])
   assert.equal(redis.subscriptions.get('channel-a'), 1)
+})
+
+test('broadcast stdin waits for the channel record created after durable open', async () => {
+  const redis = new BroadcastInputRedisFake([])
+  const handled: string[] = []
+  const consumer = new TTYSessionInputBroadcastConsumer(
+    redis as never,
+    { handle: async (command) => void handled.push(command.data ?? '') },
+    { inputChannelLookupRetryDelayMs: 1, inputChannelLookupRetryAttempts: 20 },
+  )
+
+  await consumer.start()
+  const subscribing = consumer.subscribeSession(sessionId)
+  await new Promise((resolve) => setTimeout(resolve, 3))
+  redis.addSessionRecord({
+    sessionId,
+    channel: 'channel-after-open',
+    token: 'token-after-open',
+    ownerUserId: 'user-one',
+  })
+  await subscribing
+
+  redis.emit('channel-after-open', {
+    sessionId,
+    token: 'token-after-open',
+    commandId: 'input-after-open',
+    data: 'echo INPUT_AFTER_OPEN\r',
+    inputEventId: 'input-after-open',
+    inputSequence: 1,
+    browserTimestampMs: 1_700_000_000_001,
+  })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  await consumer.stop()
+
+  assert.deepEqual(handled, ['echo INPUT_AFTER_OPEN\r'])
+  assert.equal(redis.subscriptions.get('channel-after-open'), 1)
 })
 
 test('broadcast stdin keeps unrelated session queues concurrent', async () => {

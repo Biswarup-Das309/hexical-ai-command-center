@@ -594,6 +594,8 @@ export class TTYSessionControlConsumer {
  * FIFO and the same idempotency receipt used by durable commands.
  */
 export class TTYSessionInputBroadcastConsumer {
+  private static readonly INPUT_CHANNEL_LOOKUP_RETRY_DELAY_MS = 100
+  private static readonly INPUT_CHANNEL_LOOKUP_RETRY_ATTEMPTS = 20
   private readonly subscriptions = new Map<string, () => void>()
   private readonly sessionTails = new Map<string, Promise<void>>()
   private readonly seenCommandIds = new Set<string>()
@@ -602,6 +604,10 @@ export class TTYSessionInputBroadcastConsumer {
   constructor(
     private readonly redis: Redis,
     private readonly handler: TTYSessionControlHandler,
+    private readonly options: {
+      readonly inputChannelLookupRetryDelayMs?: number
+      readonly inputChannelLookupRetryAttempts?: number
+    } = {},
   ) {}
 
   async start(): Promise<void> {
@@ -621,7 +627,7 @@ export class TTYSessionInputBroadcastConsumer {
 
   async subscribeSession(sessionId: string): Promise<void> {
     if (!this.started || !this.redis.subscribeToBroadcast || this.subscriptions.has(sessionId)) return
-    const record = await this.inputChannelRecord(sessionId)
+    const record = await this.inputChannelRecordWithRetry(sessionId)
     if (record === null) return
     const cleanup = await this.redis.subscribeToBroadcast(
       record.channel,
@@ -633,6 +639,29 @@ export class TTYSessionInputBroadcastConsumer {
       return
     }
     this.subscriptions.set(sessionId, cleanup)
+  }
+
+  private async inputChannelRecordWithRetry(sessionId: string): Promise<TTYSessionInputChannelRecord | null> {
+    const retryDelayMs = Math.max(
+      0,
+      Math.floor(
+        this.options.inputChannelLookupRetryDelayMs ??
+          TTYSessionInputBroadcastConsumer.INPUT_CHANNEL_LOOKUP_RETRY_DELAY_MS,
+      ),
+    )
+    const retryAttempts = Math.max(
+      0,
+      Math.floor(
+        this.options.inputChannelLookupRetryAttempts ??
+          TTYSessionInputBroadcastConsumer.INPUT_CHANNEL_LOOKUP_RETRY_ATTEMPTS,
+      ),
+    )
+    for (let attempt = 0; attempt <= retryAttempts; attempt += 1) {
+      const record = await this.inputChannelRecord(sessionId)
+      if (record !== null || !this.started || attempt === retryAttempts) return record
+      await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs))
+    }
+    return null
   }
 
   async unsubscribeSession(sessionId: string): Promise<void> {
