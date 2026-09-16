@@ -111,6 +111,8 @@ return 1
 
 export interface TTYPersistentSessionLifecycleStore {
   getSession(sessionId: TTYSessionId, expectedOwnerUserId: string): Promise<InternalTTYSession | null>
+  /** Returns the durable owner when the immutable core record still exists. */
+  getSessionOwner(sessionId: TTYSessionId): Promise<string | null>
   touchSession(sessionId: TTYSessionId, ownerUserId: string): Promise<InternalTTYSession | null>
   terminateSession(
     sessionId: TTYSessionId,
@@ -210,6 +212,15 @@ export interface TTYPersistentRuntimeBackend {
   recoverSession?(input: TTYPersistentRuntimeSessionInput): Promise<TTYPersistentRuntimeHandle | null>
   getSession(sessionId: TTYSessionId, ownerUserId: string): TTYPersistentRuntimeHandle | null
   hasPersistentSession?(sessionId: TTYSessionId): Promise<boolean>
+  /**
+   * Terminates only the persistent runtime identified by the supplied session
+   * identity. The manager calls this only after durable owner validation and
+   * after probing the exact runtime session.
+   */
+  terminatePersistentSession?(input: {
+    readonly sessionId: TTYSessionId
+    readonly ownerUserId: string
+  }): Promise<boolean>
   getProcessTelemetry?(sessionId: TTYSessionId, ownerUserId: string): Promise<TTYProcessTelemetrySnapshot | null>
 }
 
@@ -588,13 +599,27 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
         counters.scanned += 1
         try {
           const history = parseRuntimeHistory(await this.redis.get<unknown>(ttySessionRuntimeHistoryKey(sessionId)))
-          if (history === null) {
+          if (history === null || history.sessionId !== sessionId) {
             await this.redis.srem(ttyPersistentSessionIndexKey(), sessionId)
             counters.skipped += 1
             continue
           }
+          const durableOwner = await this.sessions.getSessionOwner(sessionId)
+          if (durableOwner !== null && durableOwner !== history.ownerUserId) {
+            this.logger.warn('persistent_session_recovery_owner_mismatch', {
+              workerId: this.workerId,
+              sessionId,
+            })
+            counters.failed += 1
+            continue
+          }
           const session = await this.sessions.getSession(sessionId, history.ownerUserId)
           if (session === null || terminal(session)) {
+            const cleaned = await this.cleanupExpiredPersistentRuntime(history)
+            if (!cleaned) {
+              counters.failed += 1
+              continue
+            }
             await this.redis.srem(ttyPersistentSessionIndexKey(), sessionId)
             counters.skipped += 1
             continue
@@ -631,6 +656,52 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
 
   activeSessionIds(): readonly TTYSessionId[] {
     return Object.freeze([...this.managed.keys()])
+  }
+
+  /**
+   * Cleans an expired indexed session without ever creating a replacement
+   * shell. A durable history record is the remaining ownership proof when the
+   * session core has expired; the lifecycle-store owner check above protects
+   * the case where a core record still exists for a different owner.
+   *
+   * Recovery state is retained when the worker cannot prove that the runtime
+   * is absent or cannot terminate a runtime that is still present. This makes
+   * cleanup retryable instead of deleting the only durable pointer to a live
+   * shell.
+   */
+  private async cleanupExpiredPersistentRuntime(history: RuntimeHistoryRecord): Promise<boolean> {
+    if (!this.runtime.hasPersistentSession) return false
+
+    let exists: boolean
+    try {
+      exists = await this.runtime.hasPersistentSession(history.sessionId)
+    } catch (error) {
+      this.logger.warn('persistent_session_expiry_probe_failed', {
+        workerId: this.workerId,
+        sessionId: history.sessionId,
+        errorCode: error instanceof Error ? error.name : 'unknown_error',
+      })
+      return false
+    }
+    if (!exists) return true
+    if (!this.runtime.terminatePersistentSession) return false
+
+    const terminated = await this.runtime
+      .terminatePersistentSession({ sessionId: history.sessionId, ownerUserId: history.ownerUserId })
+      .catch((error) => {
+        this.logger.warn('persistent_session_expiry_cleanup_failed', {
+          workerId: this.workerId,
+          sessionId: history.sessionId,
+          errorCode: error instanceof Error ? error.name : 'unknown_error',
+        })
+        return false
+      })
+    if (terminated) return true
+
+    // A false result can be a harmless race with tmux exiting, but it can also
+    // mean an ownership mismatch in a local runtime. Re-probe before deciding
+    // whether durable recovery state may be removed.
+    return !(await this.runtime.hasPersistentSession(history.sessionId).catch(() => true))
   }
 
   async getActiveExecutionRecord(sessionId: TTYSessionId): Promise<TTYPersistentExecutionRecord | null> {

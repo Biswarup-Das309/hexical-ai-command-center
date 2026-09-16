@@ -175,6 +175,9 @@ async function main(): Promise<void> {
     async getSession(sessionId: TTYSessionId, ownerUserId: string) {
       return sessionId === SESSION_ID && ownerUserId === OWNER ? currentSession : null
     },
+    async getSessionOwner(sessionId: TTYSessionId) {
+      return sessionId === SESSION_ID ? OWNER : null
+    },
     async touchSession(sessionId: TTYSessionId, ownerUserId: string) {
       return sessionId === SESSION_ID && ownerUserId === OWNER && currentSession.status === 'active'
         ? currentSession

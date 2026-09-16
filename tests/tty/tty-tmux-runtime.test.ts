@@ -8,6 +8,7 @@ import type { TTYSessionId } from '../../lib/tty/tty-types'
 import type { TTYWorkerId } from '../../lib/tty/tty-worker-types'
 
 const sessionId = '00000000-0000-4000-8000-000000009401' as TTYSessionId
+const unrelatedSessionId = '00000000-0000-4000-8000-000000009402' as TTYSessionId
 const workerA = 'worker-tmux-a' as TTYWorkerId
 const workerB = 'worker-tmux-b' as TTYWorkerId
 
@@ -152,4 +153,35 @@ test('tmux runtime keeps private workspace and server alive on detach but remove
   await reattached?.terminate()
   assert.equal(adapter.servers.size, 0)
   await assert.rejects(import('node:fs/promises').then(({ access }) => access(cwd)))
+})
+
+test('tmux runtime terminates only the exact detached session, is idempotent, and does not resurrect it', async () => {
+  const adapter = new FakeTmuxAdapter()
+  const runtime = new TTYTmuxRuntime(adapter, {
+    rootDir: join(tmpdir(), `hexical-tmux-runtime-expiry-${Math.random().toString(16).slice(2)}`),
+  })
+  adapter.servers.add('hexical_00000000000040008000000000009401')
+  adapter.servers.add('hexical_00000000000040008000000000009402')
+
+  assert.equal(await runtime.hasPersistentSession(sessionId), true)
+  assert.equal(await runtime.terminatePersistentSession({ sessionId, ownerUserId: 'user-one' }), true)
+  assert.equal(await runtime.hasPersistentSession(sessionId), false)
+  assert.equal(await runtime.hasPersistentSession(unrelatedSessionId), true)
+  assert.deepEqual(adapter.killCalls, ['hexical_00000000000040008000000000009401'])
+  assert.equal(await runtime.terminatePersistentSession({ sessionId, ownerUserId: 'user-one' }), false)
+  assert.deepEqual(adapter.killCalls, ['hexical_00000000000040008000000000009401'])
+})
+
+test('tmux runtime refuses a mismatched owner without terminating the owned session', async () => {
+  const adapter = new FakeTmuxAdapter()
+  const runtime = new TTYTmuxRuntime(adapter, { rootDir: join(tmpdir(), 'hexical-tmux-runtime-owner') })
+  await runtime.createSession({ sessionId, ownerUserId: 'user-one', workerId: workerA })
+
+  assert.equal(await runtime.terminatePersistentSession({ sessionId, ownerUserId: 'user-two' }), false)
+  assert.equal(await runtime.hasPersistentSession(sessionId), true)
+  assert.deepEqual(adapter.killCalls, [])
+
+  assert.equal(await runtime.terminatePersistentSession({ sessionId, ownerUserId: 'user-one' }), true)
+  assert.equal(await runtime.hasPersistentSession(sessionId), false)
+  assert.deepEqual(adapter.killCalls, ['hexical_00000000000040008000000000009401'])
 })

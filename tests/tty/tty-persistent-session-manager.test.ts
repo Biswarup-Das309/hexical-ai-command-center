@@ -144,6 +144,10 @@ class FakeLifecycleStore implements TTYPersistentSessionLifecycleStore {
     return id === this.session.sessionId && ownerUserId === this.session.ownerUserId ? this.session : null
   }
 
+  async getSessionOwner(id: TTYSessionId): Promise<string | null> {
+    return id === this.session.sessionId ? this.session.ownerUserId : null
+  }
+
   async touchSession(id: TTYSessionId, ownerUserId: string): Promise<InternalTTYSession | null> {
     const session = await this.getSession(id, ownerUserId)
     return session?.status === 'active' ? session : null
@@ -354,6 +358,166 @@ test('persistent session manager fails closed instead of silently replacing a lo
     true,
   )
 
+  await fixture.manager.stop()
+})
+
+test('persistent recovery terminates an expired indexed tmux session before removing recovery state', async () => {
+  const fixture = createFixture()
+  fixture.store.session = { ...fixture.store.session, status: 'expired' }
+  fixture.redis.values.set(
+    ttySessionRuntimeHistoryKey(sessionId),
+    JSON.stringify({
+      version: 1,
+      sessionId,
+      ownerUserId: 'user-one',
+      workerId,
+      runtimeId: 'expired-runtime',
+      attachedAt: '2026-08-11T10:00:00.000Z',
+    }),
+  )
+  await fixture.redis.sadd(ttyPersistentSessionIndexKey(), sessionId)
+
+  const runtime = fixture.manager as unknown as {
+    runtime: {
+      hasPersistentSession: (id: TTYSessionId) => Promise<boolean>
+      terminatePersistentSession: (input: { sessionId: TTYSessionId; ownerUserId: string }) => Promise<boolean>
+    }
+  }
+  const probes: TTYSessionId[] = []
+  const terminations: Array<{ sessionId: TTYSessionId; ownerUserId: string }> = []
+  runtime.runtime.hasPersistentSession = async (id) => {
+    probes.push(id)
+    return true
+  }
+  runtime.runtime.terminatePersistentSession = async (input) => {
+    terminations.push(input)
+    return true
+  }
+
+  await fixture.manager.start()
+  assert.deepEqual(probes, [sessionId])
+  assert.deepEqual(terminations, [{ sessionId, ownerUserId: 'user-one' }])
+  assert.deepEqual(await fixture.redis.smembers(ttyPersistentSessionIndexKey()), [])
+  assert.deepEqual(fixture.manager.activeSessionIds(), [])
+  assert.equal(fixture.factory.ptys.length, 0)
+
+  const repeated = await fixture.manager.recoverPersistentSessions()
+  assert.deepEqual(repeated, { scanned: 0, attached: 0, skipped: 0, failed: 0 })
+  assert.equal(terminations.length, 1)
+  await fixture.manager.stop()
+})
+
+test('persistent recovery removes stale state without attempting to terminate an already-dead tmux session', async () => {
+  const fixture = createFixture()
+  fixture.store.session = { ...fixture.store.session, status: 'expired' }
+  fixture.redis.values.set(
+    ttySessionRuntimeHistoryKey(sessionId),
+    JSON.stringify({
+      version: 1,
+      sessionId,
+      ownerUserId: 'user-one',
+      workerId,
+      runtimeId: 'dead-runtime',
+      attachedAt: '2026-08-11T10:00:00.000Z',
+    }),
+  )
+  await fixture.redis.sadd(ttyPersistentSessionIndexKey(), sessionId)
+
+  const runtime = fixture.manager as unknown as {
+    runtime: {
+      hasPersistentSession: () => Promise<boolean>
+      terminatePersistentSession: () => Promise<boolean>
+    }
+  }
+  let terminationCalls = 0
+  runtime.runtime.hasPersistentSession = async () => false
+  runtime.runtime.terminatePersistentSession = async () => {
+    terminationCalls += 1
+    return true
+  }
+
+  await fixture.manager.start()
+  assert.equal(terminationCalls, 0)
+  assert.deepEqual(await fixture.redis.smembers(ttyPersistentSessionIndexKey()), [])
+  assert.deepEqual(fixture.manager.activeSessionIds(), [])
+  await fixture.manager.stop()
+})
+
+test('persistent recovery retains recovery state when durable ownership mismatches history', async () => {
+  const fixture = createFixture()
+  fixture.store.getSessionOwner = async () => 'user-two'
+  fixture.redis.values.set(
+    ttySessionRuntimeHistoryKey(sessionId),
+    JSON.stringify({
+      version: 1,
+      sessionId,
+      ownerUserId: 'user-one',
+      workerId,
+      runtimeId: 'mismatched-runtime',
+      attachedAt: '2026-08-11T10:00:00.000Z',
+    }),
+  )
+  await fixture.redis.sadd(ttyPersistentSessionIndexKey(), sessionId)
+
+  const runtime = fixture.manager as unknown as {
+    runtime: {
+      hasPersistentSession: () => Promise<boolean>
+      terminatePersistentSession: () => Promise<boolean>
+    }
+  }
+  let runtimeProbes = 0
+  runtime.runtime.hasPersistentSession = async () => {
+    runtimeProbes += 1
+    return true
+  }
+  runtime.runtime.terminatePersistentSession = async () => true
+
+  await fixture.manager.start()
+  assert.equal(runtimeProbes, 0)
+  assert.deepEqual(await fixture.redis.smembers(ttyPersistentSessionIndexKey()), [sessionId])
+  assert.deepEqual(fixture.manager.activeSessionIds(), [])
+  await fixture.manager.stop()
+})
+
+test('persistent recovery never terminates a session when its durable history identity mismatches the index member', async () => {
+  const fixture = createFixture()
+  fixture.store.session = { ...fixture.store.session, status: 'expired' }
+  const historySessionId = '00000000-0000-4000-8000-000000001999' as TTYSessionId
+  fixture.redis.values.set(
+    ttySessionRuntimeHistoryKey(sessionId),
+    JSON.stringify({
+      version: 1,
+      sessionId: historySessionId,
+      ownerUserId: 'user-one',
+      workerId,
+      runtimeId: 'mismatched-session-runtime',
+      attachedAt: '2026-08-11T10:00:00.000Z',
+    }),
+  )
+  await fixture.redis.sadd(ttyPersistentSessionIndexKey(), sessionId)
+
+  const runtime = fixture.manager as unknown as {
+    runtime: {
+      hasPersistentSession: () => Promise<boolean>
+      terminatePersistentSession: () => Promise<boolean>
+    }
+  }
+  let runtimeProbes = 0
+  let terminationCalls = 0
+  runtime.runtime.hasPersistentSession = async () => {
+    runtimeProbes += 1
+    return true
+  }
+  runtime.runtime.terminatePersistentSession = async () => {
+    terminationCalls += 1
+    return true
+  }
+
+  await fixture.manager.start()
+  assert.equal(runtimeProbes, 0)
+  assert.equal(terminationCalls, 0)
+  assert.deepEqual(await fixture.redis.smembers(ttyPersistentSessionIndexKey()), [])
+  assert.deepEqual(fixture.manager.activeSessionIds(), [])
   await fixture.manager.stop()
 })
 

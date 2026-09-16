@@ -229,6 +229,32 @@ export class TTYTmuxRuntime {
     return this.adapter.hasServer(tmuxName(sessionId))
   }
 
+  /**
+   * Terminates one exact persistent tmux session after the session manager has
+   * validated its durable owner. This path deliberately does not attach or
+   * create a replacement PTY, so expiry cleanup cannot resurrect a session.
+   */
+  async terminatePersistentSession(input: {
+    readonly sessionId: TTYSessionId
+    readonly ownerUserId: string
+  }): Promise<boolean> {
+    assertText(input.ownerUserId, 'session owner')
+    const internal = this.sessions.get(input.sessionId)
+    if (internal !== undefined) {
+      if (internal.metadata.ownerUserId !== input.ownerUserId) return false
+      await this.terminateInternal(internal)
+      return true
+    }
+
+    const tmuxSessionName = tmuxName(input.sessionId)
+    if (!(await this.adapter.hasServer(tmuxSessionName))) return false
+    await this.adapter.killServer(tmuxSessionName)
+    const cwd = resolve(this.rootDir, String(input.sessionId))
+    if (!isWithin(this.rootDir, cwd)) throw new Error('Terminal workspace escaped its configured root.')
+    await rm(cwd, { recursive: true, force: true })
+    return true
+  }
+
   listSessions(ownerUserId: string): readonly TTYPersistentSessionMetadata[] {
     return Object.freeze(
       [...this.sessions.values()]

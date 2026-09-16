@@ -318,6 +318,11 @@ export class TTYSessionStore {
     }
   }
 
+  /** Returns the immutable owner proof without exposing any other session data. */
+  async getSessionOwner(sessionId: TTYSessionId): Promise<string | null> {
+    return (await this.readCore(sessionId))?.ownerUserId ?? null
+  }
+
   private async readStatusRecord(sessionId: TTYSessionId): Promise<PersistedStatusRecord | null> {
     try {
       return await this.redis.get<PersistedStatusRecord>(this.statusKey(sessionId))
