@@ -51,6 +51,7 @@ import { InvestigationSidebar } from '@/components/workspace/InvestigationSideba
 import { PersistentInvestigationWorkspace } from '@/components/workspace/PersistentInvestigationWorkspace'
 import { useGuestLimit } from '@/hooks/use-guest-limit'
 import { useInvestigations } from '@/hooks/useInvestigations'
+import { parseEntitlementTier } from '@/lib/entitlement-ui'
 import { inferRoute, type StreamMessage, type TraceEvent, type PlanTier, PLAN_LIMITS } from '@/lib/hexical/types'
 import { createSupabaseClient } from '@/lib/supabase'
 
@@ -665,7 +666,7 @@ export function HexicalConsole() {
   const [uiTheme, setUiTheme] = useState<AccentTheme>('cyan')
 
   // TIER STATE DRIVER
-  const [currentTier, setCurrentTier] = useState<PlanTier>('go')
+  const [currentTier, setCurrentTier] = useState<PlanTier>('free')
 
   const [systemLogs, setSystemLogs] = useState<string[]>(['[SYSTEM] Kernel loaded.', '[AUTH] Waiting for handshake...'])
   const [targetScope, setTargetScope] = useState<string>('')
@@ -968,21 +969,21 @@ export function HexicalConsole() {
         // table or Clerk metadata your webhook writes). This value is for
         // show/hide UI only — the backend must independently verify
         // entitlement on every request regardless of what's set here.
-        setCurrentTier('go')
+        setCurrentTier('free')
         try {
-          const client = await getAuthenticatedClient()
-          const { data: profile, error } = await client.from('profiles').select('tier').eq('user_id', user.id).single()
-          if (!cancelled && !error && profile?.tier) {
-            setCurrentTier(profile.tier as PlanTier)
-          }
+          const response = await fetch('/api/entitlement', { cache: 'no-store' })
+          if (!response.ok) throw new Error(`Entitlement request failed with status ${response.status}`)
+          const payload = (await response.json()) as { tier?: unknown }
+          if (!cancelled) setCurrentTier(parseEntitlementTier(payload.tier))
         } catch {
-          // Fail closed: if we can't confirm entitlement, stay on 'go'.
+          // Fail closed: if canonical entitlement cannot be confirmed, stay on Free.
+          if (!cancelled) setCurrentTier('free')
         }
       } else {
         setUserName(DEFAULT_GUEST_NAME)
         setUserEmail(DEFAULT_GUEST_EMAIL)
         setUserAvatar(null)
-        setCurrentTier('go')
+        setCurrentTier('free')
         logToTerminal(`[WARN] Ephemeral session. All telemetry and sync disabled.`)
       }
       if (!cancelled) setIsAuthLoading(false)
@@ -992,7 +993,7 @@ export function HexicalConsole() {
     return () => {
       cancelled = true
     }
-  }, [isClerkReady, user, logToTerminal, getAuthenticatedClient])
+  }, [isClerkReady, user, logToTerminal])
 
   // ============================================================================
   // CHAT HYDRATION — dispatches into chatReducer instead of setChats/
@@ -1572,7 +1573,7 @@ export function HexicalConsole() {
 
   return (
     <>
-      {showUpgradeModal && <UpgradeModal onClose={() => setShowUpgradeModal(false)} />}
+      {showUpgradeModal && <UpgradeModal onClose={() => setShowUpgradeModal(false)} currentTier={currentTier} />}
 
       {showSettingsModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fade-in font-sans">
