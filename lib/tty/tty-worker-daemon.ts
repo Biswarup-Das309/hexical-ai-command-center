@@ -36,7 +36,8 @@ export interface TTYWorkerDaemonRecovery {
 export interface TTYWorkerDaemonDependencies {
   readonly registry: Pick<TTYWorkerRegistry, 'registerWorker'> & Partial<Pick<TTYWorkerRegistry, 'releaseWorker'>>
   readonly authenticator: Pick<TTYWorkerAuthenticator, 'authenticateWorker'>
-  readonly heartbeat: Pick<TTYWorkerHeartbeatService, 'recordHeartbeat'>
+  readonly heartbeat: Pick<TTYWorkerHeartbeatService, 'recordHeartbeat'> &
+    Partial<Pick<TTYWorkerHeartbeatService, 'getHeartbeat'>>
   /** Recovery completes its immediate scan before the worker is marked ready. */
   readonly recovery?: TTYWorkerDaemonRecovery
   readonly token: string
@@ -232,11 +233,34 @@ export class TTYWorkerDaemon {
 
   private async recordHeartbeat(): Promise<TTYWorkerHeartbeatResult> {
     const sequence = this.heartbeatSequence + 1
-    const result = await this.dependencies.heartbeat.recordHeartbeat({
+    let resynchronized = false
+    let result = await this.dependencies.heartbeat.recordHeartbeat({
       workerId: this.workerId,
       sequence,
       sentAt: this.now().toISOString(),
     })
+    // A successful durable write can lose its response before the worker sees
+    // it. The next attempt then reuses the same sequence forever and the
+    // worker appears offline even though its process is healthy. Resync once
+    // from the authoritative heartbeat and advance past the accepted value;
+    // preserve ordinary duplicate-heartbeat semantics when no resync reader
+    // is available.
+    if (!result.recorded && result.reason === 'duplicate_heartbeat' && this.dependencies.heartbeat.getHeartbeat) {
+      const stored = await this.dependencies.heartbeat.getHeartbeat(this.workerId)
+      if (
+        stored !== null &&
+        stored.workerId === this.workerId &&
+        stored.sequence >= sequence &&
+        stored.sequence < Number.MAX_SAFE_INTEGER
+      ) {
+        result = await this.dependencies.heartbeat.recordHeartbeat({
+          workerId: this.workerId,
+          sequence: stored.sequence + 1,
+          sentAt: this.now().toISOString(),
+        })
+        resynchronized = result.recorded
+      }
+    }
     if (result.recorded) {
       this.heartbeatSequence = result.heartbeat.sequence
       this.lastHeartbeatAt = result.heartbeat.receivedAt
@@ -245,6 +269,7 @@ export class TTYWorkerDaemon {
         workerId: this.workerId,
         sequence: result.heartbeat.sequence,
         latencyMs: result.heartbeat.latencyMs,
+        ...(resynchronized ? { resynchronized: true } : {}),
       })
     } else {
       this.lastError = `heartbeat_${result.reason}`

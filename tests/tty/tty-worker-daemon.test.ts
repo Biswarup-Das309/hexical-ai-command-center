@@ -11,6 +11,7 @@ import {
   createTTYWorkerId,
   type TTYWorkerAuthContext,
   type TTYWorkerCapability,
+  type TTYWorkerHeartbeat,
   type TTYWorkerRegistration,
 } from '../../lib/tty/tty-worker-types'
 
@@ -85,7 +86,10 @@ class CaptureLogger implements TTYWorkerDaemonLogger {
   }
 }
 
-function successfulHeartbeat(sequence: number, now: string): TTYWorkerHeartbeatResult {
+function successfulHeartbeat(
+  sequence: number,
+  now: string,
+): Extract<TTYWorkerHeartbeatResult, { readonly recorded: true }> {
   return {
     recorded: true,
     heartbeat: { workerId, sequence, sentAt: now, receivedAt: now, receivedAtMs: Date.parse(now), latencyMs: 0 },
@@ -108,6 +112,7 @@ function createHarness(
       | { readonly authenticated: true; readonly context: TTYWorkerAuthContext }
     >
     readonly heartbeat?: (sequence: number, now: string) => Promise<TTYWorkerHeartbeatResult>
+    readonly getHeartbeat?: () => Promise<TTYWorkerHeartbeat | null>
     readonly release?: () => Promise<{ readonly released: true }>
     readonly recovery?: { readonly start: () => Promise<unknown>; readonly stop: () => Promise<unknown> }
   } = {},
@@ -151,6 +156,7 @@ function createHarness(
         const sentAt = new Date(nowMs).toISOString()
         return options.heartbeat?.(input.sequence, sentAt) ?? successfulHeartbeat(input.sequence, sentAt)
       },
+      ...(options.getHeartbeat ? { getHeartbeat: async () => options.getHeartbeat?.() ?? null } : {}),
     },
     recovery: options.recovery,
     now: () => new Date(nowMs),
@@ -264,6 +270,38 @@ test('transient heartbeat failures are observable while the daemon remains avail
   assert.ok(harness.logger.entries.some((entry) => entry.event === 'heartbeat_failed'))
   await harness.daemon.stop()
   assert.equal(harness.timer.cleared, true)
+})
+
+test('resynchronizes after a heartbeat acknowledgement is lost', async () => {
+  let durableSequence = 0
+  const harness = createHarness({
+    heartbeat: async (sequence, now) => {
+      if (sequence <= durableSequence) return { recorded: false, reason: 'duplicate_heartbeat' }
+      durableSequence = sequence
+      if (sequence === 2) return { recorded: false, reason: 'internal_error' }
+      return successfulHeartbeat(sequence, now)
+    },
+    getHeartbeat: async () => {
+      if (durableSequence === 0) return null
+      return successfulHeartbeat(durableSequence, new Date(1_700_000_000_000).toISOString())
+        .heartbeat as TTYWorkerHeartbeat
+    },
+  })
+
+  await harness.daemon.start()
+  await harness.timer.tick()
+  assert.equal(harness.daemon.getStatus().heartbeatSequence, 1)
+
+  await harness.timer.tick()
+  assert.equal(harness.daemon.getStatus().heartbeatSequence, 3)
+  assert.deepEqual(harness.events.slice(-3), ['heartbeat:2', 'heartbeat:2', 'heartbeat:3'])
+  assert.equal(harness.daemon.getStatus().lastError, null)
+  assert.ok(
+    harness.logger.entries.some(
+      (entry) => entry.event === 'heartbeat_recorded' && entry.fields?.resynchronized === true,
+    ),
+  )
+  await harness.daemon.stop()
 })
 
 test('shutdown requested during startup cancels startup instead of resurrecting the daemon', async () => {
