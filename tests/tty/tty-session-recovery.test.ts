@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import test from 'node:test'
-import { isRecoverableTTYSessionCode } from '../../lib/tty/tty-session-recovery'
+import {
+  isRecoverableTTYSessionCode,
+  isRetryableTTYSessionOpenCode,
+  TTY_SESSION_OPEN_RETRY_DELAYS_MS,
+} from '../../lib/tty/tty-session-recovery'
 
 test('stream recovery replaces missing, inactive, and terminated sessions', () => {
   assert.equal(isRecoverableTTYSessionCode('SESSION_NOT_FOUND'), true)
@@ -10,6 +14,14 @@ test('stream recovery replaces missing, inactive, and terminated sessions', () =
   assert.equal(isRecoverableTTYSessionCode('SESSION_TERMINATED'), true)
   assert.equal(isRecoverableTTYSessionCode('UNAUTHENTICATED'), false)
   assert.equal(isRecoverableTTYSessionCode(null), false)
+})
+
+test('new-session provisioning retries durable open, while terminal sessions are not retried', () => {
+  assert.deepEqual(TTY_SESSION_OPEN_RETRY_DELAYS_MS, [250, 500, 1_000, 2_000, 4_000])
+  assert.equal(isRetryableTTYSessionOpenCode('SESSION_NOT_FOUND'), true)
+  assert.equal(isRetryableTTYSessionOpenCode('SESSION_NOT_ACTIVE'), true)
+  assert.equal(isRetryableTTYSessionOpenCode('SESSION_TERMINATED'), false)
+  assert.equal(isRetryableTTYSessionOpenCode('UNAUTHENTICATED'), false)
 })
 
 test('stale-session reconnect opens durable control before realtime input setup', async () => {
@@ -25,6 +37,9 @@ test('stale-session reconnect opens durable control before realtime input setup'
     openBlock.indexOf("control({ type: 'open' })") < openBlock.indexOf('void prepareInputChannel(generation)'),
     'durable control must not be blocked by a hanging realtime input subscription',
   )
+  assert.match(openBlock, /isRetryableTTYSessionOpenCode\(cause\.code\)/)
+  assert.match(openBlock, /TTY_SESSION_OPEN_RETRY_DELAYS_MS\[attempt\]/)
+  assert.match(openBlock, /setTimeout\(resolve, retryDelay\)/)
 })
 
 test('adversarial reconnect paths bound durable open and transcript connection waits', async () => {

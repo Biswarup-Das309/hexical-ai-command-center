@@ -5,7 +5,11 @@ import { connectTTYBrowserInputChannel, type TTYBrowserInputChannel } from '@/li
 import { recordTTYBrowserInputLatency } from '@/lib/tty/tty-input-latency'
 import { createTTYInputQueue } from '@/lib/tty/tty-input-queue'
 import { createTTYSessionInputBroadcastPayload } from '@/lib/tty/tty-session-input-channel'
-import { isRecoverableTTYSessionCode } from '@/lib/tty/tty-session-recovery'
+import {
+  isRecoverableTTYSessionCode,
+  isRetryableTTYSessionOpenCode,
+  TTY_SESSION_OPEN_RETRY_DELAYS_MS,
+} from '@/lib/tty/tty-session-recovery'
 import type { TTYSessionTranscriptEvent } from '@/lib/tty/tty-session-transcript'
 import type { TTYSessionId } from '@/lib/tty/tty-types'
 
@@ -232,11 +236,23 @@ export function useTTYSessionTranscript(
 
   const open = useCallback(async () => {
     const generation = generationRef.current
-    await withTimeout(
-      control({ type: 'open' }),
-      OPEN_CONTROL_TIMEOUT_MS,
-      'The runtime control path did not respond. Reconnecting from durable replay.',
-    )
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await withTimeout(
+          control({ type: 'open' }),
+          OPEN_CONTROL_TIMEOUT_MS,
+          'The runtime control path did not respond. Reconnecting from durable replay.',
+        )
+        break
+      } catch (cause) {
+        const retryDelay =
+          cause instanceof RuntimeSessionRequestError && isRetryableTTYSessionOpenCode(cause.code)
+            ? TTY_SESSION_OPEN_RETRY_DELAYS_MS[attempt]
+            : undefined
+        if (retryDelay === undefined) throw cause
+        await new Promise<void>((resolve) => setTimeout(resolve, retryDelay))
+      }
+    }
     // Durable control/replay is the recovery path. Do not gate it on the
     // browser Broadcast channel: a stale session can leave a Realtime
     // subscription pending forever, which otherwise prevents the transcript
