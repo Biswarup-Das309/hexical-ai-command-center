@@ -120,6 +120,17 @@ export class EngineeringStore {
     return result.data
   }
 
+  async listRuns(ownerUserId: string, limit = 20) {
+    const result = await this.client
+      .from('hexical_engineering_runs')
+      .select('id, repository_id, objective, status, verification_status, correlation_id, created_at, updated_at')
+      .eq('owner_user_id', ownerUserId)
+      .order('created_at', { ascending: false })
+      .limit(limit)
+    if (result.error) throw new Error(`engineering run list: ${result.error.message}`)
+    return result.data ?? []
+  }
+
   async createTask(
     ownerUserId: string,
     input: {

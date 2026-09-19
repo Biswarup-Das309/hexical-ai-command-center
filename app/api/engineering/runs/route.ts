@@ -34,6 +34,21 @@ function json(body: unknown, status = 200): NextResponse {
   return NextResponse.json(body, { status, headers: HEADERS })
 }
 
+export async function GET(): Promise<NextResponse> {
+  const ownerUserId = (await auth()).userId
+  if (!ownerUserId) return json({ ok: false, code: 'UNAUTHENTICATED', message: 'Authentication is required.' }, 401)
+
+  try {
+    const runs = await new EngineeringStore().listRuns(ownerUserId)
+    return json({ ok: true, runs })
+  } catch (error) {
+    console.error('[ENGINEERING_RUN_LIST_ERROR]', {
+      error: error instanceof Error ? error.name : 'unknown_error',
+    })
+    return json({ ok: false, code: 'RUN_LIST_FAILED', message: 'Engineering runs could not be loaded.' }, 500)
+  }
+}
+
 export async function POST(request: Request): Promise<NextResponse> {
   const requestId = randomUUID()
   const ownerUserId = (await auth()).userId

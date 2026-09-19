@@ -2,7 +2,13 @@
 
 import { useAuth } from '@clerk/nextjs'
 import { AlertTriangle, CheckCircle2, FileCode2, Loader2, ShieldCheck, Upload, XCircle } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  ENGINEERING_ACTIVE_RUN_STORAGE_KEY,
+  isEngineeringRunId,
+  restoreEngineeringRun,
+  type EngineeringRunListEntry,
+} from '@/lib/engineering/run-recovery'
 
 const MAX_FILES = 500
 const MAX_FILE_BYTES = 250_000
@@ -79,11 +85,63 @@ interface SwarmResponse {
   readonly message?: string
 }
 
+interface EngineeringRunDetailResponse {
+  readonly ok: boolean
+  readonly run: {
+    readonly id: string
+    readonly repositoryId: string
+    readonly status: string
+    readonly verificationStatus: string | null
+  }
+  readonly repository?: { readonly summary?: RepositorySummary; readonly limitations?: readonly string[] } | null
+  readonly verification?: VerificationResponse['result'] | null
+  readonly roles?: readonly SwarmRole[]
+  readonly reconciliation?: SwarmResponse['reconciliation'] | null
+  readonly message?: string
+}
+
 function humanError(body: unknown, fallback: string): string {
   if (typeof body === 'object' && body !== null && 'message' in body && typeof body.message === 'string') {
     return body.message
   }
   return fallback
+}
+
+function readActiveRunId(): string | null {
+  try {
+    const value = window.localStorage.getItem(ENGINEERING_ACTIVE_RUN_STORAGE_KEY)
+    return isEngineeringRunId(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+function rememberActiveRun(runId: string): void {
+  try {
+    window.localStorage.setItem(ENGINEERING_ACTIVE_RUN_STORAGE_KEY, runId)
+  } catch {
+    // Server data remains the source of truth when browser storage is unavailable.
+  }
+}
+
+function forgetActiveRun(): void {
+  try {
+    window.localStorage.removeItem(ENGINEERING_ACTIVE_RUN_STORAGE_KEY)
+  } catch {
+    // A storage failure must not expose or mutate a different owner's run.
+  }
+}
+
+function runResponseFromDetail(detail: EngineeringRunDetailResponse): RunResponse | null {
+  if (!detail.run || !isEngineeringRunId(detail.run.id)) return null
+  return {
+    ok: true,
+    runId: detail.run.id,
+    repositoryId: detail.run.repositoryId,
+    status: detail.run.status,
+    summary: detail.repository?.summary,
+    limitations: detail.repository?.limitations,
+  }
 }
 
 function statusClass(status: string): string {
@@ -105,13 +163,79 @@ export function EngineeringTaskPanel() {
   const [reconciliation, setReconciliation] = useState<SwarmResponse['reconciliation'] | null>(null)
   const [busy, setBusy] = useState<'ingest' | 'verify' | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [hydration, setHydration] = useState<'loading' | 'ready' | 'error'>('loading')
 
   const totalBytes = useMemo(() => files.reduce((sum, file) => sum + file.bytes, 0), [files])
+  const visibleHydration = !isLoaded || !isSignedIn ? 'ready' : hydration
 
-  async function authHeaders(): Promise<HeadersInit> {
+  const authHeaders = useCallback(async (): Promise<HeadersInit> => {
     const token = await getToken()
     return token ? { Authorization: `Bearer ${token}` } : {}
-  }
+  }, [getToken])
+
+  useEffect(() => {
+    if (!isLoaded) return
+    if (!isSignedIn) return
+
+    let cancelled = false
+    async function restoreRun() {
+      setHydration('loading')
+      setError(null)
+      try {
+        const headers = await authHeaders()
+        const detail = await restoreEngineeringRun({
+          preferredRunId: readActiveRunId(),
+          listRuns: async (): Promise<readonly EngineeringRunListEntry[]> => {
+            const response = await fetch('/api/engineering/runs', { cache: 'no-store', headers })
+            const body: unknown = await response.json().catch(() => null)
+            if (!response.ok) throw new Error(humanError(body, 'Engineering runs could not be loaded.'))
+            return typeof body === 'object' && body !== null && 'runs' in body && Array.isArray(body.runs)
+              ? (body.runs as readonly EngineeringRunListEntry[])
+              : []
+          },
+          getRun: async (runId): Promise<EngineeringRunDetailResponse | null> => {
+            const response = await fetch(`/api/engineering/runs/${encodeURIComponent(runId)}`, {
+              cache: 'no-store',
+              headers,
+            })
+            const body: unknown = await response.json().catch(() => null)
+            if (response.status === 404) return null
+            if (!response.ok) throw new Error(humanError(body, 'Engineering run could not be restored.'))
+            return body as EngineeringRunDetailResponse
+          },
+        })
+        if (cancelled) return
+        if (!detail) {
+          forgetActiveRun()
+          setRun(null)
+          setVerification(null)
+          setRoles([])
+          setReconciliation(null)
+          setHydration('ready')
+          return
+        }
+
+        const detailBody = detail as unknown as EngineeringRunDetailResponse
+        const restoredRun = runResponseFromDetail(detailBody)
+        if (!restoredRun?.runId) throw new Error('The saved engineering run response was invalid.')
+        rememberActiveRun(restoredRun.runId)
+        setRun(restoredRun)
+        setVerification(detailBody.verification ?? null)
+        setRoles(detailBody.roles ?? [])
+        setReconciliation(detailBody.reconciliation ?? null)
+        setHydration('ready')
+      } catch (cause) {
+        if (cancelled) return
+        setHydration('error')
+        setError(cause instanceof Error ? cause.message : 'Engineering run could not be restored.')
+      }
+    }
+
+    void restoreRun()
+    return () => {
+      cancelled = true
+    }
+  }, [authHeaders, isLoaded, isSignedIn])
 
   async function handleFiles(input: FileList | null) {
     if (!input) return
@@ -161,7 +285,9 @@ export function EngineeringTaskPanel() {
       })
       const body: unknown = await response.json().catch(() => null)
       if (!response.ok) throw new Error(humanError(body, 'Repository analysis could not be completed.'))
-      setRun(body as RunResponse)
+      const createdRun = body as RunResponse
+      if (createdRun.runId) rememberActiveRun(createdRun.runId)
+      setRun(createdRun)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Repository analysis could not be completed.')
     } finally {
@@ -314,7 +440,9 @@ export function EngineeringTaskPanel() {
             <button
               type="button"
               onClick={() => void createRun()}
-              disabled={!isLoaded || !isSignedIn || files.length === 0 || busy !== null}
+              disabled={
+                !isLoaded || !isSignedIn || visibleHydration === 'loading' || files.length === 0 || busy !== null
+              }
               className="rounded bg-cyan-300 px-3 py-2 text-xs font-semibold text-black disabled:cursor-not-allowed disabled:opacity-40"
             >
               {busy === 'ingest' ? <Loader2 className="mr-1 inline size-3 animate-spin" /> : null} Analyze snapshot
@@ -347,11 +475,22 @@ export function EngineeringTaskPanel() {
           <div className="flex items-center gap-2 font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-400">
             <ShieldCheck className="size-4 text-emerald-300" /> Run evidence
           </div>
-          {!run?.runId ? (
-            <div className="mt-6 rounded border border-dashed border-white/10 p-5 text-center text-sm text-zinc-600">
-              No run yet. Submit a source snapshot to begin.
+          {visibleHydration === 'loading' && (
+            <div className="mt-6 rounded border border-dashed border-cyan-300/20 p-5 text-center text-sm text-cyan-100/70">
+              Loading previous engineering run...
             </div>
-          ) : (
+          )}
+          {visibleHydration === 'error' && (
+            <div className="mt-6 rounded border border-dashed border-rose-300/20 p-5 text-center text-sm text-rose-200">
+              Unable to restore engineering run.
+            </div>
+          )}
+          {visibleHydration === 'ready' && !run?.runId && (
+            <div className="mt-6 rounded border border-dashed border-white/10 p-5 text-center text-sm text-zinc-600">
+              No previous engineering run.
+            </div>
+          )}
+          {run?.runId && (
             <>
               <div className="mt-3 flex flex-wrap items-center gap-2 font-mono text-[10px]">
                 <span className="rounded border border-emerald-400/20 bg-emerald-400/5 px-2 py-1 text-emerald-200">
