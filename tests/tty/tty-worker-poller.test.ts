@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import type { TTYRuntimeStore } from '../../lib/tty/tty-runtime-store'
+import { SupabasePendingExecutionQueue } from '../../lib/tty/tty-supabase-pending-execution-queue'
+import type { TTYExecutionId } from '../../lib/tty/tty-types'
+import { ttyExecutionJobKey, ttyPendingExecutionIndexKey } from '../../lib/tty/tty-worker-keys'
 import {
   InMemoryPendingExecutionQueue,
   TTYWorkerPoller,
@@ -115,6 +119,31 @@ test('in-memory queue adapter returns only bounded pending execution IDs', async
   assert.deepEqual(await queue.listPendingExecutionIds(2), ['execution-a', 'execution-b'])
   queue.remove('execution-a')
   assert.deepEqual(await queue.listPendingExecutionIds(2), ['execution-b', 'execution-c'])
+})
+
+test('reconciles a queued execution admitted after startup when realtime delivery is missed', async () => {
+  let indexedIds: string[] = []
+  const jobs = new Map<string, unknown>()
+  const runtimeStore = {
+    smembers: async (key: string) => (key === ttyPendingExecutionIndexKey() ? indexedIds : []),
+    get: async (key: string) => jobs.get(key) ?? null,
+    srem: async (_key: string, ...members: string[]) => {
+      indexedIds = indexedIds.filter((id) => !members.includes(id))
+      return members.length
+    },
+  } as unknown as TTYRuntimeStore
+  const queue = new SupabasePendingExecutionQueue(runtimeStore)
+  const executionId = '207d2ef1-6ea2-494a-b771-b1f2d32c9774'
+
+  assert.deepEqual(await queue.listPendingExecutionIds(100), [])
+
+  indexedIds = [executionId]
+  jobs.set(ttyExecutionJobKey(executionId as TTYExecutionId), {
+    status: 'queued',
+    sessionId: '047db766-922a-4405-97fd-097b59cfceb9',
+  })
+
+  assert.deepEqual(await queue.listPendingExecutionIds(100), [executionId])
 })
 
 test('performs an immediate poll and schedules the configured base interval', async () => {

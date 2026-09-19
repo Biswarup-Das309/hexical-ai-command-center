@@ -4,7 +4,6 @@ import { TTYExecutionLeaseManager } from '../lib/tty/tty-execution-lease'
 import { TTYPersistentProcessRuntime } from '../lib/tty/tty-persistent-process-runtime'
 import { TTYPersistentRecoveryService } from '../lib/tty/tty-persistent-recovery-service'
 import { TTYPersistentSessionManager } from '../lib/tty/tty-persistent-session-manager'
-import { normalizeTTYRedisStreamEntries, normalizeTTYRedisStreamFields } from '../lib/tty/tty-redis-stream'
 import { TTYResourceGuard } from '../lib/tty/tty-resource-guard'
 import type { TTYRuntimeStore } from '../lib/tty/tty-runtime-store'
 import {
@@ -17,6 +16,7 @@ import { createTTYSessionStore } from '../lib/tty/tty-session-store'
 import { TTYSessionTranscriptManager } from '../lib/tty/tty-session-transcript'
 import { TTYStreamBroker, type TTYStreamRedis } from '../lib/tty/tty-stream-broker'
 import { TTYStreamingOutputStreamManager } from '../lib/tty/tty-stream-runtime-bridge'
+import { SupabasePendingExecutionQueue } from '../lib/tty/tty-supabase-pending-execution-queue'
 import { createNodePtyTmuxAdapter, TTYTmuxRuntime } from '../lib/tty/tty-tmux-runtime'
 import type { TTYExecutionId, TTYSessionId } from '../lib/tty/tty-types'
 import { TTYWorkerAudit } from '../lib/tty/tty-worker-audit'
@@ -27,13 +27,11 @@ import { TTYWorkerExecutor } from '../lib/tty/tty-worker-executor'
 import { TTYWorkerHeartbeatService } from '../lib/tty/tty-worker-heartbeat'
 import {
   ttyExecutionJobKey,
-  ttyPendingExecutionIndexKey,
-  ttyPendingExecutionStreamKey,
   ttyWorkerSessionControlGroup,
   ttyWorkerSessionControlStreamKey,
 } from '../lib/tty/tty-worker-keys'
 import { TTYWorkerLeaseObserver } from '../lib/tty/tty-worker-observer'
-import { createTTYWorkerPoller, type PendingExecutionQueue } from '../lib/tty/tty-worker-poller'
+import { createTTYWorkerPoller } from '../lib/tty/tty-worker-poller'
 import { TTYWorkerRegistry } from '../lib/tty/tty-worker-registry'
 import { createTTYWorkerId, type TTYWorkerAuthContext } from '../lib/tty/tty-worker-types'
 
@@ -66,85 +64,6 @@ function workerLogger(level: 'info' | 'warn' | 'error', event: string, fields: R
   if (level === 'error') console.error(entry)
   else if (level === 'warn') console.warn(entry)
   else console.info(entry)
-}
-
-class SupabasePendingExecutionQueue implements PendingExecutionQueue {
-  private readonly pending = new Set<string>()
-  private readonly seenCursors = new Set<string>()
-  private initialized = false
-
-  constructor(private readonly redis: TTYRuntimeStore) {}
-
-  async listPendingExecutionIds(limit: number): Promise<readonly string[]> {
-    const requestedLimit = Math.max(0, Math.floor(limit))
-    if (requestedLimit === 0) return []
-    if (!this.initialized) {
-      this.initialized = true
-      const initialIds = [
-        ...new Set((await this.redis.smembers(ttyPendingExecutionIndexKey())).map((id) => String(id).trim())),
-      ]
-      for (const id of initialIds) this.pending.add(id)
-    }
-    const ids = [...this.pending]
-      .filter(Boolean)
-      // Reconcile a bounded window on every poll. This prevents an unbounded
-      // stale Redis set from turning the worker into a hot loop while still
-      // allowing a large queue to drain over subsequent polls.
-      .slice(0, Math.max(requestedLimit, 100))
-
-    const queued: string[] = []
-    const stale: string[] = []
-    await Promise.all(
-      ids.map(async (executionId) => {
-        const raw = await this.redis.get<unknown>(ttyExecutionJobKey(executionId as TTYExecutionId))
-        let parsed: unknown
-        try {
-          parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
-        } catch {
-          parsed = null
-        }
-        const record = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
-        const job =
-          record && typeof record.job === 'object' && record.job !== null
-            ? (record.job as Record<string, unknown>)
-            : record
-        if (job && job.status === 'queued' && typeof job.sessionId === 'string' && job.sessionId.length > 0)
-          queued.push(executionId)
-        else stale.push(executionId)
-      }),
-    )
-    if (stale.length > 0) {
-      await this.redis.srem(ttyPendingExecutionIndexKey(), ...stale)
-      for (const executionId of stale) this.pending.delete(executionId)
-      workerLogger('info', 'stale_pending_executions_pruned', { count: stale.length })
-    }
-    return queued.slice(0, requestedLimit)
-  }
-
-  async subscribe(
-    onPendingExecutionIds: (executionIds: readonly string[]) => Promise<void> | void,
-  ): Promise<() => void> {
-    if (!this.redis.subscribeToStream) return () => undefined
-    const deliver = (cursor: string, fields: unknown) => {
-      if (this.seenCursors.has(cursor)) return
-      this.seenCursors.add(cursor)
-      const parsed = normalizeTTYRedisStreamFields(fields)
-      const executionId = typeof parsed?.executionId === 'string' ? parsed.executionId : null
-      if (!executionId) return
-      this.pending.add(executionId)
-      void onPendingExecutionIds([executionId])
-    }
-    const cleanup = await this.redis.subscribeToStream(ttyPendingExecutionStreamKey(), (payload) => {
-      deliver(payload.streamId, payload.fields)
-    })
-    const historical = normalizeTTYRedisStreamEntries(
-      await this.redis.xrange(ttyPendingExecutionStreamKey(), '-', '+', 10_000),
-    )
-    for (const entry of historical) {
-      if (typeof entry[0] === 'string') deliver(entry[0], entry[1])
-    }
-    return cleanup
-  }
 }
 
 async function resolveSessionId(redis: TTYRuntimeStore, executionId: TTYExecutionId): Promise<TTYSessionId | null> {
