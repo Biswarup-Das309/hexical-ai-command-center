@@ -8,7 +8,7 @@ interface NodeDef {
   label: string
   sub: string
   icon: typeof Database
-  latency: string
+  telemetry: string
 }
 
 const NODES: NodeDef[] = [
@@ -17,21 +17,21 @@ const NODES: NodeDef[] = [
     label: 'Local K-12 Database',
     sub: 'On-device · encrypted',
     icon: Database,
-    latency: '04ms',
+    telemetry: 'representative',
   },
   {
     id: 'math',
     label: 'Math Engine',
     sub: 'Symbolic solver core',
     icon: Sigma,
-    latency: '11ms',
+    telemetry: 'representative',
   },
   {
     id: 'global',
     label: 'Global Groq Cloud',
     sub: 'LPU inference mesh',
     icon: Cloud,
-    latency: '180ms',
+    telemetry: 'representative',
   },
 ]
 
@@ -40,11 +40,16 @@ export function NodeSidebar({ activeRoute }: { activeRoute: RoutePath | null }) 
     <aside className="glass scanlines relative flex h-full flex-col overflow-hidden rounded-lg">
       <header className="flex items-center gap-2 border-b border-border px-4 py-3">
         <Cpu className="size-4 text-primary text-glow-cyan" />
-        <h2 className="font-mono text-[11px] uppercase tracking-[0.25em] text-foreground">Data Sources</h2>
+        <div>
+          <h2 className="font-mono text-[11px] uppercase tracking-[0.25em] text-foreground">Data Sources</h2>
+          <p className="font-mono text-[9px] text-muted-foreground">Topology preview</p>
+        </div>
       </header>
 
       <div className="px-4 pt-4 pb-2">
-        <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">Active Nodes</span>
+        <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+          Representative Nodes
+        </span>
       </div>
 
       <ul className="flex flex-col gap-2 px-3">
@@ -83,7 +88,7 @@ export function NodeSidebar({ activeRoute }: { activeRoute: RoutePath | null }) 
                     <span className={active ? 'text-primary' : 'text-muted-foreground'}>
                       {active ? 'ENGAGED' : 'STANDBY'}
                     </span>
-                    <span className="text-muted-foreground">{node.latency}</span>
+                    <span className="text-muted-foreground">{node.telemetry}</span>
                   </div>
                 </div>
               </div>
@@ -101,13 +106,13 @@ export function NodeSidebar({ activeRoute }: { activeRoute: RoutePath | null }) 
         </div>
         <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.2em]">
           <span className="flex items-center gap-1.5 text-primary">
-            <Activity className="size-3.5" /> Mesh Load
+            <Activity className="size-3.5" /> Live telemetry
           </span>
-          <span className="text-muted-foreground">37%</span>
+          <span className="text-muted-foreground">not connected</span>
         </div>
-        <div className="h-1 w-full overflow-hidden rounded-full bg-secondary">
-          <div className="h-full w-[37%] rounded-full bg-gradient-to-r from-primary to-accent" />
-        </div>
+        <p className="font-mono text-[9px] leading-4 text-muted-foreground">
+          Status dots and node timings are representative topology metadata, not live measurements.
+        </p>
       </div>
     </aside>
   )

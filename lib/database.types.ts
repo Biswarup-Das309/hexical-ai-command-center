@@ -186,6 +186,264 @@ export type Database = {
         }
         Relationships: []
       }
+      hexical_repository_contexts: {
+        Row: {
+          id: string
+          owner_user_id: string
+          repository_key: string
+          root: string
+          status: string
+          summary: Json
+          limitations: Json
+          file_count: number
+          node_count: number
+          edge_count: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          owner_user_id: string
+          repository_key: string
+          root?: string
+          status?: string
+          summary?: Json
+          limitations?: Json
+          file_count?: number
+          node_count?: number
+          edge_count?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          owner_user_id?: string
+          repository_key?: string
+          root?: string
+          status?: string
+          summary?: Json
+          limitations?: Json
+          file_count?: number
+          node_count?: number
+          edge_count?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      hexical_repository_nodes: {
+        Row: {
+          id: string
+          repository_id: string
+          owner_user_id: string
+          node_id: string
+          kind: string
+          node_key: string
+          name: string
+          path: string | null
+          language: string | null
+          metadata: Json
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          repository_id: string
+          owner_user_id: string
+          node_id: string
+          kind: string
+          node_key: string
+          name: string
+          path?: string | null
+          language?: string | null
+          metadata?: Json
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          repository_id?: string
+          owner_user_id?: string
+          node_id?: string
+          kind?: string
+          node_key?: string
+          name?: string
+          path?: string | null
+          language?: string | null
+          metadata?: Json
+          created_at?: string
+        }
+        Relationships: []
+      }
+      hexical_repository_edges: {
+        Row: {
+          id: string
+          repository_id: string
+          owner_user_id: string
+          edge_id: string
+          source_node_id: string
+          target_node_id: string
+          relation: string
+          direct: boolean
+          confidence: string
+          evidence: Json
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          repository_id: string
+          owner_user_id: string
+          edge_id: string
+          source_node_id: string
+          target_node_id: string
+          relation: string
+          direct?: boolean
+          confidence: string
+          evidence?: Json
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          repository_id?: string
+          owner_user_id?: string
+          edge_id?: string
+          source_node_id?: string
+          target_node_id?: string
+          relation?: string
+          direct?: boolean
+          confidence?: string
+          evidence?: Json
+          created_at?: string
+        }
+        Relationships: []
+      }
+      hexical_engineering_runs: {
+        Row: {
+          id: string
+          owner_user_id: string
+          repository_id: string
+          objective: string
+          status: string
+          verification_status: string | null
+          errors: Json
+          correlation_id: string
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          owner_user_id: string
+          repository_id: string
+          objective: string
+          status: string
+          verification_status?: string | null
+          errors?: Json
+          correlation_id: string
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          owner_user_id?: string
+          repository_id?: string
+          objective?: string
+          status?: string
+          verification_status?: string | null
+          errors?: Json
+          correlation_id?: string
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      hexical_engineering_tasks: {
+        Row: {
+          id: string
+          run_id: string
+          owner_user_id: string
+          role: string
+          objective: string
+          status: string
+          input_context: Json
+          findings: Json
+          evidence: Json
+          confidence: number | null
+          error: string | null
+          started_at: string | null
+          completed_at: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          run_id: string
+          owner_user_id: string
+          role: string
+          objective: string
+          status: string
+          input_context?: Json
+          findings?: Json
+          evidence?: Json
+          confidence?: number | null
+          error?: string | null
+          started_at?: string | null
+          completed_at?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          run_id?: string
+          owner_user_id?: string
+          role?: string
+          objective?: string
+          status?: string
+          input_context?: Json
+          findings?: Json
+          evidence?: Json
+          confidence?: number | null
+          error?: string | null
+          started_at?: string | null
+          completed_at?: string | null
+          created_at?: string
+        }
+        Relationships: []
+      }
+      hexical_engineering_evidence: {
+        Row: {
+          id: string
+          run_id: string
+          owner_user_id: string
+          evidence_type: string
+          certainty: string
+          title: string
+          explanation: string
+          source: Json | null
+          payload: Json | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          run_id: string
+          owner_user_id: string
+          evidence_type: string
+          certainty: string
+          title: string
+          explanation: string
+          source?: Json | null
+          payload?: Json | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          run_id?: string
+          owner_user_id?: string
+          evidence_type?: string
+          certainty?: string
+          title?: string
+          explanation?: string
+          source?: Json | null
+          payload?: Json | null
+          created_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: Record<string, never>
     Functions: {

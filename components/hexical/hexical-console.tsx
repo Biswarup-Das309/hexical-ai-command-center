@@ -34,6 +34,7 @@ import {
 } from 'lucide-react'
 import { useState, useEffect, useRef, useCallback, useReducer } from 'react'
 import { toast } from 'sonner'
+import { EngineeringTaskPanel } from '@/components/engineering/EngineeringTaskPanel'
 import { CommandInput } from '@/components/hexical/command-input'
 import { DataStream } from '@/components/hexical/data-stream'
 import { HexicalLogo } from '@/components/hexical/hexical-logo'
@@ -103,7 +104,17 @@ import { createSupabaseClient } from '@/lib/supabase'
 // =============================================================================
 // 1. EXTENDED TYPES & INTERFACES
 // =============================================================================
-type ViewMode = 'chat' | 'workspace' | 'recon' | 'payloads' | 'terminal' | 'graph' | 'cvss' | 'bounty' | 'ast'
+type ViewMode =
+  | 'chat'
+  | 'workspace'
+  | 'recon'
+  | 'payloads'
+  | 'terminal'
+  | 'graph'
+  | 'cvss'
+  | 'bounty'
+  | 'ast'
+  | 'engineering'
 export type AccentTheme = 'cyan' | 'emerald' | 'rose' | 'violet' | 'amber'
 type EncodingType = 'base64' | 'url' | 'hex' | 'rot13' | 'unicode'
 type VerifyProfile = 'recon' | 'swarm' | 'exploit' | 'patch'
@@ -1663,6 +1674,15 @@ export function HexicalConsole() {
                 </button>
 
                 <button
+                  onClick={() => setViewMode('engineering')}
+                  className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${
+                    viewMode === 'engineering' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'
+                  }`}
+                >
+                  <Brain size={14} /> Engineering
+                </button>
+
+                <button
                   onClick={() => setViewMode('graph')}
                   className={`px-3 py-1.5 text-xs font-sans rounded-md transition-all flex items-center gap-2 ${
                     viewMode === 'graph' ? 'bg-white/10 text-white' : 'text-zinc-500 hover:text-white'
@@ -1857,6 +1877,12 @@ export function HexicalConsole() {
                   onRestore={() => handleRestoreInvestigation(activeInvestigationId)}
                   onDelete={() => handleDeleteInvestigation(activeInvestigationId)}
                 />
+              </div>
+            )}
+
+            {viewMode === 'engineering' && (
+              <div className="min-h-full overflow-y-auto">
+                <EngineeringTaskPanel />
               </div>
             )}
 
