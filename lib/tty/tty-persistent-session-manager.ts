@@ -295,6 +295,8 @@ interface ManagedSession {
   fencePromise: Promise<void> | null
   fenced: boolean
   readonly journalBacked: boolean
+  liveOutputReady: boolean
+  liveOutputObserved: boolean
   journalReplayInFlight: boolean
   journalTimer: unknown
 }
@@ -972,7 +974,12 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
             earlyOutput.push(data)
             return
           }
-          if (journalBacked) return
+          // The attached PTY is the low-latency source for the interactive
+          // terminal. Journal-backed runtimes still use the durable journal
+          // for recovery, but tmux pipe-pane intentionally does not emit
+          // local line-edit echo until the line is submitted.
+          if (journalBacked && !managed.liveOutputReady) return
+          if (journalBacked && data.length > 0) managed.liveOutputObserved = true
           this.captureOutput(managed, data)
         },
         onExit: (event) => {
@@ -1013,6 +1020,8 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
         fencePromise: null,
         fenced: false,
         journalBacked,
+        liveOutputReady: !journalBacked,
+        liveOutputObserved: false,
         journalReplayInFlight: false,
         journalTimer: null,
       }
@@ -1029,8 +1038,9 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
       for (const data of managed.bufferedOutput.splice(0)) this.captureOutput(managed, data)
       if (managed.journalBacked) {
         await this.replayJournal(managed)
+        managed.liveOutputReady = true
         managed.journalTimer = this.setTimer(
-          () => void this.replayJournal(managed as ManagedSession),
+          () => void this.reconcileJournal(managed as ManagedSession),
           this.journalPollIntervalMs,
         )
         const maybeUnref = managed.journalTimer as { unref?: () => void }
@@ -1114,6 +1124,56 @@ export class TTYPersistentSessionManager implements TTYSessionControlHandler {
     } catch (error) {
       this.logger.error('persistent_runtime_journal_replay_failed', {
         sessionId: managed.sessionId,
+        errorCode: error instanceof Error ? error.name : 'unknown_error',
+      })
+      await this.fence(managed, 'runtime_journal_unavailable', 'detach').catch(() => undefined)
+    } finally {
+      managed.journalReplayInFlight = false
+    }
+  }
+
+  /**
+   * Reconcile durable journal progress without replaying bytes that the live
+   * PTY stream has already delivered. Before the first live PTY byte, the
+   * normal journal replay remains the recovery fallback. Once the attached
+   * PTY has produced output, the live stream is authoritative for the current
+   * attachment and the journal cursor is only advanced after the transcript
+   * writes have drained.
+   */
+  private async reconcileJournal(managed: ManagedSession): Promise<void> {
+    if (managed.liveOutputObserved) {
+      await this.checkpointJournal(managed)
+      return
+    }
+    await this.replayJournal(managed)
+  }
+
+  private async checkpointJournal(managed: ManagedSession): Promise<void> {
+    if (!managed.journalBacked || managed.journalReplayInFlight || managed.fenced || managed.cleanupPromise !== null)
+      return
+    const replay = managed.handle.replayOutput
+    if (!replay) return
+    managed.journalReplayInFlight = true
+    try {
+      const rawOffset = await this.redis.get<unknown>(ttySessionRuntimeOutputOffsetKey(managed.sessionId))
+      const offset = rawOffset === null ? 0 : Number(rawOffset)
+      if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid persistent PTY journal cursor.')
+      const chunk = await replay(offset)
+      if (!Number.isSafeInteger(chunk.nextOffset) || chunk.nextOffset < offset)
+        throw new Error('Persistent PTY journal cursor moved backwards.')
+      const checkpointDecoder = new TTYPersistentExecutionProtocolDecoder()
+      checkpointDecoder.push(chunk.data)
+      const pendingBytes = checkpointDecoder.bufferedInputBytes()
+      await managed.outputTail
+      const checkpoint = Math.max(offset, chunk.nextOffset - pendingBytes)
+      if (this.managed.get(managed.sessionId) === managed && !managed.fenced)
+        await this.redis.set(ttySessionRuntimeOutputOffsetKey(managed.sessionId), String(checkpoint), {
+          ex: TTY_EXECUTION_HISTORY_RETENTION_SECONDS,
+        })
+    } catch (error) {
+      this.logger.error('persistent_runtime_journal_checkpoint_failed', {
+        sessionId: managed.sessionId,
+        workerId: this.workerId,
         errorCode: error instanceof Error ? error.name : 'unknown_error',
       })
       await this.fence(managed, 'runtime_journal_unavailable', 'detach').catch(() => undefined)

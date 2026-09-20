@@ -755,6 +755,95 @@ test('persistent session manager checkpoints journal replay after durable output
   await manager.stop()
 })
 
+test('journal-backed sessions publish live PTY echo and checkpoint the later journal copy without duplication', async () => {
+  const redis = new WorkerRedisMock()
+  const store = new FakeLifecycleStore()
+  const transcript = new TTYSessionTranscriptManager(redis as never)
+  const dataListeners = new Set<(data: string) => void>()
+  let journal = ''
+  const metadata = {
+    sessionId,
+    ownerUserId: 'user-one',
+    workerId,
+    pid: 9912,
+    shell: '/bin/bash',
+    cwd: join(tmpdir(), 'hexical-live-journal-session'),
+    startedAt: '2026-08-11T10:00:00.000Z',
+    columns: 120,
+    rows: 40,
+    state: 'active' as const,
+  }
+  const handle: TTYPersistentRuntimeHandle = {
+    metadata,
+    write: () => {},
+    resize: () => {},
+    onData: (callback) => {
+      dataListeners.add(callback)
+      return () => dataListeners.delete(callback)
+    },
+    onExit: () => () => {},
+    terminate: async () => {},
+    detach: async () => {},
+    replayOutput: async (afterOffset = 0) => ({
+      data: journal.slice(afterOffset),
+      nextOffset: Buffer.byteLength(journal, 'utf8'),
+    }),
+  }
+  const timers: Array<() => void> = []
+  const runtime: TTYPersistentRuntimeBackend = {
+    createSession: async (input) => {
+      if (input.onData) handle.onData(input.onData)
+      return handle
+    },
+    recoverSession: async (input) => {
+      if (input.onData) handle.onData(input.onData)
+      return handle
+    },
+    getSession: () => handle,
+    hasPersistentSession: async () => true,
+  }
+  const manager = new TTYPersistentSessionManager(redis as never, runtime, store, transcript, workerId, {
+    leaseTtlMs: 1_000,
+    heartbeatIntervalMs: 100,
+    journalPollIntervalMs: 100,
+    setInterval: (callback) => {
+      timers.push(callback)
+      return callback
+    },
+    clearInterval: () => {},
+  })
+
+  await manager.start()
+  await manager.handle(command('open', { commandId: 'live-journal-open' }))
+
+  for (const listener of dataListeners) listener('live-key')
+  await manager.flush(sessionId)
+  const liveReplay = await transcript.read(sessionId)
+  assert.equal(liveReplay.filter((event) => event.type === 'stdout' && event.data.text === 'live-key').length, 1)
+
+  journal = 'live-key'
+  timers[1]?.()
+  await waitFor(
+    () => redis.values.get(ttySessionRuntimeOutputOffsetKey(sessionId)) === String(Buffer.byteLength(journal, 'utf8')),
+  )
+  await manager.flush(sessionId)
+
+  const reconciledReplay = await transcript.read(sessionId)
+  assert.equal(reconciledReplay.filter((event) => event.type === 'stdout').length, 1)
+  assert.equal(reconciledReplay.filter((event) => event.type === 'stdout')[0]?.data.text, 'live-key')
+  await manager.stop()
+
+  const restartedManager = new TTYPersistentSessionManager(redis as never, runtime, store, transcript, workerId, {
+    leaseTtlMs: 1_000,
+    heartbeatIntervalMs: 100,
+  })
+  await restartedManager.start()
+  const restartedReplay = await transcript.read(sessionId)
+  assert.equal(restartedReplay.filter((event) => event.type === 'stdout').length, 1)
+  assert.equal(restartedReplay.filter((event) => event.type === 'stdout')[0]?.data.text, 'live-key')
+  await restartedManager.stop()
+})
+
 test('persistent session manager reattaches indexed tmux state after a worker process restart', async () => {
   const redis = new WorkerRedisMock()
   const store = new FakeLifecycleStore()
