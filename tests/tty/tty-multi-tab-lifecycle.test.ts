@@ -29,3 +29,9 @@ test('primary-session termination remains an explicit terminal-control action', 
   assert.match(source, /onClick=\{\(\) => void terminateSession\(\)\}/)
   assert.match(source, /onTerminateSession=\{terminateSession\}/)
 })
+
+test('Runtime OS terminate delegates primary-session cleanup to the authoritative owner API', async () => {
+  const source = await readFile(resolve(process.cwd(), 'components/tty/RuntimeOSWorkspace.tsx'), 'utf8')
+  assert.match(source, /if \(activeTabIsPrimary\) await onTerminateSession\(\)/)
+  assert.match(source, /tab\.primary \? null : primarySessionId \?\? null/)
+})

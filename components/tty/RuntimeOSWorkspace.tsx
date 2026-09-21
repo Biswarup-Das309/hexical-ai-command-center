@@ -341,7 +341,7 @@ export function RuntimeOSWorkspace({
         await runtimeRequest(`/api/tty/sessions/${encodeURIComponent(tab.id)}`, { method: 'DELETE' })
       }
       setTabs((current) => current.filter((candidate) => candidate.id !== tab.id))
-      setActiveTabId((current) => (current === tab.id ? primarySessionId ?? null : current))
+      setActiveTabId((current) => (current === tab.id ? (tab.primary ? null : primarySessionId ?? null) : current))
     } catch (cause) {
       setControlError(cause instanceof Error ? cause.message : 'The terminal could not be closed.')
     }
@@ -386,6 +386,7 @@ export function RuntimeOSWorkspace({
     setBusy('terminate')
     setControlError(null)
     try {
+      if (activeTabIsPrimary) await onTerminateSession()
       await closeTab(activeTab, true)
     } catch (cause) {
       setControlError(cause instanceof Error ? cause.message : 'The runtime session could not be terminated.')
